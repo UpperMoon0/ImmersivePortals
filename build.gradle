@@ -154,7 +154,6 @@ dependencies {
     implementation "maven.modrinth:oritech:0.16.2"
     implementation "maven.modrinth:architectury-api:13.0.8+neoforge"
     implementation "maven.modrinth:geckolib:DTo3uxPN"
-    implementation "maven.modrinth:stitch:4.0.1"
 
     // Create
     implementation "maven.modrinth:create:1.21.1-6.0.6"

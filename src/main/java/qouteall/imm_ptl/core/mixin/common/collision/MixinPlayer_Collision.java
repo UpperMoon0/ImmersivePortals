@@ -9,7 +9,9 @@ import org.spongepowered.asm.mixin.Overwrite;
 import qouteall.imm_ptl.core.ducks.IEEntity;
 
 @SuppressWarnings("resource")
-@Mixin(Player.class)
+// Run this overwrite before Sable's priority-1000 stand-up injection so
+// Sable can wrap the resulting Level#noCollision call for sublevel checks.
+@Mixin(value = Player.class, priority = 999)
 public abstract class MixinPlayer_Collision {
     
     /**
