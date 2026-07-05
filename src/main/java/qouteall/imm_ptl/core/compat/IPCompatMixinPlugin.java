@@ -45,6 +45,11 @@ public class IPCompatMixinPlugin implements IMixinConfigPlugin {
             return flywheelLoaded;
         }
         
+        if (mixinClassName.contains("Sable")) {
+            boolean sableLoaded = modList.getModFileById("sable") != null;
+            return sableLoaded;
+        }
+
         if (mixinClassName.contains("CardinalComp")) {
             boolean cardinalCompLoaded = modList.getModFileById("cardinal-components-base") != null;
             return cardinalCompLoaded;

@@ -26,13 +26,13 @@ import org.spongepowered.asm.mixin.injection.callback.LocalCapture;
 import qouteall.imm_ptl.core.IPGlobal;
 import qouteall.imm_ptl.core.IPMcHelper;
 import qouteall.imm_ptl.core.api.ImmPtlEntityExtension;
+import qouteall.imm_ptl.core.collision.ImmPtlCollisionHooks;
 import qouteall.imm_ptl.core.collision.PortalCollisionHandler;
 import qouteall.imm_ptl.core.ducks.IEEntity;
 import qouteall.imm_ptl.core.miscellaneous.IPVanillaCopy;
 import qouteall.imm_ptl.core.portal.EndPortalEntity;
 import qouteall.imm_ptl.core.portal.Portal;
 import qouteall.q_misc_util.Helper;
-import qouteall.q_misc_util.my_util.CountDownInt;
 
 @Mixin(Entity.class)
 public abstract class MixinEntity implements IEEntity, ImmPtlEntityExtension {
@@ -77,64 +77,23 @@ public abstract class MixinEntity implements IEEntity, ImmPtlEntityExtension {
     
     @Shadow @Final private static Logger LOGGER;
     @Shadow private @Nullable BlockState inBlockState;
-    @Unique
-    private static final CountDownInt IMM_PTL_LOG_COUNTER = new CountDownInt(20);
-    
     @Redirect(
         method = "Lnet/minecraft/world/entity/Entity;move(Lnet/minecraft/world/entity/MoverType;Lnet/minecraft/world/phys/Vec3;)V",
         at = @At(
             value = "INVOKE",
             target = "Lnet/minecraft/world/entity/Entity;collide(Lnet/minecraft/world/phys/Vec3;)Lnet/minecraft/world/phys/Vec3;"
-        )
+        ),
+        // Sable redirects the same outer Entity.move() collision call at
+        // priority 1100. When Sable is loaded, the Sable compat mixin hooks
+        // Sable's inner vanilla collide() call and runs this same IP collision
+        // hook there, preserving both Sable sublevel collision and ImmPtl
+        // cross-portal collision.
+        require = 0
     )
     private Vec3 redirectHandleCollisions(Entity entity, Vec3 attemptedMove) {
-        if (!IPGlobal.enableServerCollision) {
-            if (!entity.level().isClientSide()) {
-                if (entity instanceof Player) {
-                    return attemptedMove;
-                }
-                else {
-                    return Vec3.ZERO;
-                }
-            }
-        }
-        
-        if (attemptedMove.lengthSqr() > 60 * 60) {
-            // avoid loading too many chunks in collision calculation and lag the server
-            if (IMM_PTL_LOG_COUNTER.tryDecrement()) {
-                LOGGER.error(
-                    "[ImmPtl] Skipping collision calculation because entity moves too fast {} {} {}",
-                    entity, attemptedMove, entity.level().getGameTime(),
-                    new Throwable()
-                );
-            }
-            
-            return Vec3.ZERO;
-        }
-        
-        if (!IPGlobal.crossPortalCollision
-            || ip_portalCollisionHandler == null
-            || !ip_portalCollisionHandler.hasCollisionEntry()
-        ) {
-            Vec3 normalCollisionResult = collide(attemptedMove);
-            return normalCollisionResult;
-        }
-        
-        Vec3 result = ip_portalCollisionHandler.handleCollision(
-            (Entity) (Object) this, attemptedMove
+        return ImmPtlCollisionHooks.handlePortalCollision(
+            entity, attemptedMove, this::collide, LOGGER
         );
-        
-        if (result.lengthSqr() > 20 * 20) {
-            if (IMM_PTL_LOG_COUNTER.tryDecrement()) {
-                LOGGER.error(
-                    "[ImmPtl] cross portal collision result too large {} {} {}",
-                    this, attemptedMove, result
-                );
-            }
-            return Vec3.ZERO;
-        }
-        
-        return result;
     }
     
     //don't burn when jumping into end portal

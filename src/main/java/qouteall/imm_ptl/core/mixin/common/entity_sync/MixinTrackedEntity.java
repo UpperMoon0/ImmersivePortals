@@ -27,7 +27,10 @@ import java.util.Set;
 
 //NOTE must redirect all packets about entities
 @SuppressWarnings({"JavadocReference", "resource"})
-@Mixin(ChunkMap.TrackedEntity.class)
+// Sable injects into TrackedEntity.updatePlayer at the default priority 1000.
+// Keep Immersive Portals lower so Sable can apply first instead of failing on
+// the already-overwritten updatePlayer method during player login/world join.
+@Mixin(value = ChunkMap.TrackedEntity.class, priority = 999)
 public abstract class MixinTrackedEntity implements IETrackedEntity {
     @Shadow
     @Final
@@ -84,27 +87,12 @@ public abstract class MixinTrackedEntity implements IETrackedEntity {
         );
     }
     
-    /**
-     * @author qouteall
-     * @reason managed by ImmPtl
-     * In vanilla, entity tracking updates when
-     * - {@link ChunkMap#move(ServerPlayer)}
-     *   When the player moves, the entities in curr dim except that player updates to that player,
-     *   and that player updates to all player in that dimension
-     */
-    @Overwrite
-    public void updatePlayer(ServerPlayer player) {
-        // nothing
-    }
-    
-    /**
-     * @author qouteall
-     * @reason managed by ImmPtl
-     */
-    @Overwrite
-    public void updatePlayers(List<ServerPlayer> list) {
-        // nothing
-    }
+    // Sable redirects Entity.position() inside vanilla updatePlayer().
+    // Immersive Portals normally overwrites updatePlayer()/updatePlayers()
+    // to no-op and manages tracking itself, but that removes Sable's target
+    // invocation and crashes during player login. For this fork, keep vanilla
+    // updatePlayer/updatePlayers intact and let IP's explicit
+    // ip_updateEntityTrackingStatus() path still exist for portal tracking.
     
     @Override
     public Entity ip_getEntity() {

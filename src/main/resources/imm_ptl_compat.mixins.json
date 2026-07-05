@@ -14,6 +14,7 @@
     "iris.MixinIrisShadowRenderTargets",
     "iris.MixinIrisSodiumShader",
     "iris.MixinIrisTransformPatcher",
+    "sable.MixinEntity_SableCollisionCompat",
     "sodium.IESodiumWorldRenderer",
     "sodium.MixinSodiumDefaultShaderInterface",
     "sodium.MixinSodiumFlawlessFrames",
