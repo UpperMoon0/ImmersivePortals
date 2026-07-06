@@ -551,8 +551,28 @@ public class McHelper {
         
         EntityTypeTest<Entity, T> typeFilter = EntityTypeTest.forClass(entityClass);
         
+        if (!(entityLookup instanceof IELevelEntityGetterAdapter levelEntityGetterAdapter)) {
+            AABB box = new AABB(
+                SectionPos.sectionToBlockCoord(chunkXStart),
+                SectionPos.sectionToBlockCoord(chunkYStart),
+                SectionPos.sectionToBlockCoord(chunkZStart),
+                SectionPos.sectionToBlockCoord(chunkXEnd + 1),
+                SectionPos.sectionToBlockCoord(chunkYEnd + 1),
+                SectionPos.sectionToBlockCoord(chunkZEnd + 1)
+            );
+            
+            final Object[] result = new Object[1];
+            entityLookup.get(typeFilter, box, entity -> {
+                result[0] = function.apply(entity);
+                return result[0] == null ?
+                    AbortableIterationConsumer.Continuation.CONTINUE :
+                    AbortableIterationConsumer.Continuation.ABORT;
+            });
+            return (R) result[0];
+        }
+        
         EntitySectionStorage<Entity> cache =
-            (EntitySectionStorage<Entity>) ((IELevelEntityGetterAdapter) entityLookup).getCache();
+            (EntitySectionStorage<Entity>) levelEntityGetterAdapter.getCache();
         
         return ((IESectionedEntityCache<Entity>) cache).ip_traverseSectionInBox(
             chunkXStart, chunkXEnd,

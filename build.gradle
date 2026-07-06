@@ -46,6 +46,17 @@ repositories {
         name "tterrag maven"
         url "https://maven.tterrag.com/"
     }
+    exclusiveContent {
+        forRepository {
+            maven {
+                name = "CaffeineMC"
+                url = "https://maven.caffeinemc.net/releases"
+            }
+        }
+        filter {
+            includeGroup "net.caffeinemc"
+        }
+    }
 
     flatDir {
         dir "deps"
@@ -133,8 +144,8 @@ dependencies {
     /*implementation "maven.modrinth:embeddium:Na1PoLYF"
     compileOnly "maven.modrinth:oculus:1.20.1-1.6.15a"*/
 
-    implementation "maven.modrinth:sodium:mc1.21.1-0.6.13-neoforge"
-    implementation "maven.modrinth:iris:1.8.1+1.21.1-neoforge"
+    compileOnly "net.caffeinemc:sodium-neoforge-mod:0.8.12+mc1.21.1"
+    implementation "maven.modrinth:iris:1.8.12+1.21.1-neoforge"
 
     implementation "maven.modrinth:cloth-config:15.0.140+neoforge"
     implementation "maven.modrinth:pehkui:3.8.3+1.21-neoforge"

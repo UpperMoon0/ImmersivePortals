@@ -13,22 +13,19 @@ public class MixinSodiumViewport {
         method = "isBoxVisible",
         at = @At(
             value = "INVOKE",
-            target = "Lnet/caffeinemc/mods/sodium/client/render/viewport/frustum/Frustum;testAab(FFFFFF)Z"
+            target = "Lnet/caffeinemc/mods/sodium/client/render/viewport/frustum/Frustum;testSection(FFF)Z"
         )
     )
-    private boolean redirectTestAab(
-        Frustum instance,
-        float minX, float minY, float minZ, float maxX, float maxY, float maxZ
-    ) {
-        boolean inFrustum = instance.testAab(
-            minX, minY, minZ, maxX, maxY, maxZ
-        );
+    private boolean redirectTestSection(Frustum instance, float originX, float originY, float originZ) {
+        boolean inFrustum = instance.testSection(originX, originY, originZ);
         
         if (inFrustum) {
             if (SodiumInterface.frustumCuller != null) {
+                float radius = Viewport.CHUNK_SECTION_PADDED_RADIUS;
                 boolean canDetermineInvisible =
                     SodiumInterface.frustumCuller.canDetermineInvisibleWithCameraCoord(
-                        minX, minY, minZ, maxX, maxY, maxZ
+                        originX - radius, originY - radius, originZ - radius,
+                        originX + radius, originY + radius, originZ + radius
                     );
                 return !canDetermineInvisible;
             }
