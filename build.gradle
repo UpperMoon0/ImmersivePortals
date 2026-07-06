@@ -145,6 +145,7 @@ dependencies {
     compileOnly "maven.modrinth:oculus:1.20.1-1.6.15a"*/
 
     compileOnly "net.caffeinemc:sodium-neoforge-mod:0.8.12+mc1.21.1"
+    compileOnly files("../Inventors/mods/sable-neoforge-1.21.1-2.0.3.jar")
     implementation "maven.modrinth:iris:1.8.12+1.21.1-neoforge"
 
     implementation "maven.modrinth:cloth-config:15.0.140+neoforge"
