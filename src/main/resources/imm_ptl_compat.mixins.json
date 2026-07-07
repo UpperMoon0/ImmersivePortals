@@ -15,6 +15,7 @@
     "iris.MixinIrisSodiumShader",
     "iris.MixinIrisTransformPatcher",
     "sable.MixinEntity_SableCollisionCompat",
+    "sable.MixinClientboundStartTrackingSubLevelPacket_SablePortalCompat",
     "sable.MixinSubLevelTrackingSystem_SablePortalCompat",
     "sodium.IESodiumWorldRenderer",
     "sodium.MixinSodiumDefaultShaderInterface",

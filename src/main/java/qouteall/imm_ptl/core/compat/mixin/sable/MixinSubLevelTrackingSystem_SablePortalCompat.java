@@ -9,6 +9,7 @@ import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.server.network.ServerGamePacketListenerImpl;
 import net.minecraft.world.entity.player.Player;
 import org.joml.Vector3dc;
+import org.joml.Vector3d;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
@@ -43,7 +44,7 @@ public abstract class MixinSubLevelTrackingSystem_SablePortalCompat {
 
     @Inject(method = "collectPlayers", at = @At("TAIL"))
     private void ip_collectPortalWatchers(
-        Vector3dc position, Collection<UUID> tracking, CallbackInfo ci
+        Vector3d position, Collection<UUID> tracking, CallbackInfo ci
     ) {
         int chunkX = ((int) Math.floor(position.x())) >> 4;
         int chunkZ = ((int) Math.floor(position.z())) >> 4;
@@ -56,9 +57,10 @@ public abstract class MixinSubLevelTrackingSystem_SablePortalCompat {
 
     @Redirect(
         method = "tick",
-        at = @At(value = "INVOKE", target = "Lnet/minecraft/server/level/ServerLevel;getPlayerByUUID(Ljava/util/UUID;)Lnet/minecraft/world/entity/Entity;")
+        at = @At(value = "INVOKE", target = "Lnet/minecraft/server/level/ServerLevel;getPlayerByUUID(Ljava/util/UUID;)Lnet/minecraft/world/entity/player/Player;"),
+        require = 2
     )
-    private net.minecraft.world.entity.Entity ip_findPortalWatcher(ServerLevel ignored, UUID uuid) {
+    private Player ip_findPortalWatcher(ServerLevel ignored, UUID uuid) {
         return level.getServer().getPlayerList().getPlayer(uuid);
     }
 

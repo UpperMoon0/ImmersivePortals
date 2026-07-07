@@ -146,6 +146,10 @@ dependencies {
 
     compileOnly "net.caffeinemc:sodium-neoforge-mod:0.8.12+mc1.21.1"
     compileOnly files("../Inventors/mods/sable-neoforge-1.21.1-2.0.3.jar")
+    testImplementation files("../Inventors/mods/sable-neoforge-1.21.1-2.0.3.jar")
+    testImplementation platform("org.junit:junit-bom:5.11.4")
+    testImplementation "org.junit.jupiter:junit-jupiter"
+    testImplementation "org.ow2.asm:asm-tree:9.7.1"
     implementation "maven.modrinth:iris:1.8.12+1.21.1-neoforge"
 
     implementation "maven.modrinth:cloth-config:15.0.140+neoforge"
@@ -175,6 +179,10 @@ dependencies {
 }
 
 tasks.named('build').configure { dependsOn('jarJar') }
+
+tasks.named('test').configure {
+    useJUnitPlatform()
+}
 
 // This block of code expands all declared replace properties in the specified resource targets.
 // A missing property will result in an error. Properties are expanded using ${} Groovy notation.
