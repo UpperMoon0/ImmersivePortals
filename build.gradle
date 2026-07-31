@@ -67,8 +67,6 @@ base {
     archivesName = mod_id
 }
 
-jarJar.enable()
-
 minecraft.accessTransformers.entry 'public net.minecraft.server.MinecraftServer storageSource'
 minecraft.accessTransformers.entry 'public net.minecraft.world.level.biome.BiomeManager biomeZoomSeed'
 minecraft.accessTransformers.entry 'public-f net.minecraft.util.profiling.ActiveProfiler WARNING_TIME_NANOS'
@@ -177,8 +175,6 @@ dependencies {
     // Mekanism
     implementation "maven.modrinth:mekanism:10.7.14.79"
 }
-
-tasks.named('build').configure { dependsOn('jarJar') }
 
 tasks.named('test').configure {
     useJUnitPlatform()
