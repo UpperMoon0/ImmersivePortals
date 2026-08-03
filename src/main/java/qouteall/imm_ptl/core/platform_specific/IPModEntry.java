@@ -14,6 +14,7 @@ import qouteall.imm_ptl.core.commands.AxisArgumentType;
 import qouteall.imm_ptl.core.commands.SubCommandArgumentType;
 import qouteall.imm_ptl.core.commands.TimingFunctionArgumentType;
 import qouteall.imm_ptl.core.compat.GravityChangerInterface;
+import qouteall.imm_ptl.core.compat.sable.SableInterface;
 import qouteall.q_misc_util.Helper;
 
 @Mod(IPModEntry.MODID)
@@ -41,6 +42,11 @@ public class IPModEntry {
     }
 
     public void onInitialize(IEventBus eventBus) {
+        if (ModList.get().isLoaded("sable")) {
+            SableInterface.invoker = new SableInterface.OnSablePresent();
+            Helper.log("Sable entity tracking compatibility is present");
+        }
+
         IPModMain.init(eventBus);
         RequiemCompat.init();
 

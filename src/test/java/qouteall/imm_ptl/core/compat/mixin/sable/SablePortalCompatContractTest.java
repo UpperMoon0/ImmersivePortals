@@ -1,11 +1,15 @@
 package qouteall.imm_ptl.core.compat.mixin.sable;
 
+import dev.ryanhcode.sable.ActiveSableCompanion;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.phys.Vec3;
 import org.junit.jupiter.api.Test;
 import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.tree.ClassNode;
 import org.objectweb.asm.tree.MethodInsnNode;
 import org.objectweb.asm.tree.MethodNode;
+import qouteall.imm_ptl.core.compat.sable.SableInterface;
 
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
@@ -13,6 +17,8 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class SablePortalCompatContractTest {
@@ -59,6 +65,64 @@ class SablePortalCompatContractTest {
         }
     }
 
+    @Test
+    void ordinaryEntitiesKeepTheirStoredTrackingPosition() {
+        Vec3 position = new Vec3(12.5, 64.0, -31.25);
+
+        assertSame(position, new SableInterface.Invoker().getEntityTrackingPosition(null, position));
+    }
+
+    @Test
+    void sableProjectionApiMatchesUnifiedTrackerContract() throws Exception {
+        assertNotNull(ActiveSableCompanion.class.getMethod(
+            "projectOutOfSubLevel", Level.class, Vec3.class
+        ));
+    }
+
+    @Test
+    void immersivePortalsIsTheOnlyRuntimePairingOwner() throws Exception {
+        ClassNode tracker = readClass(
+            "qouteall/imm_ptl/core/mixin/common/entity_sync/MixinTrackedEntity.class"
+        );
+
+        MethodNode cancelOne = findMethod(
+            tracker,
+            "ip_cancelVanillaUpdatePlayer",
+            "(Lnet/minecraft/server/level/ServerPlayer;Lorg/spongepowered/asm/mixin/injection/callback/CallbackInfo;)V"
+        );
+        MethodNode cancelMany = findMethod(
+            tracker,
+            "ip_cancelVanillaUpdatePlayers",
+            "(Ljava/util/List;Lorg/spongepowered/asm/mixin/injection/callback/CallbackInfo;)V"
+        );
+        assertNotNull(cancelOne, "Vanilla/Sable single-player pairing must be cancelled at runtime");
+        assertNotNull(cancelMany, "Vanilla/Sable bulk pairing must be cancelled at runtime");
+        assertInvokes(cancelOne, "org/spongepowered/asm/mixin/injection/callback/CallbackInfo", "cancel");
+        assertInvokes(cancelMany, "org/spongepowered/asm/mixin/injection/callback/CallbackInfo", "cancel");
+    }
+
+    @Test
+    void portalWatchRecordsUseTheSableLogicalPosition() throws Exception {
+        ClassNode tracker = readClass(
+            "qouteall/imm_ptl/core/mixin/common/entity_sync/MixinTrackedEntity.class"
+        );
+        MethodNode update = findMethod(tracker, "ip_updateEntityTrackingStatus", "()V");
+        assertNotNull(update);
+
+        assertInvokes(
+            update,
+            "qouteall/imm_ptl/core/compat/sable/SableInterface$Invoker",
+            "getEntityTrackingPosition"
+        );
+        assertInvokes(
+            update,
+            "qouteall/imm_ptl/core/chunk_loading/ImmPtlChunkTracking",
+            "getWatchRecordForChunk"
+        );
+        assertFalse(invokes(update, "net/minecraft/world/entity/Entity", "chunkPosition"),
+            "Raw Sable plot chunks must not select portal watch records");
+    }
+
     private static ClassNode readClass(String resource) throws Exception {
         try (InputStream stream = SablePortalCompatContractTest.class.getClassLoader().getResourceAsStream(resource)) {
             assertNotNull(stream, "Sable is missing from the test runtime");
@@ -70,6 +134,22 @@ class SablePortalCompatContractTest {
 
     private static void assertMethod(ClassNode node, String name, String descriptor) {
         assertNotNull(findMethod(node, name, descriptor), name + " descriptor changed: expected " + descriptor);
+    }
+
+    private static void assertInvokes(MethodNode method, String owner, String name) {
+        assertTrue(invokes(method, owner, name),
+            method.name + " must invoke " + owner + "." + name);
+    }
+
+    private static boolean invokes(MethodNode method, String owner, String name) {
+        for (var instruction : method.instructions) {
+            if (instruction instanceof MethodInsnNode call
+                && call.owner.equals(owner)
+                && call.name.equals(name)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static MethodNode findMethod(ClassNode node, String name, String descriptor) {

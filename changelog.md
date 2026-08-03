@@ -5,7 +5,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project tries to adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased Changes]
-None currently
+
+### Fixed
+
+- Unified Immersive Portals and Sable entity tracking so sublevel entities use
+  their logical world position and are no longer repeatedly removed and
+  respawned for nearby players.
 
 ## [6.0.7] - 2025-06-18
 

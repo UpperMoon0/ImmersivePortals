@@ -10,11 +10,16 @@ import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.server.network.ServerGamePacketListenerImpl;
 import net.minecraft.server.network.ServerPlayerConnection;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.level.ChunkPos;
+import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
 import org.spongepowered.asm.mixin.*;
 import org.spongepowered.asm.mixin.injection.At;
+import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.Redirect;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import qouteall.imm_ptl.core.chunk_loading.ImmPtlChunkTracking;
+import qouteall.imm_ptl.core.compat.sable.SableInterface;
 import qouteall.imm_ptl.core.ducks.IEChunkMap;
 import qouteall.imm_ptl.core.ducks.IEEntityTrackerEntry;
 import qouteall.imm_ptl.core.ducks.IETrackedEntity;
@@ -27,9 +32,9 @@ import java.util.Set;
 
 //NOTE must redirect all packets about entities
 @SuppressWarnings({"JavadocReference", "resource"})
-// Sable injects into TrackedEntity.updatePlayer at the default priority 1000.
-// Keep Immersive Portals lower so Sable can apply first instead of failing on
-// the already-overwritten updatePlayer method during player login/world join.
+// Sable redirects Entity.position() in vanilla updatePlayer at priority 1000.
+// Keep the vanilla method body available for that redirect to target, then
+// cancel it at runtime below. IP remains the sole owner of the seenBy set.
 @Mixin(value = ChunkMap.TrackedEntity.class, priority = 999)
 public abstract class MixinTrackedEntity implements IETrackedEntity {
     @Shadow
@@ -87,12 +92,19 @@ public abstract class MixinTrackedEntity implements IETrackedEntity {
         );
     }
     
-    // Sable redirects Entity.position() inside vanilla updatePlayer().
-    // Immersive Portals normally overwrites updatePlayer()/updatePlayers()
-    // to no-op and manages tracking itself, but that removes Sable's target
-    // invocation and crashes during player login. For this fork, keep vanilla
-    // updatePlayer/updatePlayers intact and let IP's explicit
-    // ip_updateEntityTrackingStatus() path still exist for portal tracking.
+    /**
+     * Keep the vanilla bytecode intact so Sable's redirect has a stable target,
+     * but do not let vanilla/Sable and IP independently mutate {@link #seenBy}.
+     */
+    @Inject(method = "updatePlayer", at = @At("HEAD"), cancellable = true)
+    private void ip_cancelVanillaUpdatePlayer(ServerPlayer player, CallbackInfo ci) {
+        ci.cancel();
+    }
+
+    @Inject(method = "updatePlayers", at = @At("HEAD"), cancellable = true)
+    private void ip_cancelVanillaUpdatePlayers(List<ServerPlayer> players, CallbackInfo ci) {
+        ci.cancel();
+    }
     
     @Override
     public Entity ip_getEntity() {
@@ -112,10 +124,18 @@ public abstract class MixinTrackedEntity implements IETrackedEntity {
     public void ip_updateEntityTrackingStatus() {
         IEChunkMap chunkMap = (IEChunkMap)
             ((ServerLevel) entity.level()).getChunkSource().chunkMap;
+
+        Vec3 trackingPosition = SableInterface.invoker.getEntityTrackingPosition(
+            entity.level(), entity.position()
+        );
+        ChunkPos trackingChunk = new ChunkPos(
+            SectionPos.blockToSectionCoord(trackingPosition.x),
+            SectionPos.blockToSectionCoord(trackingPosition.z)
+        );
         
         var watchRecMap = ImmPtlChunkTracking.getWatchRecordForChunk(
             entity.level().dimension(),
-            entity.chunkPosition().x, entity.chunkPosition().z
+            trackingChunk.x, trackingChunk.z
         );
         
         // no need to clamp it with render distance, as we check chunk watch records now

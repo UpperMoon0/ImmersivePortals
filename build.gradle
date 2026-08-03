@@ -57,6 +57,17 @@ repositories {
             includeGroup "net.caffeinemc"
         }
     }
+    exclusiveContent {
+        forRepository {
+            maven {
+                name = "Sable Companion"
+                url = "https://maven.ryanhcode.dev/releases"
+            }
+        }
+        filter {
+            includeGroup "dev.ryanhcode.sable-companion"
+        }
+    }
 
     flatDir {
         dir "deps"
@@ -144,7 +155,9 @@ dependencies {
 
     compileOnly "net.caffeinemc:sodium-neoforge-mod:0.8.12+mc1.21.1"
     compileOnly files("../Inventors/mods/sable-neoforge-1.21.1-2.0.3.jar")
+    compileOnly "dev.ryanhcode.sable-companion:sable-companion-common-${minecraft_version}:${sable_companion_version}"
     testImplementation files("../Inventors/mods/sable-neoforge-1.21.1-2.0.3.jar")
+    testImplementation "dev.ryanhcode.sable-companion:sable-companion-common-${minecraft_version}:${sable_companion_version}"
     testImplementation platform("org.junit:junit-bom:5.11.4")
     testImplementation "org.junit.jupiter:junit-jupiter"
     testImplementation "org.ow2.asm:asm-tree:9.7.1"
