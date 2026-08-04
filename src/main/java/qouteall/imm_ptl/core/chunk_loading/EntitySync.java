@@ -4,7 +4,7 @@ import de.nick1st.imm_ptl.events.DimensionEvents;
 import it.unimi.dsi.fastutil.ints.Int2ObjectMap;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ChunkMap;
-import net.minecraft.server.level.DistanceManager;
+
 import net.minecraft.server.level.ServerLevel;
 import net.neoforged.neoforge.common.NeoForge;
 import qouteall.imm_ptl.core.compat.sable.SableInterface;
@@ -33,10 +33,8 @@ public class EntitySync {
             PacketRedirection.withForceRedirect(
                 world,
                 () -> {
-                    ChunkMap chunkMap = world.getChunkSource().chunkMap;
                     Int2ObjectMap<ChunkMap.TrackedEntity> entityTrackerMap =
-                        ((IEChunkMap) chunkMap).ip_getEntityTrackerMap();
-                    DistanceManager distanceManager = chunkMap.getDistanceManager();
+                        ((IEChunkMap) world.getChunkSource().chunkMap).ip_getEntityTrackerMap();
                     
                     for (ChunkMap.TrackedEntity trackedEntity : entityTrackerMap.values()) {
                         IETrackedEntity ieTrackedEntity = (IETrackedEntity) trackedEntity;
@@ -63,7 +61,7 @@ public class EntitySync {
                     ChunkMap chunkMap = world.getChunkSource().chunkMap;
                     Int2ObjectMap<ChunkMap.TrackedEntity> entityTrackerMap =
                         ((IEChunkMap) chunkMap).ip_getEntityTrackerMap();
-                    DistanceManager distanceManager = chunkMap.getDistanceManager();
+                    var distanceManager = chunkMap.getDistanceManager();
                     
                     for (ChunkMap.TrackedEntity trackedEntity : entityTrackerMap.values()) {
                         IETrackedEntity ieTrackedEntity = (IETrackedEntity) trackedEntity;

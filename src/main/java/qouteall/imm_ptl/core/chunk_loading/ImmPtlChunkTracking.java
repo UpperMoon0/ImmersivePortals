@@ -558,12 +558,7 @@ public class ImmPtlChunkTracking {
     }
 
     public static boolean shouldLoadDimension(ResourceKey<Level> dimension) {
-        if (!chunkWatchRecords.containsKey(dimension)) {
-            return false;
-        }
-        var map =
-                chunkWatchRecords.get(dimension);
-        return !map.isEmpty();
+        return isDimensionWatched(dimension);
     }
 
     public static void addGlobalAdditionalChunkLoader(
