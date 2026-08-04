@@ -12,6 +12,8 @@ import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
+import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
+import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import org.slf4j.Logger;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
@@ -77,22 +79,17 @@ public abstract class MixinEntity implements IEEntity, ImmPtlEntityExtension {
     
     @Shadow @Final private static Logger LOGGER;
     @Shadow private @Nullable BlockState inBlockState;
-    @Redirect(
+    @WrapOperation(
         method = "Lnet/minecraft/world/entity/Entity;move(Lnet/minecraft/world/entity/MoverType;Lnet/minecraft/world/phys/Vec3;)V",
         at = @At(
             value = "INVOKE",
             target = "Lnet/minecraft/world/entity/Entity;collide(Lnet/minecraft/world/phys/Vec3;)Lnet/minecraft/world/phys/Vec3;"
         ),
-        // Sable redirects the same outer Entity.move() collision call at
-        // priority 1100. When Sable is loaded, the Sable compat mixin hooks
-        // Sable's inner vanilla collide() call and runs this same IP collision
-        // hook there, preserving both Sable sublevel collision and ImmPtl
-        // cross-portal collision.
         require = 0
     )
-    private Vec3 redirectHandleCollisions(Entity entity, Vec3 attemptedMove) {
+    private Vec3 redirectHandleCollisions(Entity entity, Vec3 attemptedMove, Operation<Vec3> original) {
         return ImmPtlCollisionHooks.handlePortalCollision(
-            entity, attemptedMove, this::collide, LOGGER
+            entity, attemptedMove, move -> original.call(entity, move), LOGGER
         );
     }
     

@@ -2,6 +2,7 @@ package qouteall.imm_ptl.core.compat.mixin.sable;
 
 import dev.ryanhcode.sable.ActiveSableCompanion;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.phys.Vec3;
 import org.junit.jupiter.api.Test;
 import org.objectweb.asm.ClassReader;
@@ -68,8 +69,10 @@ class SablePortalCompatContractTest {
     @Test
     void ordinaryEntitiesKeepTheirStoredTrackingPosition() {
         Vec3 position = new Vec3(12.5, 64.0, -31.25);
+        SableInterface.Invoker invoker = new SableInterface.Invoker();
 
-        assertSame(position, new SableInterface.Invoker().getEntityTrackingPosition(null, position));
+        assertSame(position, invoker.getEntityTrackingPosition(null, position));
+        assertTrue(invoker.getEntityTrackingChunk(null, position).equals(new ChunkPos(0, -2)));
     }
 
     @Test
@@ -112,7 +115,7 @@ class SablePortalCompatContractTest {
         assertInvokes(
             update,
             "qouteall/imm_ptl/core/compat/sable/SableInterface$Invoker",
-            "getEntityTrackingPosition"
+            "getEntityTrackingChunk"
         );
         assertInvokes(
             update,
@@ -121,6 +124,27 @@ class SablePortalCompatContractTest {
         );
         assertFalse(invokes(update, "net/minecraft/world/entity/Entity", "chunkPosition"),
             "Raw Sable plot chunks must not select portal watch records");
+    }
+
+    @Test
+    void movementPacketsUseTheSameLogicalTrackingChunk() throws Exception {
+        ClassNode entitySync = readClass(
+            "qouteall/imm_ptl/core/chunk_loading/EntitySync.class"
+        );
+        MethodNode tick = findMethod(
+            entitySync,
+            "tick",
+            "(Lnet/minecraft/server/MinecraftServer;)V"
+        );
+        assertNotNull(tick);
+
+        assertClassInvokes(
+            entitySync,
+            "qouteall/imm_ptl/core/compat/sable/SableInterface$Invoker",
+            "getEntityTrackingChunk"
+        );
+        assertFalse(classInvokes(entitySync, "net/minecraft/world/entity/Entity", "chunkPosition"),
+            "Raw Sable plot chunks must not gate per-tick movement packets");
     }
 
     private static ClassNode readClass(String resource) throws Exception {
@@ -139,6 +163,15 @@ class SablePortalCompatContractTest {
     private static void assertInvokes(MethodNode method, String owner, String name) {
         assertTrue(invokes(method, owner, name),
             method.name + " must invoke " + owner + "." + name);
+    }
+
+    private static void assertClassInvokes(ClassNode node, String owner, String name) {
+        assertTrue(classInvokes(node, owner, name),
+            node.name + " must invoke " + owner + "." + name);
+    }
+
+    private static boolean classInvokes(ClassNode node, String owner, String name) {
+        return node.methods.stream().anyMatch(method -> invokes(method, owner, name));
     }
 
     private static boolean invokes(MethodNode method, String owner, String name) {

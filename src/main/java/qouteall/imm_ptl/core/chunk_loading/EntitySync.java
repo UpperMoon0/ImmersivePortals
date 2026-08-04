@@ -7,6 +7,7 @@ import net.minecraft.server.level.ChunkMap;
 import net.minecraft.server.level.DistanceManager;
 import net.minecraft.server.level.ServerLevel;
 import net.neoforged.neoforge.common.NeoForge;
+import qouteall.imm_ptl.core.compat.sable.SableInterface;
 import qouteall.imm_ptl.core.ducks.IEChunkMap;
 import qouteall.imm_ptl.core.ducks.IETrackedEntity;
 import qouteall.imm_ptl.core.network.PacketRedirection;
@@ -59,7 +60,10 @@ public class EntitySync {
                     for (ChunkMap.TrackedEntity trackedEntity : entityTrackerMap.values()) {
                         IETrackedEntity ieTrackedEntity = (IETrackedEntity) trackedEntity;
                         
-                        long chunkPos = ieTrackedEntity.ip_getEntity().chunkPosition().toLong();
+                        var entity = ieTrackedEntity.ip_getEntity();
+                        long chunkPos = SableInterface.invoker.getEntityTrackingChunk(
+                            entity.level(), entity.position()
+                        ).toLong();
                         if (distanceManager.inEntityTickingRange(chunkPos)) {
                             ieTrackedEntity.ip_sendChanges();
                         }

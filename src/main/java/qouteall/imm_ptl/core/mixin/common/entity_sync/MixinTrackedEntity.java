@@ -10,8 +10,6 @@ import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.server.network.ServerGamePacketListenerImpl;
 import net.minecraft.server.network.ServerPlayerConnection;
 import net.minecraft.world.entity.Entity;
-import net.minecraft.world.level.ChunkPos;
-import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
 import org.spongepowered.asm.mixin.*;
 import org.spongepowered.asm.mixin.injection.At;
@@ -125,12 +123,8 @@ public abstract class MixinTrackedEntity implements IETrackedEntity {
         IEChunkMap chunkMap = (IEChunkMap)
             ((ServerLevel) entity.level()).getChunkSource().chunkMap;
 
-        Vec3 trackingPosition = SableInterface.invoker.getEntityTrackingPosition(
+        var trackingChunk = SableInterface.invoker.getEntityTrackingChunk(
             entity.level(), entity.position()
-        );
-        ChunkPos trackingChunk = new ChunkPos(
-            SectionPos.blockToSectionCoord(trackingPosition.x),
-            SectionPos.blockToSectionCoord(trackingPosition.z)
         );
         
         var watchRecMap = ImmPtlChunkTracking.getWatchRecordForChunk(

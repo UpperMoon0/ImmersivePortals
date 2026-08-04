@@ -31,6 +31,11 @@ public final class ImmPtlCollisionHooks {
                 }
             }
         }
+
+        // Factorio Reactive Sleeping Pattern: stationary entities bypass cross-portal collision checks
+        if (attemptedMove.lengthSqr() < 1e-6) {
+            return vanillaCollision.apply(attemptedMove);
+        }
         
         if (attemptedMove.lengthSqr() > 60 * 60) {
             // avoid loading too many chunks in collision calculation and lag the server

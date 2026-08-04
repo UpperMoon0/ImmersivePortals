@@ -1,7 +1,9 @@
 package qouteall.imm_ptl.core.compat.sable;
 
 import dev.ryanhcode.sable.Sable;
+import net.minecraft.core.SectionPos;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.phys.Vec3;
 
 /**
@@ -15,6 +17,14 @@ public class SableInterface {
     public static class Invoker {
         public Vec3 getEntityTrackingPosition(Level level, Vec3 storedPosition) {
             return storedPosition;
+        }
+
+        public ChunkPos getEntityTrackingChunk(Level level, Vec3 storedPosition) {
+            Vec3 trackingPosition = getEntityTrackingPosition(level, storedPosition);
+            return new ChunkPos(
+                SectionPos.blockToSectionCoord(trackingPosition.x),
+                SectionPos.blockToSectionCoord(trackingPosition.z)
+            );
         }
     }
 

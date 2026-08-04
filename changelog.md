@@ -11,6 +11,8 @@ and this project tries to adhere to [Semantic Versioning](https://semver.org/spe
 - Unified Immersive Portals and Sable entity tracking so sublevel entities use
   their logical world position and are no longer repeatedly removed and
   respawned for nearby players.
+- Send movement updates for Sable sublevel entities according to their logical
+  ticking chunk instead of their hidden storage plot.
 
 ## [6.0.7] - 2025-06-18
 
