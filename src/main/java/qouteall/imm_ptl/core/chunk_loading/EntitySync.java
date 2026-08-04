@@ -26,6 +26,10 @@ public class EntitySync {
         server.getProfiler().push("ip_entity_tracking_update");
         
         for (ServerLevel world : server.getAllLevels()) {
+            if (world.players().isEmpty() && !ImmPtlChunkTracking.isDimensionWatched(world.dimension())) {
+                continue;
+            }
+
             PacketRedirection.withForceRedirect(
                 world,
                 () -> {
@@ -49,6 +53,10 @@ public class EntitySync {
         server.getProfiler().push("ip_entity_tracking_tick");
         
         for (ServerLevel world : server.getAllLevels()) {
+            if (world.players().isEmpty() && !ImmPtlChunkTracking.isDimensionWatched(world.dimension())) {
+                continue;
+            }
+
             PacketRedirection.withForceRedirect(
                 world,
                 () -> {
@@ -70,8 +78,6 @@ public class EntitySync {
                     }
                 }
             );
-            
-            
         }
         
         server.getProfiler().pop();

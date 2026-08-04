@@ -137,6 +137,11 @@ public class ImmPtlChunkTracking {
         return chunkWatchRecords.computeIfAbsent(dimension, k -> new Long2ObjectOpenHashMap<>());
     }
 
+    public static boolean isDimensionWatched(ResourceKey<Level> dimension) {
+        var records = chunkWatchRecords.get(dimension);
+        return records != null && !records.isEmpty();
+    }
+
     public static PlayerChunkLoading getPlayerInfo(ServerPlayer player) {
         return playerInfoMap.computeIfAbsent(
                 player,
