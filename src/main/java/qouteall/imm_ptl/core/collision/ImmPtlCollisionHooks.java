@@ -21,6 +21,24 @@ public final class ImmPtlCollisionHooks {
         Function<Vec3, Vec3> vanillaCollision,
         Logger logger
     ) {
+        // When multiple wrappers chain on the same collide invocation, only the
+        // outermost runs portal logic; inner repeats pass through untouched.
+        if (CollisionChainGuard.isChainedRepeat(entity, attemptedMove)) {
+            return vanillaCollision.apply(attemptedMove);
+        }
+        
+        return CollisionChainGuard.enter(
+            entity, attemptedMove,
+            () -> handlePortalCollisionInner(entity, attemptedMove, vanillaCollision, logger)
+        );
+    }
+    
+    private static Vec3 handlePortalCollisionInner(
+        Entity entity,
+        Vec3 attemptedMove,
+        Function<Vec3, Vec3> vanillaCollision,
+        Logger logger
+    ) {
         if (!IPGlobal.enableServerCollision) {
             if (!entity.level().isClientSide()) {
                 if (entity instanceof Player) {
