@@ -79,6 +79,13 @@ base {
     archivesName = mod_id
 }
 
+tasks.named('jar', Jar).configure {
+    from(rootProject.file('LICENSE')) {
+        rename { 'LICENSE-Immersive-Portals' }
+    }
+    from(rootProject.file('NOTICE'))
+}
+
 minecraft.accessTransformers.entry 'public net.minecraft.server.MinecraftServer storageSource'
 minecraft.accessTransformers.entry 'public net.minecraft.world.level.biome.BiomeManager biomeZoomSeed'
 minecraft.accessTransformers.entry 'public-f net.minecraft.util.profiling.ActiveProfiler WARNING_TIME_NANOS'
@@ -197,6 +204,7 @@ tasks.withType(ProcessResources).configureEach {
     var replaceProperties = [
             minecraft_version   : minecraft_version, minecraft_version_range: minecraft_version_range,
             neo_version         : neo_version, neo_version_range: neo_version_range, issue_tracker_url: issue_tracker_url,
+            display_url         : display_url, source_url: source_url, mod_credits: mod_credits,
             loader_version_range: loader_version_range,
             mod_id              : mod_id, mod_name: mod_name, mod_license: mod_license, mod_version: mod_version,
             mod_authors         : mod_authors, mod_description: mod_description, pack_format_number: pack_format_number,
