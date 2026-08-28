@@ -155,12 +155,12 @@ dependencies {
     compileOnly "maven.modrinth:oculus:1.20.1-1.6.15a"*/
 
     compileOnly "net.caffeinemc:sodium-neoforge-mod:0.8.12+mc1.21.1"
-    compileOnly "dev.ryanhcode.sable:sable-neoforge-${minecraft_version}:${sable_version}"
-    runtimeOnly "dev.ryanhcode.sable:sable-neoforge-${minecraft_version}:${sable_version}"
-    compileOnly "dev.ryanhcode.sable-companion:sable-companion-common-${minecraft_version}:${sable_companion_version}"
-    runtimeOnly "dev.ryanhcode.sable-companion:sable-companion-common-${minecraft_version}:${sable_companion_version}"
-    testImplementation "dev.ryanhcode.sable:sable-neoforge-${minecraft_version}:${sable_version}"
-    testImplementation "dev.ryanhcode.sable-companion:sable-companion-common-${minecraft_version}:${sable_companion_version}"
+    compileOnly("dev.ryanhcode.sable:sable-neoforge-${minecraft_version}:${sable_version}") { transitive = false }
+    runtimeOnly("dev.ryanhcode.sable:sable-neoforge-${minecraft_version}:${sable_version}") { transitive = false }
+    compileOnly("dev.ryanhcode.sable-companion:sable-companion-common-${minecraft_version}:${sable_companion_version}") { transitive = false }
+    runtimeOnly("dev.ryanhcode.sable-companion:sable-companion-common-${minecraft_version}:${sable_companion_version}") { transitive = false }
+    testImplementation("dev.ryanhcode.sable:sable-neoforge-${minecraft_version}:${sable_version}") { transitive = false }
+    testImplementation("dev.ryanhcode.sable-companion:sable-companion-common-${minecraft_version}:${sable_companion_version}") { transitive = false }
     testImplementation platform("org.junit:junit-bom:5.11.4")
     testImplementation "org.junit.jupiter:junit-jupiter"
     testImplementation "org.ow2.asm:asm-tree:9.7.1"
