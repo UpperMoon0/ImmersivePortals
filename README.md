@@ -1,35 +1,51 @@
-# Immersive Portals Mod
+# Immersive Portals
 
-It's a Minecraft mod that provides see-through portals and seamless teleportation. It also can create "Non-Euclidean" (Uneuclidean) space effect.
+Immersive Portals adds see-through portals and seamless travel between dimensions. Portals can be nested, transformed, scaled, and used to build non-Euclidean spaces without loading screens.
 
-![immptl.png](https://i.loli.net/2021/09/30/chHMG45dsnZNqep.png)
+This repository maintains the Minecraft 1.21.1 NeoForge build derived from [qouteall's Immersive Portals](https://github.com/iPortalTeam/ImmersivePortalsModForNeo). The original project and its contributors remain the foundation of this distribution.
 
-[On CurseForge](https://www.curseforge.com/minecraft/mc-mods/immersive-portals-mod)     [On Modrinth](https://modrinth.com/mod/immersiveportals)     [Website](https://qouteall.fun/immptl/)
+## Features
 
-This mod changes a lot of underlying Minecraft mechanics. This mod allows the client to load multiple dimensions at the same time and synchronize remote world information(blocks/entities) to client. It can render portal-in-portals. The portal rendering is roughly compatible with some versions of Sodium and Iris. The portal can transform player scale and gravity direction.  [Implementation Details](https://qouteall.fun/immptl/wiki/Implementation-Details)
+- See through portals before entering them.
+- Travel between dimensions without a loading screen.
+- Render portals inside other portals.
+- Build mirrors, wrapping worlds, dimension stacks, and custom portal networks.
+- Transform player scale and gravity direction through compatible portals.
+- Use commands, datapacks, and APIs to create custom portal behavior.
+- Run alongside Sable 2.0.5 with a verified single-pass collision integration.
 
-(This is the Fabric version of Immersive Portals. [The Forge version](https://github.com/iPortalTeam/ImmersivePortalsModForNeo))
+## Minecraft and loader support
 
-## API
+- Minecraft 1.21.1
+- NeoForge 21.1.228 or newer
+- Java 21
 
-This mod also provides some API for:
+The Fabric project is maintained separately by the original Immersive Portals team. This repository produces the NeoForge jar only.
 
-* Manage see-through portals
-* Dynamically add dimensions
-* Synchronize remote chunks to client
-* Render the world into GUI
-* Other utilities
+## Sable compatibility
 
-[API description](https://qouteall.fun/immptl/wiki/API-for-Other-Mods.html).
+Sable is optional. When Sable 2.0.5 is installed, the portal collision wrapper and Sable's entity-collision redirect compose without executing the portal collision hook twice. A dedicated NeoForge GameTest launches the transformed game, moves a real entity, and verifies both systems execute exactly once as intended.
 
-## How to run this code
-https://fabricmc.net/wiki/tutorial:setup
+Without Sable, normal Immersive Portals collision behavior is unchanged.
 
-## Other
+## Building
 
-[Wiki](https://qouteall.fun/immptl/wiki/)
+Use Java 21:
 
-[Discord Server](https://discord.gg/BZxgURK)
+```powershell
+.\gradlew.bat test runGameTestServer build
+```
 
-[Support qouteall on Patreon](https://www.patreon.com/qouteall)
+The runnable jar is written to `build/libs/immersive_portals-<version>.jar`.
 
+## Releases and support
+
+- [Version changelogs](changelog/)
+- [GitHub releases](https://github.com/UpperMoon0/ImmersivePortals/releases)
+- [Issue tracker for this build](https://github.com/UpperMoon0/ImmersivePortals/issues)
+- [Upstream Immersive Portals wiki](https://qouteall.fun/immptl/)
+- [Official NeoForge CurseForge project](https://www.curseforge.com/minecraft/mc-mods/immersive-portals-for-forge)
+
+## Attribution
+
+Immersive Portals was created by qouteall and is licensed under Apache-2.0. This distribution preserves the upstream license and attribution and includes additional compatibility, performance, testing, and release-maintenance changes.

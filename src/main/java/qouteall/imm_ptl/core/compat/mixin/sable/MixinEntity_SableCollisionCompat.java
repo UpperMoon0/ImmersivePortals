@@ -23,7 +23,7 @@ public abstract class MixinEntity_SableCollisionCompat {
             value = "INVOKE",
             target = "Lnet/minecraft/world/entity/Entity;collide(Lnet/minecraft/world/phys/Vec3;)Lnet/minecraft/world/phys/Vec3;"
         ),
-        require = 0
+        require = 1
     )
     private Vec3 immersivePortals$wrapCollisionForSable(
         Entity entity, Vec3 attemptedMove, Operation<Vec3> original

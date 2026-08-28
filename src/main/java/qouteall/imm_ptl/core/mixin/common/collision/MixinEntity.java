@@ -28,6 +28,7 @@ import org.spongepowered.asm.mixin.injection.callback.LocalCapture;
 import qouteall.imm_ptl.core.IPGlobal;
 import qouteall.imm_ptl.core.IPMcHelper;
 import qouteall.imm_ptl.core.api.ImmPtlEntityExtension;
+import qouteall.imm_ptl.core.compat.SableCompat;
 import qouteall.imm_ptl.core.collision.ImmPtlCollisionHooks;
 import qouteall.imm_ptl.core.collision.PortalCollisionHandler;
 import qouteall.imm_ptl.core.ducks.IEEntity;
@@ -88,6 +89,13 @@ public abstract class MixinEntity implements IEEntity, ImmPtlEntityExtension {
         require = 0
     )
     private Vec3 redirectHandleCollisions(Entity entity, Vec3 attemptedMove, Operation<Vec3> original) {
+        // With Sable installed, MixinEntity_SableCollisionCompat (higher
+        // priority) chains on this same invocation and owns the hook; running
+        // both would process every move twice. Pass through so exactly one
+        // effective wrapper remains.
+        if (SableCompat.ACTIVE) {
+            return original.call(entity, attemptedMove);
+        }
         return ImmPtlCollisionHooks.handlePortalCollision(
             entity, attemptedMove, move -> original.call(entity, move), LOGGER
         );

@@ -60,12 +60,13 @@ repositories {
     exclusiveContent {
         forRepository {
             maven {
-                name = "Sable Companion"
+                name = "Sable"
                 url = "https://maven.ryanhcode.dev/releases"
             }
         }
         filter {
             includeGroup "dev.ryanhcode.sable-companion"
+            includeGroup "dev.ryanhcode.sable"
         }
     }
 
@@ -76,6 +77,13 @@ repositories {
 
 base {
     archivesName = mod_id
+}
+
+tasks.named('jar', Jar).configure {
+    from(rootProject.file('LICENSE')) {
+        rename { 'LICENSE-Immersive-Portals' }
+    }
+    from(rootProject.file('NOTICE'))
 }
 
 minecraft.accessTransformers.entry 'public net.minecraft.server.MinecraftServer storageSource'
@@ -154,10 +162,12 @@ dependencies {
     compileOnly "maven.modrinth:oculus:1.20.1-1.6.15a"*/
 
     compileOnly "net.caffeinemc:sodium-neoforge-mod:0.8.12+mc1.21.1"
-    compileOnly files("../Inventors/mods/sable-neoforge-1.21.1-2.0.3.jar")
-    compileOnly "dev.ryanhcode.sable-companion:sable-companion-common-${minecraft_version}:${sable_companion_version}"
-    testImplementation files("../Inventors/mods/sable-neoforge-1.21.1-2.0.3.jar")
-    testImplementation "dev.ryanhcode.sable-companion:sable-companion-common-${minecraft_version}:${sable_companion_version}"
+    compileOnly("dev.ryanhcode.sable:sable-neoforge-${minecraft_version}:${sable_version}") { transitive = false }
+    runtimeOnly("dev.ryanhcode.sable:sable-neoforge-${minecraft_version}:${sable_version}") { transitive = false }
+    compileOnly("dev.ryanhcode.sable-companion:sable-companion-common-${minecraft_version}:${sable_companion_version}") { transitive = false }
+    runtimeOnly("dev.ryanhcode.sable-companion:sable-companion-common-${minecraft_version}:${sable_companion_version}") { transitive = false }
+    testImplementation("dev.ryanhcode.sable:sable-neoforge-${minecraft_version}:${sable_version}") { transitive = false }
+    testImplementation("dev.ryanhcode.sable-companion:sable-companion-common-${minecraft_version}:${sable_companion_version}") { transitive = false }
     testImplementation platform("org.junit:junit-bom:5.11.4")
     testImplementation "org.junit.jupiter:junit-jupiter"
     testImplementation "org.ow2.asm:asm-tree:9.7.1"
@@ -177,7 +187,7 @@ dependencies {
     implementation "maven.modrinth:geckolib:DTo3uxPN"
 
     // Create
-    implementation "maven.modrinth:create:1.21.1-6.0.6"
+    compileOnly "maven.modrinth:create:1.21.1-6.0.6"
 
     // Mekanism
     implementation "maven.modrinth:mekanism:10.7.14.79"
@@ -194,6 +204,7 @@ tasks.withType(ProcessResources).configureEach {
     var replaceProperties = [
             minecraft_version   : minecraft_version, minecraft_version_range: minecraft_version_range,
             neo_version         : neo_version, neo_version_range: neo_version_range, issue_tracker_url: issue_tracker_url,
+            display_url         : display_url, source_url: source_url, mod_credits: mod_credits,
             loader_version_range: loader_version_range,
             mod_id              : mod_id, mod_name: mod_name, mod_license: mod_license, mod_version: mod_version,
             mod_authors         : mod_authors, mod_description: mod_description, pack_format_number: pack_format_number,
