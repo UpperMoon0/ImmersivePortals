@@ -154,9 +154,9 @@ dependencies {
     compileOnly "maven.modrinth:oculus:1.20.1-1.6.15a"*/
 
     compileOnly "net.caffeinemc:sodium-neoforge-mod:0.8.12+mc1.21.1"
-    compileOnly files("../Inventors/mods/sable-neoforge-1.21.1-2.0.3.jar")
+    compileOnly files("../Inventors/mods/sable-neoforge-${minecraft_version}-${sable_version}.jar")
     compileOnly "dev.ryanhcode.sable-companion:sable-companion-common-${minecraft_version}:${sable_companion_version}"
-    testImplementation files("../Inventors/mods/sable-neoforge-1.21.1-2.0.3.jar")
+    testImplementation files("../Inventors/mods/sable-neoforge-${minecraft_version}-${sable_version}.jar")
     testImplementation "dev.ryanhcode.sable-companion:sable-companion-common-${minecraft_version}:${sable_companion_version}"
     testImplementation platform("org.junit:junit-bom:5.11.4")
     testImplementation "org.junit.jupiter:junit-jupiter"

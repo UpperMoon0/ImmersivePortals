@@ -3,6 +3,7 @@ package qouteall.imm_ptl.core.collision;
 import org.junit.jupiter.api.Test;
 import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.tree.AbstractInsnNode;
+import org.objectweb.asm.tree.AnnotationNode;
 import org.objectweb.asm.tree.ClassNode;
 import org.objectweb.asm.tree.FieldInsnNode;
 import org.objectweb.asm.tree.MethodInsnNode;
@@ -10,6 +11,7 @@ import org.objectweb.asm.tree.MethodNode;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -74,6 +76,21 @@ class CollisionWrapperStructureTest {
         return false;
     }
 
+    private static int wrapOperationRequire(MethodNode method) {
+        List<AnnotationNode> annotations = method.visibleAnnotations;
+        assertTrue(annotations != null, "wrapper has no runtime-visible annotations");
+        AnnotationNode wrapOperation = annotations.stream()
+            .filter(annotation -> annotation.desc.endsWith("/WrapOperation;"))
+            .findFirst().orElse(null);
+        assertTrue(wrapOperation != null, "wrapper lacks @WrapOperation");
+        for (int i = 0; i < wrapOperation.values.size(); i += 2) {
+            if ("require".equals(wrapOperation.values.get(i))) {
+                return (Integer) wrapOperation.values.get(i + 1);
+            }
+        }
+        return -1;
+    }
+
     @Test
     void baseWrapperIsConditionalAndSingleWrapped() {
         MethodNode wrapper = method(load("qouteall/imm_ptl/core/mixin/common/collision/MixinEntity"),
@@ -91,6 +108,8 @@ class CollisionWrapperStructureTest {
             "immersivePortals$wrapCollisionForSable");
         assertEquals(1, countHookInvocations(wrapper),
             "compat wrapper must invoke the hook exactly once");
+        assertEquals(1, wrapOperationRequire(wrapper),
+            "compat wrapper must fail fast if Sable's collision target changes");
         assertFalse(referencesSableFlag(wrapper),
             "compat wrapper application is already gated by IPCompatMixinPlugin");
     }
