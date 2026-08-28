@@ -1,0 +1,34 @@
+name: Sable collision compatibility
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - codex/dedupe-collision-wrappers
+
+concurrency:
+  group: sable-collision-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: gradle
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Unit and Sable GameTests
+        run: ./gradlew test runGameTestServer --no-daemon
