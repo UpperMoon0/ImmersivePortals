@@ -6,6 +6,10 @@ on:
       - main
   workflow_dispatch:
 
+concurrency:
+  group: release-main
+  cancel-in-progress: false
+
 permissions:
   contents: write
 
@@ -29,8 +33,8 @@ jobs:
       - name: Make Gradle executable
         run: chmod +x ./gradlew
 
-      - name: Build Immersive Portals
-        run: ./gradlew clean test build
+      - name: Build and validate Immersive Portals
+        run: ./gradlew clean test runGameTestServer build --no-daemon
 
       - name: Read mod version and locate artifacts
         id: release_file
@@ -79,7 +83,7 @@ jobs:
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: immersive-portals-neoforge-1.21.1-${{ steps.release_file.outputs.mod_version }}
+          name: immersive-portals-ce-neoforge-1.21.1-${{ steps.release_file.outputs.mod_version }}
           path: ${{ steps.release_file.outputs.jar_path }}
           if-no-files-found: error
 
@@ -87,7 +91,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.release_file.outputs.mod_version }}
-          name: Immersive Portals v${{ steps.release_file.outputs.mod_version }}
+          name: Immersive Portals - CE v${{ steps.release_file.outputs.mod_version }}
           body_path: ${{ steps.release_file.outputs.changelog_path }}
           fail_on_unmatched_files: true
           files: ${{ steps.release_file.outputs.jar_path }}
@@ -100,7 +104,7 @@ jobs:
         shell: bash
         env:
           CURSEFORGE_API_TOKEN: ${{ secrets.CURSEFORGE_API_TOKEN }}
-          CURSEFORGE_PROJECT_ID: '1672810'
+          CURSEFORGE_PROJECT_ID: ${{ vars.CURSEFORGE_PROJECT_ID || '1672810' }}
           MOD_VERSION: ${{ steps.release_file.outputs.mod_version }}
           CHANGELOG_PATH: ${{ steps.release_file.outputs.changelog_path }}
           JAR_PATH: ${{ steps.release_file.outputs.jar_path }}
@@ -135,7 +139,7 @@ jobs:
           relations='{"projects":[{"slug":"cloth-config","projectID":348521,"type":"requiredDependency"},{"slug":"sable","projectID":1312371,"type":"optionalDependency"}]}'
           metadata="$(jq -cn \
             --arg changelog "$changelog" \
-            --arg displayName "Immersive Portals ${MOD_VERSION} - ${LOADER_NAME} ${MINECRAFT_VERSION}" \
+            --arg displayName "Immersive Portals - CE ${MOD_VERSION} - ${LOADER_NAME} ${MINECRAFT_VERSION}" \
             --argjson gameVersionNames "$game_version_names" \
             --argjson relations "$relations" \
             '{
