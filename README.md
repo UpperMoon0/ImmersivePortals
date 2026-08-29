@@ -44,9 +44,10 @@ The runnable jar is written to `build/libs/immersive_portals-<version>.jar`.
 
 - [Version changelogs](changelog/)
 - [GitHub releases](https://github.com/UpperMoon0/ImmersivePortals/releases)
+- [Immersive Portals - CE on CurseForge](https://www.curseforge.com/minecraft/mc-mods/immersive-portals-ce)
 - [Issue tracker for this build](https://github.com/UpperMoon0/ImmersivePortals/issues)
 - [Upstream Immersive Portals wiki](https://qouteall.fun/immptl/)
-- [Official NeoForge CurseForge project](https://www.curseforge.com/minecraft/mc-mods/immersive-portals-for-forge)
+- [Official upstream NeoForge CurseForge project](https://www.curseforge.com/minecraft/mc-mods/immersive-portals-for-forge)
 
 ## Attribution
 
