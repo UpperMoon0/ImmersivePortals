@@ -1,10 +1,10 @@
-Immersive Portals
+Immersive Portals - CE
 Copyright 2020 qouteall and contributors
 
-This distribution is based on the NeoForge port maintained at
-https://github.com/iPortalTeam/ImmersivePortalsModForNeo and includes
-additional compatibility, performance, testing, and release-maintenance
-changes by NsTut and contributors.
+This distribution is an independently maintained Community Edition based on the
+NeoForge port at https://github.com/iPortalTeam/ImmersivePortalsModForNeo and
+includes compatibility, performance, testing, and maintenance improvements by
+NsTut and contributors. Not affiliated with or endorsed by the original authors.
 
 Licensed under the Apache License, Version 2.0. See LICENSE in the source
 repository and LICENSE-Immersive-Portals in the distributed jar.
