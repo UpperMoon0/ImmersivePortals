@@ -2,12 +2,12 @@ name: Release
 
 on:
   push:
-    branches:
-      - main
+    tags:
+      - 'v*'
   workflow_dispatch:
 
 concurrency:
-  group: release-main
+  group: release-workflow
   cancel-in-progress: false
 
 permissions:
@@ -15,7 +15,9 @@ permissions:
 
 jobs:
   release:
+    if: github.ref_type == 'tag' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
       - name: Checkout repository
@@ -52,27 +54,20 @@ jobs:
             exit 1
           fi
 
+          if [[ "${GITHUB_REF_TYPE}" == "tag" && "${GITHUB_REF_NAME}" != "v${mod_version}" ]]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match mod_version v${mod_version}" >&2
+            exit 1
+          fi
+
           jar_path="build/libs/immersive_portals-${mod_version}.jar"
           if [[ ! -f "$jar_path" ]]; then
             echo "Release jar not found at $jar_path" >&2
             exit 1
           fi
 
-          changelog_path=""
-          if [[ -f "changelog/${mod_version}.md" ]]; then
-            changelog_path="changelog/${mod_version}.md"
-          elif [[ -f "changelog/v${mod_version}.md" ]]; then
-            changelog_path="changelog/v${mod_version}.md"
-          elif [[ -f "changelogs/v${mod_version}.md" ]]; then
-            changelog_path="changelogs/v${mod_version}.md"
-          elif [[ -f "changelogs/${mod_version}.md" ]]; then
-            changelog_path="changelogs/${mod_version}.md"
-          elif [[ -f "changelog.md" ]]; then
-            changelog_path="changelog.md"
-          fi
-
-          if [[ -z "$changelog_path" ]]; then
-            echo "Release changelog not found for version ${mod_version}" >&2
+          changelog_path="changelog/${mod_version}.md"
+          if [[ ! -f "$changelog_path" ]]; then
+            echo "Missing changelog for ${mod_version} at ${changelog_path}" >&2
             exit 1
           fi
 
@@ -88,7 +83,7 @@ jobs:
           if-no-files-found: error
 
       - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: v${{ steps.release_file.outputs.mod_version }}
           name: Immersive Portals - CE v${{ steps.release_file.outputs.mod_version }}
@@ -165,8 +160,6 @@ jobs:
           if [[ "$http_status" =~ ^2 ]]; then
             file_id="$(jq -er '.id' <<< "$response")"
             echo "Published ${JAR_PATH} to CurseForge as file ID ${file_id}."
-          elif grep -Eqi 'already|duplicate' <<< "$response"; then
-            echo "CurseForge already has ${JAR_PATH}; treating this retry as successful."
           else
             echo "CurseForge upload failed with HTTP ${http_status}: ${response}" >&2
             exit 1
