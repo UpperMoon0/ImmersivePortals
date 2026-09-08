@@ -4,8 +4,10 @@ import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import org.junit.jupiter.api.Test;
 import org.objectweb.asm.ClassReader;
+import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.tree.AbstractInsnNode;
 import org.objectweb.asm.tree.ClassNode;
+import org.objectweb.asm.tree.JumpInsnNode;
 import org.objectweb.asm.tree.MethodInsnNode;
 import org.objectweb.asm.tree.MethodNode;
 import qouteall.imm_ptl.core.collision.CollisionHelper;
@@ -82,6 +84,7 @@ class PortalRendererClippingRegressionTest {
         int behindPlaneCall = -1;
         int recursionAcceptanceCall = -1;
         int behindPlaneCallCount = 0;
+        MethodInsnNode behindPlaneInsn = null;
         int index = 0;
 
         for (AbstractInsnNode insn : method.instructions) {
@@ -94,6 +97,7 @@ class PortalRendererClippingRegressionTest {
                     && "isBoxFullyBehindPlane".equals(call.name)) {
                     behindPlaneCall = index;
                     behindPlaneCallCount++;
+                    behindPlaneInsn = call;
                 }
                 if (PORTAL.equals(call.owner)
                     && "cannotRenderInMe".equals(call.name)) {
@@ -111,6 +115,34 @@ class PortalRendererClippingRegressionTest {
             "the aperture must be tested against the active clipping plane");
         assertTrue(recursionAcceptanceCall > behindPlaneCall,
             "hidden apertures must be rejected before normal recursive portal acceptance");
+        assertPredicateResultControlsEarlySkip(behindPlaneInsn);
+    }
+
+    private static void assertPredicateResultControlsEarlySkip(MethodInsnNode behindPlaneInsn) {
+        assertTrue(behindPlaneInsn != null, "missing behind-plane predicate invocation");
+
+        AbstractInsnNode next = nextExecutableInstruction(behindPlaneInsn);
+        assertTrue(next instanceof JumpInsnNode,
+            "behind-plane predicate result must immediately control a conditional branch");
+
+        JumpInsnNode branch = (JumpInsnNode) next;
+        assertEquals(Opcodes.IFEQ, branch.getOpcode(),
+            "false must continue normal portal acceptance while true takes the early-skip path");
+
+        AbstractInsnNode truePath = nextExecutableInstruction(branch);
+        assertEquals(Opcodes.ICONST_1, truePath.getOpcode(),
+            "a fully hidden aperture must make shouldSkipRenderingPortal return true");
+        AbstractInsnNode returnInsn = nextExecutableInstruction(truePath);
+        assertEquals(Opcodes.IRETURN, returnInsn.getOpcode(),
+            "the clipping guard must return immediately instead of discarding its result");
+    }
+
+    private static AbstractInsnNode nextExecutableInstruction(AbstractInsnNode instruction) {
+        AbstractInsnNode current = instruction.getNext();
+        while (current != null && current.getOpcode() < 0) {
+            current = current.getNext();
+        }
+        return current;
     }
 
     private static ClassNode load(String internalName) {
