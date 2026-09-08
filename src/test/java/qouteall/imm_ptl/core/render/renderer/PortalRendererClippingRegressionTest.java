@@ -130,9 +130,11 @@ class PortalRendererClippingRegressionTest {
             "false must continue normal portal acceptance while true takes the early-skip path");
 
         AbstractInsnNode truePath = nextExecutableInstruction(branch);
+        assertTrue(truePath != null, "missing true path after clipping predicate branch");
         assertEquals(Opcodes.ICONST_1, truePath.getOpcode(),
             "a fully hidden aperture must make shouldSkipRenderingPortal return true");
         AbstractInsnNode returnInsn = nextExecutableInstruction(truePath);
+        assertTrue(returnInsn != null, "missing return after clipping predicate true path");
         assertEquals(Opcodes.IRETURN, returnInsn.getOpcode(),
             "the clipping guard must return immediately instead of discarding its result");
     }
