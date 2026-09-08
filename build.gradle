@@ -172,7 +172,7 @@ dependencies {
     testImplementation platform("org.junit:junit-bom:5.11.4")
     testImplementation "org.junit.jupiter:junit-jupiter"
     testImplementation "org.ow2.asm:asm-tree:9.7.1"
-    implementation "maven.modrinth:iris:1.8.12+1.21.1-neoforge"
+    compileOnly "maven.modrinth:iris:1.8.12+1.21.1-neoforge"
 
     implementation "maven.modrinth:cloth-config:15.0.140+neoforge"
     implementation "maven.modrinth:pehkui:3.8.3+1.21-neoforge"
