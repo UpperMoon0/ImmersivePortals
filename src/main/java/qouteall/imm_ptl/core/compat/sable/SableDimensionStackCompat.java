@@ -133,13 +133,21 @@ public final class SableDimensionStackCompat {
             return;
         }
 
+        Map<UUID, Entity> movedById = new HashMap<>();
         try {
-            transferPlotEntities(entities, destinationWorld);
+            transferPlotEntities(entities, destinationWorld, movedById);
         }
         catch (RuntimeException exception) {
-            // Source data still exists at this point. Remove the failed destination copy and
-            // leave the original sublevel intact rather than committing a partial migration.
-            destinationContainer.removeSubLevel(destinationSubLevel, SubLevelRemovalReason.REMOVED);
+            boolean rolledBack = rollbackPlotEntities(entities, movedById, sourceWorld);
+            if (rolledBack) {
+                destinationContainer.removeSubLevel(destinationSubLevel, SubLevelRemovalReason.REMOVED);
+            }
+            else {
+                LOGGER.error(
+                    "Sable entity rollback for sublevel {} was incomplete; keeping both sublevel copies to avoid deleting retained entities",
+                    sourceSubLevel.getUniqueId()
+                );
+            }
             LOGGER.error(
                 "Failed to migrate entities with Sable sublevel {} from {} to {}; source copy kept",
                 sourceSubLevel.getUniqueId(), sourceWorld.dimension().location(),
@@ -228,16 +236,12 @@ public final class SableDimensionStackCompat {
     }
 
     private static void transferPlotEntities(
-        List<EntityTransfer> transfers, ServerLevel destinationWorld
+        List<EntityTransfer> transfers,
+        ServerLevel destinationWorld,
+        Map<UUID, Entity> movedById
     ) {
-        // Detach the graph first. Player dimension changes have special vehicle handling in IP;
-        // leaving the graph attached here can teleport the same seat/vehicle twice.
-        for (EntityTransfer transfer : transfers) {
-            transfer.entity().stopRiding();
-            transfer.entity().ejectPassengers();
-        }
+        detachEntityGraph(transfers);
 
-        Map<UUID, Entity> movedById = new HashMap<>();
         for (EntityTransfer transfer : transfers) {
             Entity moved = ServerTeleportationManager.teleportEntityGeneral(
                 transfer.entity(), transfer.storedPosition(), destinationWorld
@@ -249,13 +253,65 @@ public final class SableDimensionStackCompat {
             movedById.put(transfer.entity().getUUID(), moved);
         }
 
+        restoreRidingRelations(transfers, movedById, true);
+    }
+
+    private static boolean rollbackPlotEntities(
+        List<EntityTransfer> transfers,
+        Map<UUID, Entity> movedById,
+        ServerLevel sourceWorld
+    ) {
+        Map<UUID, Entity> sourceById = new HashMap<>();
+        try {
+            for (EntityTransfer transfer : transfers) {
+                Entity entity = movedById.get(transfer.entity().getUUID());
+                if (entity == null) {
+                    entity = transfer.entity();
+                }
+                if (entity.level() != sourceWorld) {
+                    entity = ServerTeleportationManager.teleportEntityGeneral(
+                        entity, transfer.storedPosition(), sourceWorld
+                    );
+                }
+                if (entity == null || entity.level() != sourceWorld) {
+                    return false;
+                }
+                entity.setDeltaMovement(transfer.storedVelocity());
+                sourceById.put(transfer.entity().getUUID(), entity);
+            }
+            restoreRidingRelations(transfers, sourceById, false);
+            return true;
+        }
+        catch (RuntimeException rollbackFailure) {
+            LOGGER.error("Failed rolling back partial Sable cross-dimension entity migration", rollbackFailure);
+            return false;
+        }
+    }
+
+    private static void detachEntityGraph(List<EntityTransfer> transfers) {
+        // Player dimension changes have special vehicle handling in IP. Detach the graph first
+        // so each plot-resident entity is transferred exactly once, then restore the graph.
+        for (EntityTransfer transfer : transfers) {
+            transfer.entity().stopRiding();
+            transfer.entity().ejectPassengers();
+        }
+    }
+
+    private static void restoreRidingRelations(
+        List<EntityTransfer> transfers,
+        Map<UUID, Entity> entitiesById,
+        boolean failOnMissingRelation
+    ) {
         for (EntityTransfer transfer : transfers) {
             if (transfer.vehicleId() == null) {
                 continue;
             }
-            Entity passenger = movedById.get(transfer.entity().getUUID());
-            Entity vehicle = movedById.get(transfer.vehicleId());
-            if (passenger == null || vehicle == null || !passenger.startRiding(vehicle, true)) {
+            Entity passenger = entitiesById.get(transfer.entity().getUUID());
+            Entity vehicle = entitiesById.get(transfer.vehicleId());
+            boolean restored = passenger != null
+                && vehicle != null
+                && passenger.startRiding(vehicle, true);
+            if (!restored && failOnMissingRelation) {
                 throw new IllegalStateException(
                     "Failed to restore Sable plot riding relation " + transfer.entity().getUUID()
                         + " -> " + transfer.vehicleId()
