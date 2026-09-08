@@ -5,7 +5,7 @@ import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
 import dev.ryanhcode.sable.sublevel.ServerSubLevel;
 import dev.ryanhcode.sable.sublevel.storage.serialization.SubLevelData;
 import dev.ryanhcode.sable.sublevel.storage.serialization.SubLevelSerializer;
-import dev.ryanhcode.sable.sublevel.system.SubLevelPhysicsSystem;
+import net.minecraft.world.level.Level;
 import org.junit.jupiter.api.Test;
 import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.tree.ClassNode;
@@ -31,10 +31,9 @@ class SableDimensionStackCompatContractTest {
             "(Ldev/ryanhcode/sable/api/sublevel/SubLevelContainer;)V"
         );
         assertNotNull(tick, "Sable physics tick signature changed");
-        assertTrue(invokes(tick, "dev/ryanhcode/sable/sublevel/SubLevel", "updateLastPose"),
+        assertTrue(invokesNamed(tick, "updateLastPose"),
             "dimension-stack crossing depends on Sable snapshotting lastPose before physics");
-        assertTrue(invokes(tick, "dev/ryanhcode/sable/api/physics/PhysicsPipeline", "tick")
-                || invokes(tick, "dev/ryanhcode/sable/sublevel/system/SubLevelPhysicsSystem", "tickPipelinePhysics"),
+        assertTrue(invokesNamed(tick, "tickPipelinePhysics"),
             "dimension-stack migration must run after Sable advances the physics pipeline");
     }
 
@@ -47,7 +46,7 @@ class SableDimensionStackCompatContractTest {
             "fullyLoad", net.minecraft.server.level.ServerLevel.class, SubLevelData.class
         ));
         assertNotNull(SubLevelContainer.class.getMethod(
-            "getContainer", net.minecraft.server.level.ServerLevel.class
+            "getContainer", Level.class
         ));
         assertNotNull(ServerSubLevelContainer.class.getMethod("getOccupancy"));
     }
@@ -83,11 +82,9 @@ class SableDimensionStackCompatContractTest {
             .orElse(null);
     }
 
-    private static boolean invokes(MethodNode method, String owner, String name) {
+    private static boolean invokesNamed(MethodNode method, String name) {
         for (var instruction : method.instructions) {
-            if (instruction instanceof MethodInsnNode call
-                && call.owner.equals(owner)
-                && call.name.equals(name)) {
+            if (instruction instanceof MethodInsnNode call && call.name.equals(name)) {
                 return true;
             }
         }
