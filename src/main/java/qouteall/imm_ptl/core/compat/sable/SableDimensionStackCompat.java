@@ -2,10 +2,12 @@ package qouteall.imm_ptl.core.compat.sable;
 
 import com.mojang.logging.LogUtils;
 import dev.ryanhcode.sable.Sable;
+import dev.ryanhcode.sable.api.entity.EntitySubLevelUtil;
 import dev.ryanhcode.sable.api.sublevel.ServerSubLevelContainer;
 import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
 import dev.ryanhcode.sable.companion.math.JOMLConversion;
 import dev.ryanhcode.sable.companion.math.Pose3d;
+import dev.ryanhcode.sable.mixinhelpers.entity.entity_riding_sub_level_vehicle.EntityRidingSubLevelVehicleHelper;
 import dev.ryanhcode.sable.sublevel.ServerSubLevel;
 import dev.ryanhcode.sable.sublevel.storage.SubLevelRemovalReason;
 import dev.ryanhcode.sable.sublevel.storage.serialization.SubLevelData;
@@ -39,8 +41,8 @@ import java.util.UUID;
  * portal therefore cannot change the level that owns its chunks, physics body, or
  * retained entities. This bridge detects that crossing after Sable has finished its
  * physics tick, recreates the sublevel in the destination level from Sable's public
- * serializer, moves plot-resident entities to the matching destination plot, and only
- * then removes the source copy.</p>
+ * serializer, moves plot-resident entities plus their attached riders to the destination,
+ * and only then removes the source copy.</p>
  *
  * <p>The destination uses the same plot slot as the source. Sable's serialized block
  * entity/tick payloads contain plot-space positions, so silently relocating the payload
@@ -120,7 +122,7 @@ public final class SableDimensionStackCompat {
             return;
         }
 
-        List<EntityTransfer> entities = capturePlotEntities(sourceWorld, sourceSubLevel);
+        List<EntityTransfer> entities = capturePlotEntities(sourceWorld, sourceSubLevel, portal);
         SubLevelData sourceData = SubLevelSerializer.toData(sourceSubLevel, List.of());
         SubLevelData destinationData = transformSerializedState(sourceData, portal);
 
@@ -212,25 +214,61 @@ public final class SableDimensionStackCompat {
     }
 
     private static List<EntityTransfer> capturePlotEntities(
-        ServerLevel sourceWorld, ServerSubLevel sourceSubLevel
+        ServerLevel sourceWorld,
+        ServerSubLevel sourceSubLevel,
+        VerticalConnectingPortal portal
     ) {
-        List<Entity> contained = new ArrayList<>();
-        Set<UUID> containedIds = new HashSet<>();
+        List<Entity> migrationEntities = new ArrayList<>();
+        Set<UUID> migrationIds = new HashSet<>();
+        Set<UUID> plotResidentIds = new HashSet<>();
 
         for (Entity entity : sourceWorld.getAllEntities()) {
             if (Sable.HELPER.getContaining(entity) == sourceSubLevel) {
-                contained.add(entity);
-                containedIds.add(entity.getUUID());
+                migrationEntities.add(entity);
+                migrationIds.add(entity.getUUID());
+                plotResidentIds.add(entity.getUUID());
             }
         }
 
-        List<EntityTransfer> transfers = new ArrayList<>(contained.size());
-        for (Entity entity : contained) {
+        // Sable deliberately kicks ordinary riders of plot-resident vehicles into the
+        // sublevel's logical world-space position. They are therefore not returned by
+        // getContaining(), even though moving the vehicle without them would split the
+        // riding graph across dimensions. Follow every passenger edge from the entities
+        // retained in the plot so seats and their riders migrate as one transaction.
+        for (int i = 0; i < migrationEntities.size(); i++) {
+            Entity vehicle = migrationEntities.get(i);
+            for (Entity passenger : vehicle.getPassengers()) {
+                if (passenger.level() == sourceWorld && migrationIds.add(passenger.getUUID())) {
+                    migrationEntities.add(passenger);
+                }
+            }
+        }
+
+        List<EntityTransfer> transfers = new ArrayList<>(migrationEntities.size());
+        for (Entity entity : migrationEntities) {
             Entity vehicle = entity.getVehicle();
-            UUID vehicleId = vehicle != null && containedIds.contains(vehicle.getUUID())
+            UUID vehicleId = vehicle != null && migrationIds.contains(vehicle.getUUID())
                 ? vehicle.getUUID()
                 : null;
-            transfers.add(new EntityTransfer(entity, entity.position(), entity.getDeltaMovement(), vehicleId));
+
+            Vec3 storedPosition = entity.position();
+            Vec3 storedVelocity = entity.getDeltaMovement();
+            Vec3 destinationPosition = storedPosition;
+            Vec3 destinationVelocity = storedVelocity;
+
+            boolean kickedPassenger = vehicleId != null && EntitySubLevelUtil.shouldKick(entity);
+            if (kickedPassenger) {
+                Vec3 logicalPosition = plotResidentIds.contains(entity.getUUID())
+                    ? EntityRidingSubLevelVehicleHelper.kickRidingEntity(entity, sourceSubLevel)
+                    : storedPosition;
+                destinationPosition = portal.transformPoint(logicalPosition);
+                destinationVelocity = portal.transformLocalVec(storedVelocity);
+            }
+
+            transfers.add(new EntityTransfer(
+                entity, storedPosition, storedVelocity,
+                destinationPosition, destinationVelocity, vehicleId
+            ));
         }
         return transfers;
     }
@@ -244,12 +282,12 @@ public final class SableDimensionStackCompat {
 
         for (EntityTransfer transfer : transfers) {
             Entity moved = ServerTeleportationManager.teleportEntityGeneral(
-                transfer.entity(), transfer.storedPosition(), destinationWorld
+                transfer.entity(), transfer.destinationPosition(), destinationWorld
             );
             if (moved == null || moved.level() != destinationWorld) {
                 throw new IllegalStateException("Entity failed cross-dimension transfer: " + transfer.entity());
             }
-            moved.setDeltaMovement(transfer.storedVelocity());
+            moved.setDeltaMovement(transfer.destinationVelocity());
             movedById.put(transfer.entity().getUUID(), moved);
         }
 
@@ -268,11 +306,11 @@ public final class SableDimensionStackCompat {
                 if (entity == null) {
                     entity = transfer.entity();
                 }
-                if (entity.level() != sourceWorld) {
-                    entity = ServerTeleportationManager.teleportEntityGeneral(
-                        entity, transfer.storedPosition(), sourceWorld
-                    );
-                }
+                // Detaching the riding graph can itself move passengers. Reposition every
+                // entity during rollback, including entities whose transfer had not begun.
+                entity = ServerTeleportationManager.teleportEntityGeneral(
+                    entity, transfer.storedPosition(), sourceWorld
+                );
                 if (entity == null || entity.level() != sourceWorld) {
                     return false;
                 }
@@ -290,7 +328,7 @@ public final class SableDimensionStackCompat {
 
     private static void detachEntityGraph(List<EntityTransfer> transfers) {
         // Player dimension changes have special vehicle handling in IP. Detach the graph first
-        // so each plot-resident entity is transferred exactly once, then restore the graph.
+        // so each migrated entity is transferred exactly once, then restore the graph.
         for (EntityTransfer transfer : transfers) {
             transfer.entity().stopRiding();
             transfer.entity().ejectPassengers();
@@ -324,6 +362,8 @@ public final class SableDimensionStackCompat {
         Entity entity,
         Vec3 storedPosition,
         Vec3 storedVelocity,
+        Vec3 destinationPosition,
+        Vec3 destinationVelocity,
         UUID vehicleId
     ) {}
 }
