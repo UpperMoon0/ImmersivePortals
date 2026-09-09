@@ -52,6 +52,33 @@ class SableDimensionStackCompatContractTest {
     }
 
     @Test
+    void ridingPassengersRemainPartOfDimensionStackMigration() throws Exception {
+        ClassNode sableRidingMixin = readClass(
+            "dev/ryanhcode/sable/mixin/entity/entity_rotations_and_riding/EntityMixin.class"
+        );
+        MethodNode ridingTick = sableRidingMixin.methods.stream()
+            .filter(method -> method.name.equals("sable$onRidingTick"))
+            .findFirst()
+            .orElse(null);
+        assertNotNull(ridingTick, "Sable riding mixin changed");
+        assertTrue(invokesNamed(ridingTick, "kickRidingEntity"),
+            "Sable riders may live in logical world space instead of the hidden plot");
+
+        ClassNode compat = readClass(
+            "qouteall/imm_ptl/core/compat/sable/SableDimensionStackCompat.class"
+        );
+        MethodNode capture = compat.methods.stream()
+            .filter(method -> method.name.equals("capturePlotEntities"))
+            .findFirst()
+            .orElse(null);
+        assertNotNull(capture, "dimension-stack entity capture is missing");
+        assertTrue(invokesNamed(capture, "getPassengers"),
+            "dimension-stack migration must follow the full riding graph");
+        assertTrue(invokesNamed(capture, "kickRidingEntity"),
+            "plot-space riders must be converted to logical world space before portal transfer");
+    }
+
+    @Test
     void dimensionStackMixinIsPackagedAndEnabled() throws Exception {
         assertNotNull(getClass().getClassLoader().getResource(
             "qouteall/imm_ptl/core/compat/mixin/sable/MixinSubLevelPhysicsSystem_SableDimensionStackCompat.class"
