@@ -36,12 +36,14 @@ import java.util.UUID;
 @EventBusSubscriber(modid = "immersive_portals")
 public final class SableDimensionStackDedicatedServerTest {
     private static final int LOGIN_SETTLE_TICKS = 40;
+    private static final int SOURCE_HOLD_TICKS = 60;
     private static final int DESTINATION_HOLD_TICKS = 60;
     private static final int TIMEOUT_TICKS = 1200;
     private static final double CROSSING_SPEED = 80.0;
 
     private enum Phase {
         WAIT_FOR_LOGIN_SETTLE,
+        HOLD_IN_SOURCE,
         WAIT_FOR_FIRST_CROSSING,
         HOLD_IN_DESTINATION,
         WAIT_FOR_RETURN,
@@ -90,9 +92,10 @@ public final class SableDimensionStackDedicatedServerTest {
                 case WAIT_FOR_LOGIN_SETTLE -> {
                     if (phaseTicks < LOGIN_SETTLE_TICKS) return;
                     setupRealCrossingScenario();
-                    phase = Phase.WAIT_FOR_FIRST_CROSSING;
+                    phase = Phase.HOLD_IN_SOURCE;
                     phaseTicks = 0;
                 }
+                case HOLD_IN_SOURCE -> holdAndStartFirstCrossing();
                 case WAIT_FOR_FIRST_CROSSING -> verifyFirstCrossingOrWait();
                 case HOLD_IN_DESTINATION -> holdAndStartReturn();
                 case WAIT_FOR_RETURN -> verifyReturnOrWait();
@@ -140,9 +143,25 @@ public final class SableDimensionStackDedicatedServerTest {
         vehicleId = vehicle.getUUID();
 
         require(player.startRiding(vehicle, true), "server player could not mount retained Sable minecart");
+        setLinearVelocity(requireHandle(subLevel), new Vector3d());
+    }
 
-        RigidBodyHandle handle = requireHandle(subLevel);
+    private static void holdAndStartFirstCrossing() {
+        ServerSubLevel source = findSubLevel(requireContainer(overworld), subLevelId);
+        require(source != null, "source Sable sublevel disappeared before first crossing");
+        require(player.serverLevel() == overworld, "rider left source before first crossing began");
+        require(player.getVehicle() != null && player.getVehicle().getUUID().equals(vehicleId),
+            "riding graph broke while held in source");
+
+        RigidBodyHandle handle = requireHandle(source);
+        if (phaseTicks < SOURCE_HOLD_TICKS) {
+            setLinearVelocity(handle, new Vector3d());
+            return;
+        }
+
         setLinearVelocity(handle, new Vector3d(0.0, -CROSSING_SPEED, 0.0));
+        phase = Phase.WAIT_FOR_FIRST_CROSSING;
+        phaseTicks = 0;
     }
 
     private static void verifyFirstCrossingOrWait() {
