@@ -13,29 +13,87 @@ permissions:
   contents: write
 
 jobs:
-  release:
+  core-verification:
+    name: Core verification
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@v6
+      - run: chmod +x ./gradlew
+      - name: Build, JUnit, and GameTests
+        run: python3 tools/verify.py core
+      - name: Upload core diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: core-verification
+          if-no-files-found: warn
+          path: |
+            build/verification-core.json
+            build/reports/tests/**
+            build/test-results/**
+            runs/gameTestServer/logs/**
+      - name: Preserve verified release jar
+        uses: actions/upload-artifact@v4
+        with:
+          name: verified-release-jar
+          path: build/libs/immersive_portals-*.jar
+          if-no-files-found: error
 
+  graphical-e2e:
+    name: Sable dedicated graphical E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@v6
+      - name: Ensure headless graphics runtime
+        run: |
+          if ! command -v xvfb-run >/dev/null 2>&1 || ! ldconfig -p | grep -F 'libGL.so.1' >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y xvfb libgl1-mesa-dri
+          fi
+      - run: chmod +x ./gradlew
+      - name: Dedicated server and automated client
+        run: python3 tools/verify.py e2e
+      - name: Upload E2E diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-sable-dimension-stack-e2e
+          if-no-files-found: warn
+          path: |
+            build/verification-e2e.json
+            build/sable-dimension-stack-e2e/**
+            run-sable-e2e-server/crash-reports/**
+            run-sable-e2e-client/crash-reports/**
+            run-sable-e2e-server/logs/**
+            run-sable-e2e-client/logs/**
+
+  release:
+    name: Publish verified release
+    needs:
+      - core-verification
+      - graphical-e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
-
-      - name: Setup Java 21
-        uses: actions/setup-java@v5
+      - name: Restore verified release jar
+        uses: actions/download-artifact@v4
         with:
-          distribution: 'temurin'
-          java-version: '21'
-
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v6
-
-      - name: Make Gradle executable
-        run: chmod +x ./gradlew
-
-      - name: Build and validate Immersive Portals
-        run: ./gradlew clean test runGameTestServer build --no-daemon
-
+          name: verified-release-jar
+          path: build/libs
       - name: Read mod version and locate artifacts
         id: release_file
         shell: bash

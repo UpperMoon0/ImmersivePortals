@@ -18,6 +18,7 @@ import qouteall.imm_ptl.core.CHelper;
 import qouteall.imm_ptl.core.ClientWorldLoader;
 import qouteall.imm_ptl.core.IPCGlobal;
 import qouteall.imm_ptl.core.IPGlobal;
+import qouteall.imm_ptl.core.collision.CollisionHelper;
 import qouteall.imm_ptl.core.compat.IPModInfoChecking;
 import qouteall.imm_ptl.core.compat.iris_compatibility.ExperimentalIrisPortalRenderer;
 import qouteall.imm_ptl.core.compat.iris_compatibility.IrisCompatibilityPortalRenderer;
@@ -33,6 +34,7 @@ import qouteall.imm_ptl.core.render.context_management.PortalRendering;
 import qouteall.imm_ptl.core.render.context_management.RenderStates;
 import qouteall.imm_ptl.core.render.context_management.WorldRenderInfo;
 import qouteall.q_misc_util.Helper;
+import qouteall.q_misc_util.my_util.Plane;
 
 import java.util.Comparator;
 import java.util.List;
@@ -147,6 +149,18 @@ public abstract class PortalRenderer {
         }
         
         if (PortalRendering.isRendering()) {
+            // Portal discovery is not clipped by the outer portal's active clipping plane.
+            // Without this guard, a portal that is entirely behind that plane can still
+            // reach the stencil occlusion query through tiny boundary samples. That can
+            // leak recursive portal content outside the visible aperture and corrupt the
+            // surrounding render, notably with portal-helper clusters and mirrors.
+            Plane activeClippingPlane = PortalRendering.getActiveClippingPlane();
+            if (activeClippingPlane != null && CollisionHelper.isBoxFullyBehindPlane(
+                activeClippingPlane.pos(), activeClippingPlane.normal(), portal.getThinBoundingBox()
+            )) {
+                return true;
+            }
+            
             Portal outerPortal = PortalRendering.getRenderingPortal();
             
             if (outerPortal.cannotRenderInMe(portal)) {
