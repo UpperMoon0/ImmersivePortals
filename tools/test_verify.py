@@ -50,6 +50,20 @@ class VerificationHarnessTest(unittest.TestCase):
         with self.assertRaises(TimeoutError):
             verify.wait_for_client(Mock(), Mock(), timeout=0)
 
+    def test_windows_session_selection_is_dynamic_and_prefers_current_then_console(self):
+        sessions = [(0, 4, ""), (3, 0, "RdpUser"), (7, 0, "ConsoleUser")]
+        self.assertEqual(verify.choose_windows_interactive_session(3, 7, sessions), 3)
+        self.assertEqual(verify.choose_windows_interactive_session(0, 7, sessions), 7)
+        self.assertEqual(verify.choose_windows_interactive_session(0, 99, sessions), 3)
+
+    def test_windows_session_selection_rejects_noninteractive_sessions(self):
+        with self.assertRaisesRegex(RuntimeError, "active logged-in Windows desktop session"):
+            verify.choose_windows_interactive_session(0, 1, [(0, 4, ""), (1, 4, "ConsoleUser")])
+
+    def test_windows_session_bridge_only_when_sessions_differ(self):
+        self.assertFalse(verify.needs_windows_interactive_bridge(7, 7))
+        self.assertTrue(verify.needs_windows_interactive_bridge(0, 7))
+
     def test_clean_exit_still_requires_results(self):
         (self.results / "client-pass.txt").unlink()
         with self.assertRaisesRegex(RuntimeError, "client-pass"):

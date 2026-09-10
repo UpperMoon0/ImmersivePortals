@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager
+import ctypes
 import json
 import os
 from pathlib import Path
@@ -60,6 +61,196 @@ def checkout_lock():
 def gradle_cmd(*tasks: str) -> list[str]:
     wrapper = ROOT / ("gradlew.bat" if os.name == "nt" else "gradlew")
     return [str(wrapper), *tasks, "--no-daemon", "--no-configuration-cache", "--build-cache"]
+
+
+class WindowsInteractiveProcess:
+    """Minimal Popen-compatible wrapper for a process launched in another Windows session."""
+
+    def __init__(self, pid: int, handle: int):
+        self.pid = pid
+        self._handle = handle
+        self.returncode: int | None = None
+
+    def poll(self) -> int | None:
+        if self.returncode is not None:
+            return self.returncode
+        from ctypes import wintypes
+        code = wintypes.DWORD()
+        if not ctypes.windll.kernel32.GetExitCodeProcess(self._handle, ctypes.byref(code)):
+            raise ctypes.WinError()
+        if code.value == 259:  # STILL_ACTIVE
+            return None
+        self.returncode = code.value
+        ctypes.windll.kernel32.CloseHandle(self._handle)
+        self._handle = 0
+        return self.returncode
+
+
+def choose_windows_interactive_session(
+    current_session: int,
+    active_console_session: int,
+    sessions: list[tuple[int, int, str]],
+) -> int:
+    """Choose an active logged-in Windows session without relying on a fixed session id."""
+    WTS_ACTIVE = 0
+    candidates = [
+        session_id
+        for session_id, state, username in sessions
+        if state == WTS_ACTIVE and username.strip()
+    ]
+    if current_session in candidates:
+        return current_session
+    if active_console_session in candidates:
+        return active_console_session
+    if candidates:
+        return min(candidates)
+    raise RuntimeError("graphical E2E requires an active logged-in Windows desktop session")
+
+
+def windows_interactive_session() -> tuple[int, int]:
+    """Return (current process session, selected active graphical user session)."""
+    from ctypes import wintypes
+
+    class WTS_SESSION_INFOW(ctypes.Structure):
+        _fields_ = [
+            ("SessionId", wintypes.DWORD),
+            ("pWinStationName", wintypes.LPWSTR),
+            ("State", ctypes.c_int),
+        ]
+
+    kernel32 = ctypes.windll.kernel32
+    wtsapi32 = ctypes.windll.wtsapi32
+    current = wintypes.DWORD()
+    if not kernel32.ProcessIdToSessionId(os.getpid(), ctypes.byref(current)):
+        raise ctypes.WinError()
+
+    buffer = ctypes.POINTER(WTS_SESSION_INFOW)()
+    count = wintypes.DWORD()
+    if not wtsapi32.WTSEnumerateSessionsW(None, 0, 1, ctypes.byref(buffer), ctypes.byref(count)):
+        raise ctypes.WinError()
+
+    sessions: list[tuple[int, int, str]] = []
+    try:
+        for index in range(count.value):
+            info = buffer[index]
+            username_buffer = wintypes.LPWSTR()
+            username_bytes = wintypes.DWORD()
+            username = ""
+            if wtsapi32.WTSQuerySessionInformationW(
+                None, info.SessionId, 5, ctypes.byref(username_buffer), ctypes.byref(username_bytes)
+            ):
+                try:
+                    username = username_buffer.value or ""
+                finally:
+                    wtsapi32.WTSFreeMemory(username_buffer)
+            sessions.append((info.SessionId, info.State, username))
+    finally:
+        wtsapi32.WTSFreeMemory(buffer)
+
+    active_console = kernel32.WTSGetActiveConsoleSessionId()
+    selected = choose_windows_interactive_session(current.value, active_console, sessions)
+    return current.value, selected
+
+
+def needs_windows_interactive_bridge(current_session: int, target_session: int) -> bool:
+    return current_session != target_session
+
+
+def launch_windows_interactive(
+    command: list[str], env: dict[str, str], target_session: int
+) -> WindowsInteractiveProcess:
+    """Launch the graphical client in the selected active Windows desktop session."""
+    from ctypes import wintypes
+
+
+    wrapper = RESULT_DIR / "client-session.cmd"
+    inherited = ("IP_SABLE_E2E", "IP_SABLE_E2E_PORT", "IP_SABLE_E2E_RESULT_DIR", "GRADLE_USER_HOME")
+    lines = ["@echo off", f'cd /d "{ROOT}"']
+    for key in inherited:
+        value = env.get(key)
+        if value:
+            lines.append(f'set "{key}={value.replace("%", "%%")}"')
+    lines.append(f'call {subprocess.list2cmdline(command)} > "{CLIENT_LOG}" 2>&1')
+    lines.append("exit /b %ERRORLEVEL%")
+    wrapper.write_text("\r\n".join(lines) + "\r\n", encoding="utf-8")
+
+    CREATE_NEW_PROCESS_GROUP = 0x00000200
+    CREATE_UNICODE_ENVIRONMENT = 0x00000400
+
+    class STARTUPINFOW(ctypes.Structure):
+        _fields_ = [
+            ("cb", wintypes.DWORD), ("lpReserved", wintypes.LPWSTR), ("lpDesktop", wintypes.LPWSTR),
+            ("lpTitle", wintypes.LPWSTR), ("dwX", wintypes.DWORD), ("dwY", wintypes.DWORD),
+            ("dwXSize", wintypes.DWORD), ("dwYSize", wintypes.DWORD), ("dwXCountChars", wintypes.DWORD),
+            ("dwYCountChars", wintypes.DWORD), ("dwFillAttribute", wintypes.DWORD), ("dwFlags", wintypes.DWORD),
+            ("wShowWindow", wintypes.WORD), ("cbReserved2", wintypes.WORD), ("lpReserved2", ctypes.POINTER(ctypes.c_byte)),
+            ("hStdInput", wintypes.HANDLE), ("hStdOutput", wintypes.HANDLE), ("hStdError", wintypes.HANDLE),
+        ]
+
+    class PROCESS_INFORMATION(ctypes.Structure):
+        _fields_ = [
+            ("hProcess", wintypes.HANDLE), ("hThread", wintypes.HANDLE),
+            ("dwProcessId", wintypes.DWORD), ("dwThreadId", wintypes.DWORD),
+        ]
+
+    token = wintypes.HANDLE()
+    env_block = ctypes.c_void_p()
+    wtsapi32 = ctypes.windll.wtsapi32
+    userenv = ctypes.windll.userenv
+    advapi32 = ctypes.windll.advapi32
+    kernel32 = ctypes.windll.kernel32
+
+    if not wtsapi32.WTSQueryUserToken(target_session, ctypes.byref(token)):
+        raise ctypes.WinError()
+    try:
+        if not userenv.CreateEnvironmentBlock(ctypes.byref(env_block), token, False):
+            raise ctypes.WinError()
+        try:
+            startup = STARTUPINFOW()
+            startup.cb = ctypes.sizeof(startup)
+            startup.lpDesktop = "winsta0\\default"
+            process = PROCESS_INFORMATION()
+            comspec = os.environ.get("COMSPEC", r"C:\Windows\System32\cmd.exe")
+            # cmd.exe requires an extra quoted command string after /c when the
+            # batch path itself contains spaces. list2cmdline() alone produces a
+            # syntactically valid Win32 command line but not cmd.exe's /c grammar.
+            cmdline = ctypes.create_unicode_buffer(
+                f'{subprocess.list2cmdline([comspec])} /d /s /c ""{wrapper}""'
+            )
+            if not advapi32.CreateProcessAsUserW(
+                token, comspec, cmdline, None, None, False,
+                CREATE_NEW_PROCESS_GROUP | CREATE_UNICODE_ENVIRONMENT,
+                env_block, str(ROOT), ctypes.byref(startup), ctypes.byref(process)
+            ):
+                raise ctypes.WinError()
+            kernel32.CloseHandle(process.hThread)
+            return WindowsInteractiveProcess(process.dwProcessId, process.hProcess)
+        finally:
+            userenv.DestroyEnvironmentBlock(env_block)
+    finally:
+        kernel32.CloseHandle(token)
+
+
+def launch_graphical_client(command: list[str], env: dict[str, str], creation: dict) -> tuple[object, object | None]:
+    if os.name == "nt":
+        current_session, target_session = windows_interactive_session()
+        if needs_windows_interactive_bridge(current_session, target_session):
+            print(
+                f"[verify] Windows session {current_session} is non-interactive; launching client in active desktop session {target_session}",
+                flush=True,
+            )
+            return launch_windows_interactive(command, env, target_session), None
+
+    client_log = CLIENT_LOG.open("wb")
+    try:
+        process = subprocess.Popen(
+            command, cwd=ROOT, env=env, stdout=client_log,
+            stderr=subprocess.STDOUT, **creation,
+        )
+        return process, client_log
+    except Exception:
+        client_log.close()
+        raise
 
 
 def run_core() -> None:
@@ -239,15 +430,13 @@ def run_e2e() -> None:
                 raise RuntimeError("xvfb-run is required for headless Linux graphical E2E")
             client_command = ["xvfb-run", "-a", *client_command]
 
-        with CLIENT_LOG.open("wb") as client_log:
-            client = subprocess.Popen(
-                client_command, cwd=ROOT, env=env, stdout=client_log,
-                stderr=subprocess.STDOUT, **creation,
-            )
-            try:
-                wait_for_client(server, client)
-            finally:
-                stop_process_tree(client)
+        client, client_log = launch_graphical_client(client_command, env, creation)
+        try:
+            wait_for_client(server, client)
+        finally:
+            stop_process_tree(client)
+            if client_log is not None:
+                client_log.close()
 
         validate_log_health()
         print("[verify] " + (RESULT_DIR / "server-pass.txt").read_text(encoding="utf-8").strip(), flush=True)
