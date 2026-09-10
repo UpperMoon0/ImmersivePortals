@@ -67,7 +67,9 @@ jobs:
           setsid bash -c 'tail -f /dev/null | ./gradlew runSableE2EServer --no-daemon --no-configuration-cache' >"$SERVER_LOG" 2>&1 &
           echo $! > "$RESULT_DIR/server.pid"
 
-          for i in $(seq 1 360); do
+          # A cold NeoGradle runner can spend several minutes preparing the transformed runtime.
+          # The watchdog is intentionally longer than the actual Minecraft boot once Gradle is ready.
+          for i in $(seq 1 720); do
             if grep -q 'Done (' "$SERVER_LOG"; then
               exit 0
             fi
@@ -94,7 +96,7 @@ jobs:
           CLIENT_LOG="$RESULT_DIR/client.log"
 
           set +e
-          timeout 180s xvfb-run -a ./gradlew runSableE2EClient --no-daemon --no-configuration-cache >"$CLIENT_LOG" 2>&1
+          timeout 300s xvfb-run -a ./gradlew runSableE2EClient --no-daemon --no-configuration-cache >"$CLIENT_LOG" 2>&1
           CLIENT_EXIT=$?
           set -e
 
