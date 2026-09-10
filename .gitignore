@@ -48,3 +48,9 @@ crowdin-translate-1.2.jar
 src/main/resources/immersive_portals.timestamp
 /libs/
 /runs/
+
+# dedicated integration-test runtime directories
+/run-sable-e2e-server/
+/run-sable-e2e-client/
+
+/tools/__pycache__/

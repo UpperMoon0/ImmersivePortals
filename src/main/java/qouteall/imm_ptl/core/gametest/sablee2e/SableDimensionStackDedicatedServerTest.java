@@ -33,11 +33,9 @@ import java.util.UUID;
  * space while Sable kicks the rider into logical world space, reproducing the passenger graph
  * that originally split at a dimension-stack boundary.</p>
  */
-@EventBusSubscriber(modid = "immersive_portals")
+@EventBusSubscriber(modid = qouteall.imm_ptl.core.platform_specific.IPModEntry.MODID)
 public final class SableDimensionStackDedicatedServerTest {
     private static final int LOGIN_SETTLE_TICKS = 40;
-    private static final int SOURCE_HOLD_TICKS = 60;
-    private static final int DESTINATION_HOLD_TICKS = 60;
     private static final int TIMEOUT_TICKS = 1200;
     private static final double CROSSING_SPEED = 80.0;
 
@@ -47,6 +45,7 @@ public final class SableDimensionStackDedicatedServerTest {
         WAIT_FOR_FIRST_CROSSING,
         HOLD_IN_DESTINATION,
         WAIT_FOR_RETURN,
+        HOLD_AFTER_RETURN,
         DONE
     }
 
@@ -58,6 +57,7 @@ public final class SableDimensionStackDedicatedServerTest {
     private static UUID vehicleId;
     private static ServerLevel overworld;
     private static ServerLevel nether;
+    private static Vector3d heldPosition;
 
     private SableDimensionStackDedicatedServerTest() {}
 
@@ -99,6 +99,13 @@ public final class SableDimensionStackDedicatedServerTest {
                 case WAIT_FOR_FIRST_CROSSING -> verifyFirstCrossingOrWait();
                 case HOLD_IN_DESTINATION -> holdAndStartReturn();
                 case WAIT_FOR_RETURN -> verifyReturnOrWait();
+                case HOLD_AFTER_RETURN -> {
+                    ServerSubLevel returned = findSubLevel(requireContainer(overworld), subLevelId);
+                    require(returned != null, "returned body disappeared during client verification");
+                    RigidBodyHandle handle = requireHandle(returned);
+                    handle.teleport(heldPosition, returned.logicalPose().orientation());
+                    setLinearVelocity(handle, new Vector3d());
+                }
                 case DONE -> { }
             }
         }
@@ -143,6 +150,7 @@ public final class SableDimensionStackDedicatedServerTest {
         vehicleId = vehicle.getUUID();
 
         require(player.startRiding(vehicle, true), "server player could not mount retained Sable minecart");
+        heldPosition = new Vector3d(subLevel.logicalPose().position());
         setLinearVelocity(requireHandle(subLevel), new Vector3d());
     }
 
@@ -154,7 +162,10 @@ public final class SableDimensionStackDedicatedServerTest {
             "riding graph broke while held in source");
 
         RigidBodyHandle handle = requireHandle(source);
-        if (phaseTicks < SOURCE_HOLD_TICKS) {
+        if (!SableDimensionStackIntegrationMarkers.exists("client-source.txt")) {
+            // Zeroing velocity alone still permits gravity to move the body during
+            // the next physics step. Pin the pose until the client has observed it.
+            handle.teleport(heldPosition, source.logicalPose().orientation());
             setLinearVelocity(handle, new Vector3d());
             return;
         }
@@ -175,6 +186,7 @@ public final class SableDimensionStackDedicatedServerTest {
 
         Entity destinationVehicle = nether.getEntity(vehicleId);
         require(destinationVehicle != null, "retained vehicle did not migrate to the destination level");
+        require(overworld.getEntity(vehicleId) == null, "duplicate vehicle remained in source");
         require(destinationVehicle.level() == nether, "retained vehicle is attached to the wrong level after crossing");
         require(player.serverLevel() == nether, "rider did not migrate to the destination level");
         require(player.getVehicle() != null, "rider lost its vehicle after first crossing");
@@ -186,6 +198,7 @@ public final class SableDimensionStackDedicatedServerTest {
             "migrated Sable body has non-finite velocity");
 
         setLinearVelocity(requireHandle(destination), new Vector3d());
+        heldPosition = new Vector3d(destination.logicalPose().position());
         phase = Phase.HOLD_IN_DESTINATION;
         phaseTicks = 0;
     }
@@ -198,7 +211,8 @@ public final class SableDimensionStackDedicatedServerTest {
             "riding graph broke while held in destination");
 
         RigidBodyHandle handle = requireHandle(destination);
-        if (phaseTicks < DESTINATION_HOLD_TICKS) {
+        if (!SableDimensionStackIntegrationMarkers.exists("client-destination.txt")) {
+            handle.teleport(heldPosition, destination.logicalPose().orientation());
             setLinearVelocity(handle, new Vector3d());
             return;
         }
@@ -219,14 +233,21 @@ public final class SableDimensionStackDedicatedServerTest {
 
         Entity returnedVehicle = overworld.getEntity(vehicleId);
         require(returnedVehicle != null, "retained vehicle did not survive round trip");
+        require(nether.getEntity(vehicleId) == null, "duplicate vehicle remained in Nether");
+        require(returnedVehicle.level() == overworld, "returned vehicle has wrong level");
         require(player.serverLevel() == overworld, "rider did not return to the source level");
         require(player.getVehicle() != null && player.getVehicle().getUUID().equals(vehicleId),
             "rider/vehicle relation did not survive round trip");
         require(returnedVehicle.getPassengers().contains(player),
             "returned vehicle does not contain the original rider");
 
+        heldPosition = new Vector3d(returned.logicalPose().position());
+        // The body may straddle the boundary when reconstructed. Park it fully
+        // inside the source so gravity cannot trigger an unintended third crossing.
+        heldPosition.y = Math.max(heldPosition.y, overworld.getMinBuildHeight() + 4.0);
+        requireHandle(returned).teleport(heldPosition, returned.logicalPose().orientation());
         setLinearVelocity(requireHandle(returned), new Vector3d());
-        phase = Phase.DONE;
+        phase = Phase.HOLD_AFTER_RETURN;
         SableDimensionStackIntegrationMarkers.serverPass(
             "real Sable physics crossed Overworld->Nether->Overworld; sublevel block payload, retained minecart, and player riding graph survived"
         );

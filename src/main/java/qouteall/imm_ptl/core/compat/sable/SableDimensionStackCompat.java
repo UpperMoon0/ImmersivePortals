@@ -125,6 +125,14 @@ public final class SableDimensionStackCompat {
         List<EntityTransfer> entities = capturePlotEntities(sourceWorld, sourceSubLevel, portal);
         SubLevelData sourceData = SubLevelSerializer.toData(sourceSubLevel, List.of());
         SubLevelData destinationData = transformSerializedState(sourceData, portal);
+        // Sable's disk format stores section array indices, relative to the owning
+        // level's minimum build height. Keep absolute plot-space Y across levels.
+        if (!rebasePlotSections(destinationData.fullTag(), sourceWorld.getMinSection(),
+            destinationWorld.getMinSection(), destinationWorld.getSectionsCount())) {
+            LOGGER.warn("Cannot migrate Sable sublevel {}: blocks exceed destination build height",
+                sourceSubLevel.getUniqueId());
+            return;
+        }
 
         ServerSubLevel destinationSubLevel = SubLevelSerializer.fullyLoad(destinationWorld, destinationData);
         if (destinationSubLevel == null) {
@@ -174,6 +182,29 @@ public final class SableDimensionStackCompat {
             return false;
         }
         return !container.getOccupancy().get(container.getIndex(localPlotX, localPlotZ));
+    }
+
+    static boolean rebasePlotSections(CompoundTag tag, int sourceMinSection,
+                                     int destinationMinSection, int destinationSectionCount) {
+        CompoundTag chunks = tag.getCompound("plot").getCompound("chunks");
+        // Validate the entire payload before mutating any section map.
+        for (String chunkKey : chunks.getAllKeys()) {
+            for (String key : chunks.getCompound(chunkKey).getCompound("sections").getAllKeys()) {
+                int index = Integer.parseInt(key) + sourceMinSection - destinationMinSection;
+                if (index < 0 || index >= destinationSectionCount) return false;
+            }
+        }
+        for (String chunkKey : chunks.getAllKeys()) {
+            CompoundTag chunk = chunks.getCompound(chunkKey);
+            CompoundTag sections = chunk.getCompound("sections");
+            CompoundTag rebased = new CompoundTag();
+            for (String key : sections.getAllKeys()) {
+                int index = Integer.parseInt(key) + sourceMinSection - destinationMinSection;
+                rebased.put(Integer.toString(index), sections.get(key));
+            }
+            chunk.put("sections", rebased);
+        }
+        return true;
     }
 
     private static SubLevelData transformSerializedState(

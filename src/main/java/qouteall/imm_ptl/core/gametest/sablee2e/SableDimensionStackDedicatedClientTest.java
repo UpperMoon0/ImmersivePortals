@@ -14,9 +14,9 @@ import net.neoforged.neoforge.client.event.ClientTickEvent;
 import java.util.UUID;
 
 /** Real-client observer for the Sable dimension-stack dedicated integration test. */
-@EventBusSubscriber(modid = "immersive_portals", value = Dist.CLIENT)
+@EventBusSubscriber(modid = qouteall.imm_ptl.core.platform_specific.IPModEntry.MODID, value = Dist.CLIENT)
 public final class SableDimensionStackDedicatedClientTest {
-    private static final String DEDICATED_ADDRESS = "127.0.0.1:25565";
+    private static final String DEDICATED_ADDRESS = "127.0.0.1:" + System.getenv().getOrDefault("IP_SABLE_E2E_PORT", "25565");
     private static final int TIMEOUT_TICKS = 1200;
     private static final int RIDING_SYNC_GRACE_TICKS = 120;
 
@@ -25,6 +25,7 @@ public final class SableDimensionStackDedicatedClientTest {
         WAIT_FOR_SOURCE_RIDE,
         WAIT_FOR_DESTINATION_RIDE,
         WAIT_FOR_RETURN_RIDE,
+        WAIT_FOR_SERVER_PASS,
         DONE
     }
 
@@ -33,6 +34,7 @@ public final class SableDimensionStackDedicatedClientTest {
     private static int phaseTicks;
     private static boolean connectionRequested;
     private static UUID vehicleId;
+    private static int ridingSyncTicks;
 
     private SableDimensionStackDedicatedClientTest() {}
 
@@ -59,6 +61,18 @@ public final class SableDimensionStackDedicatedClientTest {
                 case WAIT_FOR_SOURCE_RIDE -> waitForSourceRide(minecraft);
                 case WAIT_FOR_DESTINATION_RIDE -> waitForDestinationRide(minecraft);
                 case WAIT_FOR_RETURN_RIDE -> waitForReturnRide(minecraft);
+                case WAIT_FOR_SERVER_PASS -> {
+                    require(minecraft.level.dimension().equals(Level.OVERWORLD), "client left returned dimension");
+                    Entity vehicle = minecraft.player.getVehicle();
+                    require(vehicle != null && vehicle.getUUID().equals(vehicleId)
+                        && vehicle.getPassengers().contains(minecraft.player), "round-trip riding graph became unstable");
+                    if (phaseTicks >= 10 && SableDimensionStackIntegrationMarkers.exists("server-pass.txt")) {
+                        phase = Phase.DONE;
+                        SableDimensionStackIntegrationMarkers.clientPass(
+                            "real client verified source, destination, and stable return riding graph with the same vehicle UUID");
+                        minecraft.stop();
+                    }
+                }
                 case CONNECT, DONE -> { }
             }
         }
@@ -95,6 +109,7 @@ public final class SableDimensionStackDedicatedClientTest {
         vehicleId = vehicle.getUUID();
         require(vehicle.getPassengers().contains(minecraft.player),
             "client vehicle did not contain local player before crossing");
+        SableDimensionStackIntegrationMarkers.acknowledge("source");
         phase = Phase.WAIT_FOR_DESTINATION_RIDE;
         phaseTicks = 0;
     }
@@ -104,7 +119,7 @@ public final class SableDimensionStackDedicatedClientTest {
 
         Entity vehicle = minecraft.player.getVehicle();
         if (vehicle == null) {
-            require(phaseTicks <= RIDING_SYNC_GRACE_TICKS,
+            require(++ridingSyncTicks <= RIDING_SYNC_GRACE_TICKS,
                 "client reached Nether but riding relation did not synchronize");
             return;
         }
@@ -113,6 +128,8 @@ public final class SableDimensionStackDedicatedClientTest {
             "client mounted a different vehicle after Overworld->Nether crossing");
         require(vehicle.getPassengers().contains(minecraft.player),
             "client vehicle passenger graph is inconsistent in Nether");
+        SableDimensionStackIntegrationMarkers.acknowledge("destination");
+        ridingSyncTicks = 0;
         phase = Phase.WAIT_FOR_RETURN_RIDE;
         phaseTicks = 0;
     }
@@ -122,7 +139,7 @@ public final class SableDimensionStackDedicatedClientTest {
 
         Entity vehicle = minecraft.player.getVehicle();
         if (vehicle == null) {
-            require(phaseTicks <= RIDING_SYNC_GRACE_TICKS,
+            require(++ridingSyncTicks <= RIDING_SYNC_GRACE_TICKS,
                 "client returned to Overworld but riding relation did not synchronize");
             return;
         }
@@ -132,10 +149,9 @@ public final class SableDimensionStackDedicatedClientTest {
         require(vehicle.getPassengers().contains(minecraft.player),
             "client vehicle passenger graph is inconsistent after round trip");
 
-        phase = Phase.DONE;
-        SableDimensionStackIntegrationMarkers.clientPass(
-            "real client observed Overworld->Nether->Overworld while remaining mounted to the same migrated Sable vehicle"
-        );
+        SableDimensionStackIntegrationMarkers.acknowledge("return");
+        phase = Phase.WAIT_FOR_SERVER_PASS;
+        phaseTicks = 0;
     }
 
     private static String diagnosticState() {
@@ -155,6 +171,10 @@ public final class SableDimensionStackDedicatedClientTest {
 
     private static void fail(String detail, Throwable error) {
         phase = Phase.DONE;
-        SableDimensionStackIntegrationMarkers.clientFail(detail, error);
+        try {
+            SableDimensionStackIntegrationMarkers.clientFail(detail, error);
+        } finally {
+            Minecraft.getInstance().stop();
+        }
     }
 }

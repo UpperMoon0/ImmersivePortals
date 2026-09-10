@@ -131,29 +131,33 @@ runs {
     }
 
     client {
-        systemProperty 'forge.enabledGameTestNamespaces', project.mod_id
+        systemProperty 'neoforge.enabledGameTestNamespaces', project.mod_id
         dependencies {
             runtime "net.caffeinemc:sodium-neoforge-mod:0.8.12+mc1.21.1"
         }
     }
 
     server {
-        systemProperty 'forge.enabledGameTestNamespaces', project.mod_id
+        systemProperty 'neoforge.enabledGameTestNamespaces', project.mod_id
     }
 
     gameTestServer {
-        systemProperty 'forge.enabledGameTestNamespaces', project.mod_id
+        systemProperty 'neoforge.enabledGameTestNamespaces', 'sable'
     }
 
     sableE2EServer {
         runType 'server'
         workingDirectory project.file('run-sable-e2e-server')
         arguments '--nogui'
+        systemProperty 'ip.sable.e2e', 'true'
+        systemProperty 'ip.sable.e2e.resultDir', project.file('build/sable-dimension-stack-e2e').absolutePath
     }
 
     sableE2EClient {
         runType 'client'
         workingDirectory project.file('run-sable-e2e-client')
+        systemProperty 'ip.sable.e2e', 'true'
+        systemProperty 'ip.sable.e2e.resultDir', project.file('build/sable-dimension-stack-e2e').absolutePath
         dependencies {
             runtime "net.caffeinemc:sodium-neoforge-mod:0.8.12+mc1.21.1"
         }
@@ -214,6 +218,12 @@ dependencies {
 
 tasks.named('test').configure {
     useJUnitPlatform()
+}
+
+tasks.register('coreCheck') {
+    group = 'verification'
+    description = 'Runs the build, JUnit suite, and NeoForge GameTests without the graphical E2E.'
+    dependsOn tasks.named('build'), tasks.named('runGameTestServer')
 }
 // This block of code expands all declared replace properties in the specified resource targets.
 // A missing property will result in an error. Properties are expanded using ${} Groovy notation.

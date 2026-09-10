@@ -7,13 +7,15 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 
 final class SableDimensionStackIntegrationMarkers {
+    static final String ENABLE_PROPERTY = "ip.sable.e2e";
     static final String ENABLE_ENV = "IP_SABLE_E2E";
+    static final String RESULT_DIR_PROPERTY = "ip.sable.e2e.resultDir";
     static final String RESULT_DIR_ENV = "IP_SABLE_E2E_RESULT_DIR";
 
     private SableDimensionStackIntegrationMarkers() {}
 
     static boolean enabled() {
-        return "true".equalsIgnoreCase(System.getenv(ENABLE_ENV));
+        return Boolean.getBoolean(ENABLE_PROPERTY) || "true".equalsIgnoreCase(System.getenv(ENABLE_ENV));
     }
 
     static void serverPass(String detail) {
@@ -25,37 +27,41 @@ final class SableDimensionStackIntegrationMarkers {
     }
 
     static void clientPass(String detail) {
-        clientFinish("client-pass.txt", detail, null, 0);
+        write("client-pass.txt", detail, null);
     }
 
     static void clientFail(String detail, Throwable error) {
-        clientFinish("client-fail.txt", detail, error, 1);
+        write("client-fail.txt", detail, error);
     }
 
-    private static void clientFinish(String file, String detail, Throwable error, int code) {
-        try {
-            write(file, detail, error);
-        }
-        catch (RuntimeException markerFailure) {
-            markerFailure.printStackTrace();
-            code = 1;
-        }
-        System.exit(code);
+    static void acknowledge(String phase) {
+        write("client-" + phase + ".txt", phase, null);
     }
 
-    private static void write(String file, String detail, Throwable error) {
-        String resultDir = System.getenv(RESULT_DIR_ENV);
+    static boolean exists(String file) {
+        return Files.isRegularFile(resultDir().resolve(file));
+    }
+
+    private static Path resultDir() {
+        String resultDir = System.getProperty(RESULT_DIR_PROPERTY);
+        if (resultDir == null || resultDir.isBlank()) {
+            resultDir = System.getenv(RESULT_DIR_ENV);
+        }
         if (resultDir == null || resultDir.isBlank()) {
             resultDir = "build/sable-dimension-stack-e2e";
         }
 
+        return Paths.get(resultDir);
+    }
+
+    private static void write(String file, String detail, Throwable error) {
         StringBuilder text = new StringBuilder(detail).append('\n');
         if (error != null) {
             text.append(error).append('\n');
         }
 
         try {
-            Path dir = Paths.get(resultDir);
+            Path dir = resultDir();
             Files.createDirectories(dir);
             Files.writeString(dir.resolve(file), text.toString(), StandardCharsets.UTF_8);
         }
