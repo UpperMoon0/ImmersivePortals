@@ -56,10 +56,12 @@ jobs:
           distribution: temurin
           java-version: '21'
       - uses: gradle/actions/setup-gradle@v6
-      - name: Install headless graphics runtime
+      - name: Ensure headless graphics runtime
         run: |
-          sudo apt-get update
-          sudo apt-get install -y xvfb libgl1-mesa-dri
+          if ! command -v xvfb-run >/dev/null 2>&1 || ! ldconfig -p | grep -F 'libGL.so.1' >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y xvfb libgl1-mesa-dri
+          fi
       - run: chmod +x ./gradlew
       - name: Dedicated server and automated client
         run: python3 tools/verify.py e2e

@@ -19,6 +19,7 @@ public final class SableDimensionStackDedicatedClientTest {
     private static final String DEDICATED_ADDRESS = "127.0.0.1:" + System.getenv().getOrDefault("IP_SABLE_E2E_PORT", "25565");
     private static final int TIMEOUT_TICKS = 1200;
     private static final int RIDING_SYNC_GRACE_TICKS = 120;
+    private static final int RETURN_STABLE_TICKS = 10;
 
     private enum Phase {
         CONNECT,
@@ -35,6 +36,7 @@ public final class SableDimensionStackDedicatedClientTest {
     private static boolean connectionRequested;
     private static UUID vehicleId;
     private static int ridingSyncTicks;
+    private static int stableReturnTicks;
 
     private SableDimensionStackDedicatedClientTest() {}
 
@@ -61,18 +63,7 @@ public final class SableDimensionStackDedicatedClientTest {
                 case WAIT_FOR_SOURCE_RIDE -> waitForSourceRide(minecraft);
                 case WAIT_FOR_DESTINATION_RIDE -> waitForDestinationRide(minecraft);
                 case WAIT_FOR_RETURN_RIDE -> waitForReturnRide(minecraft);
-                case WAIT_FOR_SERVER_PASS -> {
-                    require(minecraft.level.dimension().equals(Level.OVERWORLD), "client left returned dimension");
-                    Entity vehicle = minecraft.player.getVehicle();
-                    require(vehicle != null && vehicle.getUUID().equals(vehicleId)
-                        && vehicle.getPassengers().contains(minecraft.player), "round-trip riding graph became unstable");
-                    if (phaseTicks >= 10 && SableDimensionStackIntegrationMarkers.exists("server-pass.txt")) {
-                        phase = Phase.DONE;
-                        SableDimensionStackIntegrationMarkers.clientPass(
-                            "real client verified source, destination, and stable return riding graph with the same vehicle UUID");
-                        minecraft.stop();
-                    }
-                }
+                case WAIT_FOR_SERVER_PASS -> waitForStableServerConfirmedReturn(minecraft);
                 case CONNECT, DONE -> { }
             }
         }
@@ -152,6 +143,31 @@ public final class SableDimensionStackDedicatedClientTest {
         SableDimensionStackIntegrationMarkers.acknowledge("return");
         phase = Phase.WAIT_FOR_SERVER_PASS;
         phaseTicks = 0;
+    }
+
+    private static void waitForStableServerConfirmedReturn(Minecraft minecraft) {
+        if (!SableDimensionStackIntegrationMarkers.exists("server-pass.txt")) return;
+
+        Entity vehicle = minecraft.player.getVehicle();
+        boolean stable = minecraft.level.dimension().equals(Level.OVERWORLD)
+            && vehicle != null
+            && vehicle.getUUID().equals(vehicleId)
+            && vehicle.getPassengers().contains(minecraft.player);
+
+        if (!stable) {
+            stableReturnTicks = 0;
+            require(++ridingSyncTicks <= RIDING_SYNC_GRACE_TICKS,
+                "client did not settle in returned dimension with the original riding graph after server pass");
+            return;
+        }
+
+        ridingSyncTicks = 0;
+        if (++stableReturnTicks < RETURN_STABLE_TICKS) return;
+
+        phase = Phase.DONE;
+        SableDimensionStackIntegrationMarkers.clientPass(
+            "real client verified source, destination, and stable return riding graph with the same vehicle UUID");
+        minecraft.stop();
     }
 
     private static String diagnosticState() {
