@@ -16,7 +16,16 @@ import qouteall.imm_ptl.core.compat.sable.SableDimensionStackCompat;
 public abstract class MixinSubLevelPhysicsSystem_SableDimensionStackCompat {
     @Shadow @Final private ServerLevel level;
 
-    @Inject(method = "tick", at = @At("TAIL"))
+    /**
+     * Run migration after Sable has snapshotted lastPose and completed the full physics step.
+     * Pin the exact descriptor and require the injection to match so a Sable API drift cannot
+     * silently disable stacked-dimension migration.
+     */
+    @Inject(
+        method = "tick(Ldev/ryanhcode/sable/api/sublevel/SubLevelContainer;)V",
+        at = @At("TAIL"),
+        require = 1
+    )
     private void ip_migrateAcrossDimensionStacks(SubLevelContainer container, CallbackInfo ci) {
         if (container instanceof ServerSubLevelContainer serverContainer) {
             SableDimensionStackCompat.afterPhysicsTick(level, serverContainer);
