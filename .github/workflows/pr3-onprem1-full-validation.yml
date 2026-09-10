@@ -1,0 +1,176 @@
+name: PR3 on-prem-1 full validation
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr3-onprem1-full-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  full-suite:
+    if: github.head_ref == 'fix/portal-render-corruption'
+    runs-on: [self-hosted, linux, x64, nstut-linux-pool, on-prem-1, nstut-profile-standard]
+    timeout-minutes: 70
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Install headless graphics dependencies when missing
+        shell: bash
+        run: |
+          set -euo pipefail
+          if command -v xvfb-run >/dev/null 2>&1; then
+            exit 0
+          fi
+          if command -v sudo >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y xvfb libgl1-mesa-dri
+          else
+            apt-get update -qq
+            apt-get install -y xvfb libgl1-mesa-dri
+          fi
+
+      - name: Clean, unit tests, and build
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+          ./gradlew clean test build --no-daemon --no-configuration-cache --stacktrace
+
+      - name: Sable server GameTests
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew runGameTestServer --no-daemon --no-configuration-cache --stacktrace
+
+      - name: Prepare Sable dedicated E2E
+        shell: bash
+        run: |
+          set -euo pipefail
+          RESULT_DIR="$GITHUB_WORKSPACE/build/sable-dimension-stack-e2e-onprem1"
+          SERVER_DIR="$GITHUB_WORKSPACE/run-sable-e2e-server"
+          CLIENT_DIR="$GITHUB_WORKSPACE/run-sable-e2e-client"
+          rm -rf "$RESULT_DIR" "$SERVER_DIR/world" "$CLIENT_DIR"
+          mkdir -p "$RESULT_DIR" "$SERVER_DIR"
+          printf 'eula=true\n' > "$SERVER_DIR/eula.txt"
+          cat > "$SERVER_DIR/server.properties" <<'PROPS'
+          online-mode=false
+          enforce-secure-profile=false
+          gamemode=creative
+          difficulty=peaceful
+          spawn-protection=0
+          view-distance=6
+          simulation-distance=6
+          enable-command-block=true
+          server-port=25565
+          PROPS
+
+      - name: Real dedicated server + graphical client E2E
+        shell: bash
+        env:
+          IP_SABLE_E2E: 'true'
+          IP_SABLE_E2E_RESULT_DIR: ${{ github.workspace }}/build/sable-dimension-stack-e2e-onprem1
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: |
+          set -euo pipefail
+          RESULT_DIR="$IP_SABLE_E2E_RESULT_DIR"
+          SERVER_LOG="$RESULT_DIR/server.log"
+          CLIENT_LOG="$RESULT_DIR/client.log"
+          : > "$SERVER_LOG"
+          : > "$CLIENT_LOG"
+
+          setsid bash -c 'tail -f /dev/null | ./gradlew runSableE2EServer --no-daemon --no-configuration-cache' >"$SERVER_LOG" 2>&1 &
+          SERVER_PID=$!
+          cleanup() {
+            kill -- -"$SERVER_PID" >/dev/null 2>&1 || kill "$SERVER_PID" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          READY=0
+          for _ in $(seq 1 900); do
+            if grep -q 'Done (' "$SERVER_LOG"; then
+              READY=1
+              break
+            fi
+            if ! kill -0 "$SERVER_PID" >/dev/null 2>&1; then
+              echo 'Dedicated Sable E2E server exited before ready.' >&2
+              tail -n 250 "$SERVER_LOG" >&2
+              exit 1
+            fi
+            sleep 1
+          done
+          if [[ "$READY" -ne 1 ]]; then
+            echo 'Dedicated Sable E2E server did not become ready.' >&2
+            tail -n 250 "$SERVER_LOG" >&2
+            exit 1
+          fi
+
+          set +e
+          timeout 300s xvfb-run -a ./gradlew runSableE2EClient --no-daemon --no-configuration-cache >"$CLIENT_LOG" 2>&1
+          CLIENT_STATUS=$?
+          set -e
+
+          if [[ -f "$RESULT_DIR/client-fail.txt" ]]; then
+            cat "$RESULT_DIR/client-fail.txt" >&2
+            tail -n 250 "$CLIENT_LOG" >&2
+            exit 1
+          fi
+          if [[ ! -f "$RESULT_DIR/client-pass.txt" ]]; then
+            echo "Client did not produce a pass marker (exit=$CLIENT_STATUS)." >&2
+            tail -n 250 "$CLIENT_LOG" >&2
+            exit 1
+          fi
+
+          SERVER_RESULT=0
+          for _ in $(seq 1 120); do
+            if [[ -f "$RESULT_DIR/server-fail.txt" ]]; then
+              cat "$RESULT_DIR/server-fail.txt" >&2
+              tail -n 250 "$SERVER_LOG" >&2
+              exit 1
+            fi
+            if [[ -f "$RESULT_DIR/server-pass.txt" ]]; then
+              SERVER_RESULT=1
+              break
+            fi
+            sleep 1
+          done
+          if [[ "$SERVER_RESULT" -ne 1 ]]; then
+            echo 'Server did not produce an authoritative pass marker.' >&2
+            tail -n 250 "$SERVER_LOG" >&2
+            exit 1
+          fi
+
+          echo '=== client result ==='
+          cat "$RESULT_DIR/client-pass.txt"
+          echo '=== server result ==='
+          cat "$RESULT_DIR/server-pass.txt"
+
+      - name: Upload on-prem-1 diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr3-onprem1-full-validation
+          if-no-files-found: ignore
+          path: |
+            build/reports/**
+            build/test-results/**
+            build/sable-dimension-stack-e2e-onprem1/**
+            run/logs/**
+            run-sable-e2e-server/logs/**
+            run-sable-e2e-client/logs/**
