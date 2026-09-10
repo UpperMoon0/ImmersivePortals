@@ -84,6 +84,8 @@ tasks.named('jar', Jar).configure {
         rename { 'LICENSE-Immersive-Portals' }
     }
     from(rootProject.file('NOTICE'))
+    // Dedicated E2E drivers are compiled into the dev runtime but never shipped in release jars.
+    exclude 'qouteall/imm_ptl/core/gametest/sablee2e/**'
 }
 
 minecraft.accessTransformers.entry 'public net.minecraft.server.MinecraftServer storageSource'
@@ -141,6 +143,20 @@ runs {
 
     gameTestServer {
         systemProperty 'forge.enabledGameTestNamespaces', project.mod_id
+    }
+
+    sableE2EServer {
+        runType 'server'
+        workingDirectory project.file('run-sable-e2e-server')
+        arguments '--nogui'
+    }
+
+    sableE2EClient {
+        runType 'client'
+        workingDirectory project.file('run-sable-e2e-client')
+        dependencies {
+            runtime "net.caffeinemc:sodium-neoforge-mod:0.8.12+mc1.21.1"
+        }
     }
 
     data {
