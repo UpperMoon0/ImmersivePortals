@@ -2,6 +2,7 @@ package qouteall.imm_ptl.core.gametest.sablee2e;
 
 import dev.ryanhcode.sable.Sable;
 import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
+import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 import dev.ryanhcode.sable.sublevel.SubLevel;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.ConnectScreen;
@@ -13,6 +14,7 @@ import net.minecraft.resources.ResourceKey;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.Level;
 import net.neoforged.neoforge.client.event.ClientTickEvent;
+import org.joml.Vector3dc;
 import qouteall.imm_ptl.core.ClientWorldLoader;
 
 import java.util.UUID;
@@ -25,6 +27,8 @@ public final class SableDimensionStackDedicatedClientTest {
     private static final int RETURN_STABLE_TICKS = 10;
     private static final int MAX_OVERLAP_TICKS = 20;
     private static final int EXPECTED_DIMENSION_TRANSITIONS = 3;
+    private static final int MIN_HANDOFF_HISTORY_SNAPSHOTS = 3;
+    private static final double MAX_BODY_RIDER_DISTANCE = 32.0;
 
     private enum Phase {
         CONNECT,
@@ -143,8 +147,10 @@ public final class SableDimensionStackDedicatedClientTest {
 
         ResourceKey<Level> currentDimension = minecraft.level.dimension();
         if (currentDimension.equals(Level.OVERWORLD) || currentDimension.equals(Level.NETHER)) {
-            require(hasSubLevel(currentDimension),
+            ClientSubLevel current = getClientSubLevel(currentDimension);
+            require(current != null,
                 "current client dimension changed before destination Sable sublevel was synchronized");
+            verifyBodyRemainsSpatiallyContinuous(minecraft, current);
         }
 
         if (inOverworld && inNether) {
@@ -163,11 +169,35 @@ public final class SableDimensionStackDedicatedClientTest {
         lastObservedDimension = currentDimension;
     }
 
-    private static boolean hasSubLevel(ResourceKey<Level> dimension) {
-        if (subLevelId == null) return false;
+    private static void verifyBodyRemainsSpatiallyContinuous(Minecraft minecraft, ClientSubLevel subLevel) {
+        Vector3dc bodyPosition = subLevel.logicalPose().position();
+        double dx = bodyPosition.x() - minecraft.player.getX();
+        double dy = bodyPosition.y() - minecraft.player.getY();
+        double dz = bodyPosition.z() - minecraft.player.getZ();
+        double distanceSquared = dx * dx + dy * dy + dz * dz;
+        require(distanceSquared <= MAX_BODY_RIDER_DISTANCE * MAX_BODY_RIDER_DISTANCE,
+            "Sable body pose snapped away from its rider during portal handoff: distance=" + Math.sqrt(distanceSquared));
+    }
+
+    private static void verifyInterpolationHistory(ResourceKey<Level> dimension, String phaseName) {
+        ClientSubLevel subLevel = getClientSubLevel(dimension);
+        require(subLevel != null, phaseName + " Sable sublevel is missing");
+        int snapshots = subLevel.getInterpolator().buffer.size();
+        require(snapshots >= MIN_HANDOFF_HISTORY_SNAPSHOTS,
+            phaseName + " Sable interpolation history was reset during portal handoff: snapshots=" + snapshots);
+    }
+
+    private static ClientSubLevel getClientSubLevel(ResourceKey<Level> dimension) {
+        if (subLevelId == null) return null;
         ClientLevel world = ClientWorldLoader.getWorld(dimension);
         SubLevelContainer container = SubLevelContainer.getContainer(world);
-        return container != null && container.getSubLevel(subLevelId) != null;
+        if (container == null) return null;
+        SubLevel subLevel = container.getSubLevel(subLevelId);
+        return subLevel instanceof ClientSubLevel clientSubLevel ? clientSubLevel : null;
+    }
+
+    private static boolean hasSubLevel(ResourceKey<Level> dimension) {
+        return getClientSubLevel(dimension) != null;
     }
 
     private static void waitForDestinationRide(Minecraft minecraft) {
@@ -185,6 +215,7 @@ public final class SableDimensionStackDedicatedClientTest {
         require(vehicle.getPassengers().contains(minecraft.player),
             "client vehicle passenger graph is inconsistent in Nether");
         require(hasSubLevel(Level.NETHER), "destination Sable sublevel missing in Nether");
+        verifyInterpolationHistory(Level.NETHER, "first destination");
         SableDimensionStackIntegrationMarkers.acknowledge("destination");
         ridingSyncTicks = 0;
         phase = Phase.WAIT_FOR_RETURN_RIDE;
@@ -206,6 +237,7 @@ public final class SableDimensionStackDedicatedClientTest {
         require(vehicle.getPassengers().contains(minecraft.player),
             "client vehicle passenger graph is inconsistent after round trip");
         require(hasSubLevel(Level.OVERWORLD), "returned Sable sublevel missing in Overworld");
+        verifyInterpolationHistory(Level.OVERWORLD, "return destination");
 
         SableDimensionStackIntegrationMarkers.acknowledge("return");
         stableReturnTicks = 0;
@@ -236,6 +268,7 @@ public final class SableDimensionStackDedicatedClientTest {
         require(vehicle.getPassengers().contains(minecraft.player),
             "client Create seat passenger graph is inconsistent after gravity recross");
         require(hasSubLevel(Level.NETHER), "gravity-recrossed Sable sublevel missing in Nether");
+        verifyInterpolationHistory(Level.NETHER, "gravity recross destination");
         require(dimensionTransitions == EXPECTED_DIMENSION_TRANSITIONS,
             "unexpected client dimension transition count: " + dimensionTransitions);
 
@@ -268,7 +301,7 @@ public final class SableDimensionStackDedicatedClientTest {
             "dimension flicker occurred after the expected crossing sequence");
         phase = Phase.DONE;
         SableDimensionStackIntegrationMarkers.clientPass(
-            "real client verified continuous Sable ownership, exact three-crossing sequence, rider tracking, gravity recross, and dismount"
+            "real client verified continuous Sable ownership/interpolation, exact three-crossing sequence, rider tracking, gravity recross, and dismount"
         );
         minecraft.stop();
     }
@@ -294,7 +327,8 @@ public final class SableDimensionStackDedicatedClientTest {
         phase = Phase.DONE;
         try {
             SableDimensionStackIntegrationMarkers.clientFail(detail, error);
-        } finally {
+        }
+        finally {
             Minecraft.getInstance().stop();
         }
     }
