@@ -42,9 +42,7 @@ public abstract class MixinSubLevelTrackingSystem_SablePortalCompat {
     private void ip_includePortalWatchers(
         Player player, Vector3dc position, CallbackInfoReturnable<Boolean> cir
     ) {
-        if (!(player instanceof ServerPlayer serverPlayer)) {
-            return;
-        }
+        if (!(player instanceof ServerPlayer serverPlayer)) return;
 
         boolean portalWatching = ImmPtlChunkTracking.isPlayerWatchingChunk(
             serverPlayer,
@@ -53,9 +51,6 @@ public abstract class MixinSubLevelTrackingSystem_SablePortalCompat {
             ((int) Math.floor(position.z())) >> 4
         );
 
-        // Sable's vanilla distance test assumes player and sublevel are in the same Level.
-        // Once IP resolves tracker UUIDs server-wide that assumption is no longer true:
-        // numerically-near coordinates in an unrelated dimension must not keep tracking alive.
         if (serverPlayer.serverLevel() != level) {
             cir.setReturnValue(portalWatching);
         }
@@ -95,11 +90,6 @@ public abstract class MixinSubLevelTrackingSystem_SablePortalCompat {
         return level.getServer().getPlayerList().getPlayer(uuid);
     }
 
-    /**
-     * During a cross-dimension sublevel handoff, do not destroy the source client copy before
-     * the destination full-sync exists. SableDimensionStackCompat retires it per player after
-     * sendFullSync returns.
-     */
     @Inject(method = "onSubLevelRemoved", at = @At("HEAD"), cancellable = true)
     private void ip_delaySourceRemoval(
         SubLevel subLevel, SubLevelRemovalReason reason, CallbackInfo ci
@@ -107,6 +97,28 @@ public abstract class MixinSubLevelTrackingSystem_SablePortalCompat {
         if (subLevel instanceof ServerSubLevel serverSubLevel
             && SableDimensionStackCompat.shouldSuppressSourceRemoval(level, serverSubLevel, reason)) {
             ci.cancel();
+        }
+    }
+
+    /** The compat bridge pre-sends the destination once; discard Sable's queued copy. */
+    @WrapOperation(
+        method = "tick",
+        at = @At(
+            value = "INVOKE",
+            target = "Ldev/ryanhcode/sable/sublevel/system/SubLevelTrackingSystem;sendFullSync(Lnet/minecraft/server/level/ServerPlayer;Ldev/ryanhcode/sable/sublevel/ServerSubLevel;Lnet/minecraft/network/protocol/common/custom/CustomPacketPayload;)V"
+        )
+    )
+    private void ip_avoidDuplicateDestinationFullSync(
+        SubLevelTrackingSystem trackingSystem,
+        ServerPlayer player,
+        ServerSubLevel subLevel,
+        @Nullable CustomPacketPayload extraPacket,
+        Operation<Void> original
+    ) {
+        if (!SableDimensionStackCompat.shouldSkipDuplicateDestinationFullSync(
+            level, player, subLevel
+        )) {
+            original.call(trackingSystem, player, subLevel, extraPacket);
         }
     }
 
@@ -120,11 +132,7 @@ public abstract class MixinSubLevelTrackingSystem_SablePortalCompat {
         SableDimensionStackCompat.onDestinationFullSync(level, player, subLevel);
     }
 
-    /**
-     * Sable UDP packets have no dimension-redirection envelope. Keep UDP for ordinary local
-     * tracking, but route cross-portal observers through Sable's equivalent TCP payload so IP
-     * can attach the owning dimension and the client applies the snapshot to the right world.
-     */
+    /** Remote Sable UDP has no dimension envelope; use redirected TCP for portal watchers. */
     @WrapOperation(
         method = "sendMovementUpdates",
         at = @At(
