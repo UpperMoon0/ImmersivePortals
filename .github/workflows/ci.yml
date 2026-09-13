@@ -68,11 +68,15 @@ jobs:
             runs/gameTestServer/logs/**
 
   graphical-e2e:
-    name: Sable dedicated graphical E2E
+    name: Sable graphical E2E / ${{ matrix.transport }}
     needs: changes
     if: needs.changes.outputs.e2e == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        transport: [udp, tcp]
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-java@v5
@@ -86,6 +90,24 @@ jobs:
             sudo apt-get update
             sudo apt-get install -y xvfb libgl1-mesa-dri
           fi
+      - name: Configure Sable transport
+        env:
+          TRANSPORT: ${{ matrix.transport }}
+        run: |
+          mkdir -p run-sable-e2e-server/config run-sable-e2e-client/config
+          if [[ "$TRANSPORT" == tcp ]]; then
+            cat > run-sable-e2e-server/config/sable-common.toml <<'EOF'
+          disable_udp_pipeline = true
+          attempt_udp_networking = false
+          EOF
+            cp run-sable-e2e-server/config/sable-common.toml run-sable-e2e-client/config/sable-common.toml
+          else
+            cat > run-sable-e2e-server/config/sable-common.toml <<'EOF'
+          disable_udp_pipeline = false
+          attempt_udp_networking = true
+          EOF
+            cp run-sable-e2e-server/config/sable-common.toml run-sable-e2e-client/config/sable-common.toml
+          fi
       - run: chmod +x ./gradlew
       - name: Dedicated server and automated client
         run: python3 tools/verify.py e2e
@@ -93,11 +115,13 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: sable-dimension-stack-e2e
+          name: sable-dimension-stack-e2e-${{ matrix.transport }}
           if-no-files-found: warn
           path: |
             build/verification-e2e.json
             build/sable-dimension-stack-e2e/**
+            run-sable-e2e-server/config/sable-common.toml
+            run-sable-e2e-client/config/sable-common.toml
             run-sable-e2e-server/crash-reports/**
             run-sable-e2e-client/crash-reports/**
             run-sable-e2e-server/logs/**
