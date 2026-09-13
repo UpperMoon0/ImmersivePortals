@@ -1,7 +1,6 @@
 package qouteall.imm_ptl.core.compat.mixin.sable;
 
 import dev.ryanhcode.sable.api.sublevel.ServerSubLevelContainer;
-import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
 import dev.ryanhcode.sable.sublevel.system.SubLevelPhysicsSystem;
 import net.minecraft.server.level.ServerLevel;
 import org.spongepowered.asm.mixin.Final;
@@ -17,18 +16,18 @@ public abstract class MixinSubLevelPhysicsSystem_SableDimensionStackCompat {
     @Shadow @Final private ServerLevel level;
 
     /**
-     * Run migration after Sable has snapshotted lastPose and completed the full physics step.
-     * Pin the exact descriptor and require the injection to match so a Sable API drift cannot
-     * silently disable stacked-dimension migration.
+     * Sable calls updateAllPoses once after every native physics substep. Hooking that exact
+     * point gives portal crossing the same temporal resolution as physics and avoids a tall or
+     * fast body spending the remainder of a game tick attached to the wrong dimension.
      */
     @Inject(
-        method = "tick(Ldev/ryanhcode/sable/api/sublevel/SubLevelContainer;)V",
+        method = "updateAllPoses(Ldev/ryanhcode/sable/api/sublevel/ServerSubLevelContainer;)V",
         at = @At("TAIL"),
         require = 1
     )
-    private void ip_migrateAcrossDimensionStacks(SubLevelContainer container, CallbackInfo ci) {
-        if (container instanceof ServerSubLevelContainer serverContainer) {
-            SableDimensionStackCompat.afterPhysicsTick(level, serverContainer);
-        }
+    private void ip_migrateAcrossPortalsAfterSubstep(
+        ServerSubLevelContainer container, CallbackInfo ci
+    ) {
+        SableDimensionStackCompat.afterPhysicsSubstep(level, container);
     }
 }
