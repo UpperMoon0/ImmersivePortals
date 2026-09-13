@@ -2,15 +2,20 @@ package qouteall.imm_ptl.core.compat.sable;
 
 import com.mojang.datafixers.util.Pair;
 import com.mojang.logging.LogUtils;
+import dev.ryanhcode.sable.Sable;
+import dev.ryanhcode.sable.api.SubLevelHelper;
 import dev.ryanhcode.sable.api.entity.EntitySubLevelUtil;
 import dev.ryanhcode.sable.api.physics.handle.RigidBodyHandle;
 import dev.ryanhcode.sable.api.sublevel.ServerSubLevelContainer;
 import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
+import dev.ryanhcode.sable.api.sublevel.ticket.SubLevelLoadingTicket;
+import dev.ryanhcode.sable.api.sublevel.ticket.SubLevelLoadingTicketType;
 import dev.ryanhcode.sable.companion.math.JOMLConversion;
 import dev.ryanhcode.sable.companion.math.Pose3d;
 import dev.ryanhcode.sable.mixinhelpers.entity.entity_riding_sub_level_vehicle.EntityRidingSubLevelVehicleHelper;
 import dev.ryanhcode.sable.network.packets.tcp.ClientboundStopTrackingSubLevelPacket;
 import dev.ryanhcode.sable.sublevel.ServerSubLevel;
+import dev.ryanhcode.sable.sublevel.SubLevel;
 import dev.ryanhcode.sable.sublevel.storage.SubLevelRemovalReason;
 import dev.ryanhcode.sable.sublevel.storage.serialization.SubLevelData;
 import dev.ryanhcode.sable.sublevel.storage.serialization.SubLevelSerializer;
@@ -26,7 +31,9 @@ import net.minecraft.world.level.Level;
 import net.minecraft.world.level.entity.EntitySectionStorage;
 import net.minecraft.world.phys.Vec3;
 import org.joml.Quaterniond;
+import org.joml.Vector2i;
 import org.joml.Vector3d;
+import org.joml.Vector3dc;
 import org.slf4j.Logger;
 import qouteall.imm_ptl.core.compat.mixin.sable.AccessorSubLevel_SablePortalCompat;
 import qouteall.imm_ptl.core.compat.mixin.sable.InvokerSubLevelTrackingSystem_SablePortalCompat;
@@ -39,6 +46,7 @@ import qouteall.imm_ptl.core.teleportation.ServerTeleportationManager;
 import qouteall.q_misc_util.my_util.DQuaternion;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -51,8 +59,10 @@ import java.util.UUID;
 public final class SableDimensionStackCompat {
     private static final Logger LOGGER = LogUtils.getLogger();
     private static final int CLIENT_HANDOFF_TIMEOUT_TICKS = 100;
+    private static final double HANDOFF_CLEARANCE = 0.25;
     private static final Map<UUID, CrossingSample> LAST_SAMPLES = new HashMap<>();
     private static final Map<UUID, ClientHandoff> CLIENT_HANDOFFS = new HashMap<>();
+    private static final Map<UUID, HandoffGuard> HANDOFF_GUARDS = new HashMap<>();
 
     private SableDimensionStackCompat() {}
 
@@ -64,44 +74,126 @@ public final class SableDimensionStackCompat {
             if (subLevel.isRemoved()) continue;
 
             UUID id = subLevel.getUniqueId();
-            Pose3d currentPose = new Pose3d(subLevel.logicalPose());
+            Vec3 currentAnchor = getWorldCenterOfMass(subLevel, subLevel.logicalPose());
             CrossingSample previousSample = LAST_SAMPLES.get(id);
-            Pose3d previousPose = previousSample != null
+            Vec3 previousAnchor = previousSample != null
                 && previousSample.dimension().equals(level.dimension())
-                ? new Pose3d(previousSample.pose())
-                : new Pose3d(subLevel.lastPose());
+                ? previousSample.anchor()
+                : getWorldCenterOfMass(subLevel, subLevel.lastPose());
 
-            // Keep the last committed sample while network handoff drains. If physics crosses
-            // back meanwhile, the next unlocked segment still spans that crossing.
-            if (CLIENT_HANDOFFS.containsKey(id)) continue;
+            HandoffGuard guard = HANDOFF_GUARDS.get(id);
+            if (guard != null && guard.destinationDimension().equals(level.dimension())) {
+                double clearance = signedDestinationClearance(guard, currentAnchor);
+                if (clearance >= HANDOFF_CLEARANCE) {
+                    HANDOFF_GUARDS.remove(id);
+                    guard = null;
+                }
+            }
 
-            Portal portal = findCrossedPortal(level, previousPose, currentPose);
-            if (portal == null) {
-                rememberSample(level, id, currentPose);
+            // The destination already exists on the client while a handoff drains. Keep the
+            // physics sample advancing so an old pre-transfer segment can never retrigger later.
+            if (CLIENT_HANDOFFS.containsKey(id)) {
+                rememberSample(level, id, currentAnchor);
                 continue;
             }
 
-            ServerSubLevel migrated = migrateSubLevel(container, subLevel, portal, previousPose);
-            if (migrated != null) {
-                LAST_SAMPLES.put(id, new CrossingSample(
-                    migrated.getLevel().dimension(), transformPose(currentPose, portal),
-                    migrated.getLevel().getGameTime()
-                ));
+            Portal portal = findCrossedPortal(level, previousAnchor, currentAnchor);
+            if (portal == null) {
+                rememberSample(level, id, currentAnchor);
+                continue;
             }
-            else {
-                rememberSample(level, id, currentPose);
+
+            if (guard != null
+                && portal.getDestDim().equals(guard.sourceDimension())
+                && signedDestinationClearance(guard, currentAnchor) < HANDOFF_CLEARANCE) {
+                // Numerical/gravity bounce at the same seam: ownership remains in destination
+                // until the COM has genuinely cleared the exit plane once.
+                rememberSample(level, id, currentAnchor);
+                continue;
+            }
+
+            ServerSubLevel migrated = migrateSubLevel(
+                container, subLevel, portal, new Pose3d(subLevel.lastPose())
+            );
+            if (migrated == null) {
+                rememberSample(level, id, currentAnchor);
             }
         }
     }
 
-    private static void rememberSample(ServerLevel level, UUID id, Pose3d pose) {
-        LAST_SAMPLES.put(id, new CrossingSample(level.dimension(), new Pose3d(pose), level.getGameTime()));
+    /**
+     * Called from the player portal path before IP sends the dimension change. If a player is
+     * riding a Sable-retained vehicle, the owning dependency chain must move first so the client
+     * already has destination Sable state when its player world changes.
+     *
+     * @return false when a ridden Sable handoff could not be prepared and the player teleport
+     *         must be cancelled/corrected instead of leaving the body behind.
+     */
+    public static boolean beforePlayerPortalTeleport(ServerPlayer player, Portal portal) {
+        Entity vehicle = player.getVehicle();
+        while (vehicle != null) {
+            SubLevel containing = Sable.HELPER.getContaining(vehicle);
+            if (containing instanceof ServerSubLevel sourceSubLevel) {
+                if (sourceSubLevel.getLevel() != player.serverLevel()) return false;
+                ServerSubLevelContainer sourceContainer = SubLevelContainer.getContainer(player.serverLevel());
+                if (sourceContainer == null) return false;
+                if (CLIENT_HANDOFFS.containsKey(sourceSubLevel.getUniqueId())) return true;
+                return migrateSubLevel(
+                    sourceContainer, sourceSubLevel, portal, new Pose3d(sourceSubLevel.lastPose())
+                ) != null;
+            }
+            vehicle = vehicle.getVehicle();
+        }
+        return true;
     }
 
-    /** Swept anchor crossing through the actual IP portal shape; no full-AABB seam delay. */
-    private static Portal findCrossedPortal(ServerLevel level, Pose3d previousPose, Pose3d currentPose) {
-        Vec3 previous = JOMLConversion.toMojang(previousPose.position());
-        Vec3 current = JOMLConversion.toMojang(currentPose.position());
+    /**
+     * Sable's default first-free allocator is dimension-local. Cross-dimensional runtime
+     * transfer requires a stable hidden plot coordinate, so new server sublevels use the first
+     * slot that is free in every loaded Sable dimension. Occupancy includes unloaded plots,
+     * which keeps the invariant stable across normal Sable unload/reload cycles.
+     */
+    public static Vector2i findGloballyFreePlot(
+        ServerLevel allocatingLevel, SubLevelContainer requestingContainer
+    ) {
+        int sideLength = 1 << requestingContainer.getLogSideLength();
+        int logPlotSize = requestingContainer.getLogPlotSize();
+
+        for (int x = 0; x < sideLength; x++) {
+            for (int z = 0; z < sideLength; z++) {
+                boolean free = true;
+                for (ServerLevel level : allocatingLevel.getServer().getAllLevels()) {
+                    ServerSubLevelContainer other = SubLevelContainer.getContainer(level);
+                    if (other == null) continue;
+                    if (other.getLogSideLength() != requestingContainer.getLogSideLength()
+                        || other.getLogPlotSize() != logPlotSize) {
+                        throw new IllegalStateException(
+                            "Sable plot grids differ between dimensions; seamless cross-dimension allocation is unsafe"
+                        );
+                    }
+                    if (other.getOccupancy().get(other.getIndex(x, z))) {
+                        free = false;
+                        break;
+                    }
+                }
+                if (free) return new Vector2i(x, z);
+            }
+        }
+        return null;
+    }
+
+    private static void rememberSample(ServerLevel level, UUID id, Vec3 anchor) {
+        LAST_SAMPLES.put(id, new CrossingSample(level.dimension(), anchor, level.getGameTime()));
+    }
+
+    /** Use the physical COM, not Pose3d.position(), because Sable re-centres pose origins on save/load. */
+    private static Vec3 getWorldCenterOfMass(ServerSubLevel subLevel, Pose3d pose) {
+        Vector3dc localCenterOfMass = subLevel.getSelfMassTracker().getCenterOfMass();
+        return JOMLConversion.toMojang(pose.transformPosition(new Vector3d(localCenterOfMass)));
+    }
+
+    /** Swept COM crossing through the actual IP portal aperture. */
+    private static Portal findCrossedPortal(ServerLevel level, Vec3 previous, Vec3 current) {
         if (previous.distanceToSqr(current) < 1.0e-14) return null;
 
         return PortalUtils.raytracePortals(
@@ -114,6 +206,15 @@ public final class SableDimensionStackCompat {
         ).map(Pair::getFirst).orElse(null);
     }
 
+    private static double signedDestinationClearance(HandoffGuard guard, Vec3 anchor) {
+        return anchor.subtract(guard.destinationPlane()).dot(guard.destinationDirection());
+    }
+
+    /**
+     * Migrates the complete Sable loading-dependency chain as one transaction. Destination
+     * sublevels/tickets are staged before entities move. Any pre-commit failure removes the
+     * staged side and restores source entities/tickets.
+     */
     private static ServerSubLevel migrateSubLevel(
         ServerSubLevelContainer sourceContainer,
         ServerSubLevel sourceSubLevel,
@@ -132,23 +233,138 @@ public final class SableDimensionStackCompat {
             );
             return null;
         }
-
-        int localPlotX = sourceSubLevel.getPlot().plotPos.x - sourceContainer.getOrigin().x;
-        int localPlotZ = sourceSubLevel.getPlot().plotPos.z - sourceContainer.getOrigin().y;
-        if (!isMatchingDestinationSlotFree(destinationContainer, localPlotX, localPlotZ)) {
-            LOGGER.warn(
-                "Cannot migrate Sable sublevel {} from {} to {}: matching destination plot slot {},{} is occupied",
-                sourceSubLevel.getUniqueId(), sourceWorld.dimension().location(),
-                destinationWorld.dimension().location(), localPlotX, localPlotZ
-            );
+        if (destinationContainer.getLogSideLength() != sourceContainer.getLogSideLength()
+            || destinationContainer.getLogPlotSize() != sourceContainer.getLogPlotSize()) {
+            LOGGER.error("Cannot migrate Sable sublevel {}: source/destination plot grids differ",
+                sourceSubLevel.getUniqueId());
             return null;
         }
 
+        List<ServerSubLevel> chain = new ArrayList<>(SubLevelHelper.getLoadingDependencyChain(sourceSubLevel));
+        if (!chain.contains(sourceSubLevel)) chain.add(sourceSubLevel);
+        chain.removeIf(SubLevel::isRemoved);
+        chain.sort(Comparator.comparing(subLevel -> subLevel.getUniqueId().toString()));
+        for (ServerSubLevel member : chain) {
+            if (member.getLevel() != sourceWorld) {
+                LOGGER.error(
+                    "Cannot migrate Sable dependency chain {}: member {} belongs to another level",
+                    sourceSubLevel.getUniqueId(), member.getUniqueId()
+                );
+                return null;
+            }
+        }
+
+        List<UUID> dependencyIds = chain.stream().map(SubLevel::getUniqueId).toList();
+        for (ServerSubLevel member : chain) {
+            int localX = localPlotX(sourceContainer, member);
+            int localZ = localPlotZ(sourceContainer, member);
+            if (!isMatchingDestinationSlotFree(destinationContainer, localX, localZ)) {
+                SubLevel occupant = destinationContainer.getSubLevel(localX, localZ);
+                LOGGER.error(
+                    "Cannot seamlessly migrate Sable chain {} from {} to {}: legacy plot collision at {},{} occupant={}. "
+                        + "New allocations are globally coordinated; this collision predates the compatibility lease.",
+                    sourceSubLevel.getUniqueId(), sourceWorld.dimension().location(),
+                    destinationWorld.dimension().location(), localX, localZ,
+                    occupant == null ? "unloaded/reserved" : occupant.getUniqueId()
+                );
+                return null;
+            }
+        }
+
+        List<MigrationUnit> units = new ArrayList<>();
+        try {
+            for (ServerSubLevel member : chain) {
+                Pose3d previousPose = member == sourceSubLevel
+                    ? new Pose3d(previousPhysicsPose)
+                    : new Pose3d(member.lastPose());
+                units.add(stageDestinationUnit(
+                    sourceContainer, destinationContainer, member, portal,
+                    previousPose, dependencyIds
+                ));
+            }
+
+            // Every destination body exists before any watcher or entity can change dimension.
+            for (MigrationUnit unit : units) {
+                beginClientHandoff(
+                    sourceWorld, destinationContainer, unit.source(), unit.destination(),
+                    ChunkPos.asLong(unit.localPlotX(), unit.localPlotZ())
+                );
+            }
+        }
+        catch (RuntimeException stagingFailure) {
+            cleanupStagedUnits(destinationContainer, units);
+            LOGGER.error("Failed staging seamless Sable destination; source chain kept", stagingFailure);
+            return null;
+        }
+
+        try {
+            for (MigrationUnit unit : units) {
+                transferPlotEntities(unit.entities(), destinationWorld, unit.movedById());
+            }
+        }
+        catch (RuntimeException transferFailure) {
+            rollbackAllEntities(units, sourceWorld);
+            cleanupStagedUnits(destinationContainer, units);
+            LOGGER.error("Failed Sable dependency-chain entity migration; source chain kept", transferFailure);
+            return null;
+        }
+
+        try {
+            for (MigrationUnit unit : units) {
+                removeForceLoadTickets(sourceContainer, unit.source(), unit.tickets());
+            }
+        }
+        catch (RuntimeException ticketFailure) {
+            for (MigrationUnit unit : units) {
+                restoreForceLoadTickets(sourceContainer, unit.source(), unit.tickets());
+            }
+            rollbackAllEntities(units, sourceWorld);
+            cleanupStagedUnits(destinationContainer, units);
+            LOGGER.error("Failed transferring Sable force-load tickets; source chain kept", ticketFailure);
+            return null;
+        }
+
+        // Commit ownership only after the whole dependency chain, entity graph and tickets are ready.
+        for (MigrationUnit unit : units) {
+            sourceContainer.removeSubLevel(unit.source(), SubLevelRemovalReason.REMOVED);
+        }
+        for (MigrationUnit unit : units) {
+            commitClientHandoff(sourceWorld, unit.source().getUniqueId());
+            Vec3 destinationAnchor = getWorldCenterOfMass(unit.destination(), unit.destination().logicalPose());
+            rememberSample(destinationWorld, unit.destination().getUniqueId(), destinationAnchor);
+            HANDOFF_GUARDS.put(unit.destination().getUniqueId(), new HandoffGuard(
+                sourceWorld.dimension(), destinationWorld.dimension(), portal.getDestPos(),
+                portal.getContentDirection().normalize()
+            ));
+        }
+
+        ServerSubLevel migratedSource = units.stream()
+            .filter(unit -> unit.source() == sourceSubLevel)
+            .map(MigrationUnit::destination)
+            .findFirst().orElse(null);
+        LOGGER.debug(
+            "Migrated Sable dependency chain rooted at {} ({} bodies) from {} to {} through portal {}",
+            sourceSubLevel.getUniqueId(), units.size(), sourceWorld.dimension().location(),
+            destinationWorld.dimension().location(), portal.getUUID()
+        );
+        return migratedSource;
+    }
+
+    private static MigrationUnit stageDestinationUnit(
+        ServerSubLevelContainer sourceContainer,
+        ServerSubLevelContainer destinationContainer,
+        ServerSubLevel sourceSubLevel,
+        Portal portal,
+        Pose3d previousPhysicsPose,
+        List<UUID> dependencyIds
+    ) {
+        ServerLevel sourceWorld = sourceContainer.getLevel();
+        ServerLevel destinationWorld = destinationContainer.getLevel();
         RigidBodyHandle sourceHandle = RigidBodyHandle.of(sourceSubLevel);
         if (sourceHandle == null || !sourceHandle.isValid()) {
-            LOGGER.error("Cannot migrate Sable sublevel {}: source physics handle unavailable",
-                sourceSubLevel.getUniqueId());
-            return null;
+            throw new IllegalStateException(
+                "Source Sable physics handle unavailable for " + sourceSubLevel.getUniqueId()
+            );
         }
 
         Vector3d exactLinearVelocity = sourceHandle.getLinearVelocity(new Vector3d());
@@ -161,20 +377,23 @@ public final class SableDimensionStackCompat {
         );
 
         List<EntityTransfer> entities = capturePlotEntities(sourceWorld, sourceSubLevel, portal);
-        SubLevelData sourceData = SubLevelSerializer.toData(sourceSubLevel, List.of());
+        List<SubLevelLoadingTicket<?>> tickets = captureForceLoadTickets(sourceContainer, sourceSubLevel);
+        SubLevelData sourceData = SubLevelSerializer.toData(sourceSubLevel, dependencyIds);
         SubLevelData destinationData = transformSerializedState(sourceData, portal);
-        if (!rebasePlotSections(destinationData.fullTag(), sourceWorld.getMinSection(),
-            destinationWorld.getMinSection(), destinationWorld.getSectionsCount())) {
-            LOGGER.warn("Cannot migrate Sable sublevel {}: blocks exceed destination build height",
-                sourceSubLevel.getUniqueId());
-            return null;
+        if (!rebasePlotSections(
+            destinationData.fullTag(), sourceWorld.getMinSection(),
+            destinationWorld.getMinSection(), destinationWorld.getSectionsCount()
+        )) {
+            throw new IllegalStateException(
+                "Sable blocks exceed destination build height for " + sourceSubLevel.getUniqueId()
+            );
         }
 
         ServerSubLevel destinationSubLevel = SubLevelSerializer.fullyLoad(destinationWorld, destinationData);
         if (destinationSubLevel == null) {
-            LOGGER.error("Failed to load migrated Sable sublevel {} into {}",
-                sourceSubLevel.getUniqueId(), destinationWorld.dimension().location());
-            return null;
+            throw new IllegalStateException(
+                "Failed loading migrated Sable sublevel " + sourceSubLevel.getUniqueId()
+            );
         }
 
         try {
@@ -183,48 +402,134 @@ public final class SableDimensionStackCompat {
             destinationSubLevel.latestAngularVelocity.set(destinationAngularVelocity);
             ((AccessorSubLevel_SablePortalCompat) (Object) destinationSubLevel)
                 .ip_getLastPose().set(transformPose(previousPhysicsPose, portal));
-
-            // Pre-send the destination while every player is still in the source world. This
-            // guarantees the later player dimension-change cannot outrun Sable visibility.
-            beginClientHandoff(
-                sourceWorld, destinationContainer, sourceSubLevel, destinationSubLevel,
-                ChunkPos.asLong(localPlotX, localPlotZ)
-            );
+            installForceLoadTickets(destinationContainer, destinationSubLevel, tickets);
         }
-        catch (RuntimeException setupFailure) {
-            abortClientHandoff(sourceSubLevel.getUniqueId());
+        catch (RuntimeException failure) {
+            removeForceLoadTicketsBestEffort(destinationContainer, destinationSubLevel, tickets);
             destinationContainer.removeSubLevel(destinationSubLevel, SubLevelRemovalReason.REMOVED);
-            LOGGER.error("Failed preparing seamless Sable destination handoff; source kept", setupFailure);
-            return null;
+            throw failure;
         }
 
-        Map<UUID, Entity> movedById = new HashMap<>();
-        try {
-            transferPlotEntities(entities, destinationWorld, movedById);
+        return new MigrationUnit(
+            sourceSubLevel, destinationSubLevel,
+            localPlotX(sourceContainer, sourceSubLevel),
+            localPlotZ(sourceContainer, sourceSubLevel),
+            entities, tickets, new HashMap<>()
+        );
+    }
+
+    private static int localPlotX(ServerSubLevelContainer container, ServerSubLevel subLevel) {
+        return subLevel.getPlot().plotPos.x - container.getOrigin().x;
+    }
+
+    private static int localPlotZ(ServerSubLevelContainer container, ServerSubLevel subLevel) {
+        return subLevel.getPlot().plotPos.z - container.getOrigin().y;
+    }
+
+    private static List<SubLevelLoadingTicket<?>> captureForceLoadTickets(
+        ServerSubLevelContainer container, ServerSubLevel subLevel
+    ) {
+        Set<SubLevelLoadingTicket<?>> tickets = container.collectForceLoadTickets().get(subLevel);
+        return tickets == null ? List.of() : List.copyOf(tickets);
+    }
+
+    private static void installForceLoadTickets(
+        ServerSubLevelContainer container,
+        ServerSubLevel subLevel,
+        List<SubLevelLoadingTicket<?>> tickets
+    ) {
+        for (SubLevelLoadingTicket<?> ticket : tickets) {
+            addForceLoadTicketUnchecked(container, subLevel, ticket);
         }
-        catch (RuntimeException exception) {
-            boolean rolledBack = rollbackPlotEntities(entities, movedById, sourceWorld);
-            abortClientHandoff(sourceSubLevel.getUniqueId());
-            if (rolledBack) {
-                destinationContainer.removeSubLevel(destinationSubLevel, SubLevelRemovalReason.REMOVED);
+        Set<SubLevelLoadingTicket<?>> active = container.collectForceLoadTickets().get(subLevel);
+        if (!tickets.isEmpty() && (active == null || !active.containsAll(tickets))) {
+            throw new IllegalStateException("Destination Sable force-load ticket set is incomplete");
+        }
+    }
+
+    private static void removeForceLoadTickets(
+        ServerSubLevelContainer container,
+        ServerSubLevel subLevel,
+        List<SubLevelLoadingTicket<?>> tickets
+    ) {
+        for (SubLevelLoadingTicket<?> ticket : tickets) {
+            removeForceLoadTicketUnchecked(container, subLevel, ticket);
+        }
+        Set<SubLevelLoadingTicket<?>> active = container.collectForceLoadTickets().get(subLevel);
+        if (active != null && active.stream().anyMatch(tickets::contains)) {
+            throw new IllegalStateException("Source Sable force-load ticket removal is incomplete");
+        }
+    }
+
+    private static void restoreForceLoadTickets(
+        ServerSubLevelContainer container,
+        ServerSubLevel subLevel,
+        List<SubLevelLoadingTicket<?>> tickets
+    ) {
+        for (SubLevelLoadingTicket<?> ticket : tickets) {
+            addForceLoadTicketUnchecked(container, subLevel, ticket);
+        }
+    }
+
+    private static void removeForceLoadTicketsBestEffort(
+        ServerSubLevelContainer container,
+        ServerSubLevel subLevel,
+        List<SubLevelLoadingTicket<?>> tickets
+    ) {
+        for (SubLevelLoadingTicket<?> ticket : tickets) {
+            try {
+                removeForceLoadTicketUnchecked(container, subLevel, ticket);
             }
-            else {
+            catch (RuntimeException ignored) {
+            }
+        }
+    }
+
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private static void addForceLoadTicketUnchecked(
+        ServerSubLevelContainer container,
+        ServerSubLevel subLevel,
+        SubLevelLoadingTicket<?> ticket
+    ) {
+        container.addForceLoadTicket(
+            subLevel, (SubLevelLoadingTicketType) ticket.type(), ticket.key()
+        );
+    }
+
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private static void removeForceLoadTicketUnchecked(
+        ServerSubLevelContainer container,
+        ServerSubLevel subLevel,
+        SubLevelLoadingTicket<?> ticket
+    ) {
+        container.removeForceLoadTicket(
+            subLevel, (SubLevelLoadingTicketType) ticket.type(), ticket.key()
+        );
+    }
+
+    private static void cleanupStagedUnits(
+        ServerSubLevelContainer destinationContainer, List<MigrationUnit> units
+    ) {
+        for (MigrationUnit unit : units) {
+            abortClientHandoff(unit.source().getUniqueId());
+            removeForceLoadTicketsBestEffort(destinationContainer, unit.destination(), unit.tickets());
+            if (!unit.destination().isRemoved()) {
+                destinationContainer.removeSubLevel(unit.destination(), SubLevelRemovalReason.REMOVED);
+            }
+        }
+    }
+
+    private static void rollbackAllEntities(List<MigrationUnit> units, ServerLevel sourceWorld) {
+        for (int i = units.size() - 1; i >= 0; i--) {
+            MigrationUnit unit = units.get(i);
+            if (unit.movedById().isEmpty()) continue;
+            if (!rollbackPlotEntities(unit.entities(), unit.movedById(), sourceWorld)) {
                 LOGGER.error(
-                    "Sable entity rollback for {} incomplete; keeping both sublevel copies",
-                    sourceSubLevel.getUniqueId()
+                    "Sable entity rollback for {} was incomplete",
+                    unit.source().getUniqueId()
                 );
             }
-            LOGGER.error("Failed Sable entity migration from {} to {}; source kept",
-                sourceWorld.dimension().location(), destinationWorld.dimension().location(), exception);
-            return null;
         }
-
-        sourceContainer.removeSubLevel(sourceSubLevel, SubLevelRemovalReason.REMOVED);
-        commitClientHandoff(sourceWorld, sourceSubLevel.getUniqueId());
-        LOGGER.debug("Migrated Sable sublevel {} from {} to {} through portal {}",
-            destinationSubLevel.getUniqueId(), sourceWorld.dimension().location(),
-            destinationWorld.dimension().location(), portal.getUUID());
-        return destinationSubLevel;
     }
 
     private static void restoreExactVelocity(
@@ -366,8 +671,10 @@ public final class SableDimensionStackCompat {
                 ServerPlayer player = level.getServer().getPlayerList().getPlayer(playerId);
                 if (player != null) sendSourceRemoval(level, player, handoff);
             }
-            LOGGER.warn("Timed out draining Sable handoff {}; retired {} stale source copies",
-                entry.getKey(), handoff.pendingSourceRemoval.size());
+            LOGGER.warn(
+                "Timed out draining Sable handoff {}; retired {} stale source copies",
+                entry.getKey(), handoff.pendingSourceRemoval.size()
+            );
             iterator.remove();
         }
     }
@@ -382,8 +689,10 @@ public final class SableDimensionStackCompat {
         return !container.getOccupancy().get(container.getIndex(localPlotX, localPlotZ));
     }
 
-    static boolean rebasePlotSections(CompoundTag tag, int sourceMinSection,
-                                     int destinationMinSection, int destinationSectionCount) {
+    static boolean rebasePlotSections(
+        CompoundTag tag, int sourceMinSection,
+        int destinationMinSection, int destinationSectionCount
+    ) {
         CompoundTag chunks = tag.getCompound("plot").getCompound("chunks");
         for (String chunkKey : chunks.getAllKeys()) {
             for (String key : chunks.getCompound(chunkKey).getCompound("sections").getAllKeys()) {
@@ -498,7 +807,9 @@ public final class SableDimensionStackCompat {
                 transfer.entity(), transfer.destinationPosition(), destinationWorld
             );
             if (moved == null || moved.level() != destinationWorld) {
-                throw new IllegalStateException("Entity failed cross-dimension transfer: " + transfer.entity());
+                throw new IllegalStateException(
+                    "Entity failed cross-dimension transfer: " + transfer.entity()
+                );
             }
             moved.setDeltaMovement(transfer.destinationVelocity());
             movedById.put(transfer.entity().getUUID(), moved);
@@ -553,7 +864,14 @@ public final class SableDimensionStackCompat {
         }
     }
 
-    private record CrossingSample(ResourceKey<Level> dimension, Pose3d pose, long gameTime) {}
+    private record CrossingSample(ResourceKey<Level> dimension, Vec3 anchor, long gameTime) {}
+
+    private record HandoffGuard(
+        ResourceKey<Level> sourceDimension,
+        ResourceKey<Level> destinationDimension,
+        Vec3 destinationPlane,
+        Vec3 destinationDirection
+    ) {}
 
     private static final class ClientHandoff {
         private final ResourceKey<Level> sourceDimension;
@@ -578,6 +896,16 @@ public final class SableDimensionStackCompat {
             this.createdGameTime = createdGameTime;
         }
     }
+
+    private record MigrationUnit(
+        ServerSubLevel source,
+        ServerSubLevel destination,
+        int localPlotX,
+        int localPlotZ,
+        List<EntityTransfer> entities,
+        List<SubLevelLoadingTicket<?>> tickets,
+        Map<UUID, Entity> movedById
+    ) {}
 
     private record EntityTransfer(
         Entity entity,
