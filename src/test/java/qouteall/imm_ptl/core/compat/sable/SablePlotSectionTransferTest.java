@@ -13,8 +13,12 @@ class SablePlotSectionTransferTest {
             section.putString("sentinel", index);
             sections.put(index, section);
         }
+        CompoundTag heightmaps = new CompoundTag();
+        heightmaps.putLongArray("MOTION_BLOCKING", new long[]{1L, 2L, 3L});
+
         CompoundTag chunk = new CompoundTag();
         chunk.put("sections", sections);
+        chunk.put("heightmaps", heightmaps);
         CompoundTag chunks = new CompoundTag();
         chunks.put("0", chunk);
         CompoundTag plot = new CompoundTag();
@@ -25,14 +29,34 @@ class SablePlotSectionTransferTest {
     }
 
     @Test
-    void roundTripPreservesAbsoluteHeightAndPayload() {
+    void roundTripPreservesAbsoluteSectionHeightButRebuildsRelativeHeightmaps() {
         CompoundTag tag = payload("4", "12", "19");
-        CompoundTag original = tag.copy();
         assertTrue(SableDimensionStackCompat.rebasePlotSections(tag, -4, 0, 16));
-        CompoundTag sections = tag.getCompound("plot").getCompound("chunks").getCompound("0").getCompound("sections");
+
+        CompoundTag chunk = tag.getCompound("plot").getCompound("chunks").getCompound("0");
+        CompoundTag sections = chunk.getCompound("sections");
         assertEquals("12", sections.getCompound("8").getString("sentinel"));
+        assertTrue(chunk.getCompound("heightmaps").isEmpty(),
+            "heightmaps are relative to min build height and must be rebuilt in destination");
+
         assertTrue(SableDimensionStackCompat.rebasePlotSections(tag, 0, -4, 24));
-        assertEquals(original, tag);
+        sections = chunk.getCompound("sections");
+        assertEquals("4", sections.getCompound("4").getString("sentinel"));
+        assertEquals("12", sections.getCompound("12").getString("sentinel"));
+        assertEquals("19", sections.getCompound("19").getString("sentinel"));
+        assertTrue(chunk.getCompound("heightmaps").isEmpty());
+    }
+
+    @Test
+    void sameVerticalOriginKeepsExistingHeightmapData() {
+        CompoundTag tag = payload("1", "5");
+        long[] before = tag.getCompound("plot").getCompound("chunks").getCompound("0")
+            .getCompound("heightmaps").getLongArray("MOTION_BLOCKING");
+
+        assertTrue(SableDimensionStackCompat.rebasePlotSections(tag, 0, 0, 16));
+        long[] after = tag.getCompound("plot").getCompound("chunks").getCompound("0")
+            .getCompound("heightmaps").getLongArray("MOTION_BLOCKING");
+        assertArrayEquals(before, after);
     }
 
     @Test
