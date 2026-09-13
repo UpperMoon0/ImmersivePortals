@@ -26,9 +26,10 @@ public final class SableDimensionStackDedicatedClientTest {
     private static final int RIDING_SYNC_GRACE_TICKS = 120;
     private static final int RETURN_STABLE_TICKS = 10;
     private static final int MAX_OVERLAP_TICKS = 20;
-    private static final int EXPECTED_DIMENSION_TRANSITIONS = 3;
+    private static final int EXPECTED_SEAM_TRANSITIONS = 3;
     private static final int MIN_HANDOFF_HISTORY_SNAPSHOTS = 3;
     private static final double MAX_BODY_RIDER_DISTANCE = 32.0;
+    private static final double MIN_REMOTE_OBSERVED_MOVEMENT = 0.15;
 
     private enum Phase {
         CONNECT,
@@ -37,6 +38,8 @@ public final class SableDimensionStackDedicatedClientTest {
         WAIT_FOR_RETURN_RIDE,
         WAIT_FOR_GRAVITY_RECROSS,
         WAIT_FOR_DISMOUNT,
+        WAIT_FOR_REMOTE_SOURCE,
+        WAIT_FOR_REMOTE_MOVEMENT,
         WAIT_FOR_SERVER_PASS,
         DONE
     }
@@ -50,8 +53,9 @@ public final class SableDimensionStackDedicatedClientTest {
     private static int ridingSyncTicks;
     private static int stableReturnTicks;
     private static int overlapTicks;
-    private static int dimensionTransitions;
+    private static int seamTransitions;
     private static ResourceKey<Level> lastObservedDimension;
+    private static double remoteSourceX = Double.NaN;
 
     private SableDimensionStackDedicatedClientTest() {}
 
@@ -73,7 +77,10 @@ public final class SableDimensionStackDedicatedClientTest {
             }
             if (minecraft.player == null || minecraft.level == null) return;
 
-            if (subLevelId != null) {
+            // This invariant applies while the rider and body are expected to share their
+            // canonical dimension. The final observer phase deliberately moves only the
+            // player back to Overworld, so it has its own remote-world continuity checks.
+            if (subLevelId != null && isRiderHandoffPhase()) {
                 verifyContinuousClientOwnership(minecraft);
             }
 
@@ -83,13 +90,25 @@ public final class SableDimensionStackDedicatedClientTest {
                 case WAIT_FOR_RETURN_RIDE -> waitForReturnRide(minecraft);
                 case WAIT_FOR_GRAVITY_RECROSS -> waitForGravityRecross(minecraft);
                 case WAIT_FOR_DISMOUNT -> waitForDismount(minecraft);
-                case WAIT_FOR_SERVER_PASS -> waitForStableServerConfirmedDismount(minecraft);
+                case WAIT_FOR_REMOTE_SOURCE -> waitForRemoteSource(minecraft);
+                case WAIT_FOR_REMOTE_MOVEMENT -> waitForRemoteMovement(minecraft);
+                case WAIT_FOR_SERVER_PASS -> waitForStableServerConfirmedRemoteMovement(minecraft);
                 case CONNECT, DONE -> { }
             }
         }
         catch (Throwable error) {
             fail("exception phase=" + phase + diagnosticState(), error);
         }
+    }
+
+    private static boolean isRiderHandoffPhase() {
+        return switch (phase) {
+            case WAIT_FOR_SOURCE_RIDE, WAIT_FOR_DESTINATION_RIDE,
+                 WAIT_FOR_RETURN_RIDE, WAIT_FOR_GRAVITY_RECROSS,
+                 WAIT_FOR_DISMOUNT -> true;
+            case CONNECT, WAIT_FOR_REMOTE_SOURCE, WAIT_FOR_REMOTE_MOVEMENT,
+                 WAIT_FOR_SERVER_PASS, DONE -> false;
+        };
     }
 
     private static void connectWhenReady(Minecraft minecraft) {
@@ -125,7 +144,8 @@ public final class SableDimensionStackDedicatedClientTest {
         subLevelId = containing.getUniqueId();
         lastObservedDimension = minecraft.level.dimension();
         overlapTicks = 0;
-        dimensionTransitions = 0;
+        seamTransitions = 0;
+        remoteSourceX = Double.NaN;
         verifyContinuousClientOwnership(minecraft);
 
         SableDimensionStackIntegrationMarkers.acknowledge("source");
@@ -162,8 +182,8 @@ public final class SableDimensionStackDedicatedClientTest {
         }
 
         if (lastObservedDimension != null && !lastObservedDimension.equals(currentDimension)) {
-            dimensionTransitions++;
-            require(dimensionTransitions <= EXPECTED_DIMENSION_TRANSITIONS,
+            seamTransitions++;
+            require(seamTransitions <= EXPECTED_SEAM_TRANSITIONS,
                 "client dimension ownership flickered/ping-ponged across the portal seam");
         }
         lastObservedDimension = currentDimension;
@@ -188,7 +208,7 @@ public final class SableDimensionStackDedicatedClientTest {
     }
 
     private static ClientSubLevel getClientSubLevel(ResourceKey<Level> dimension) {
-        if (subLevelId == null) return null;
+        if (subLevelId == null || !ClientWorldLoader.getServerDimensions().contains(dimension)) return null;
         ClientLevel world = ClientWorldLoader.getWorld(dimension);
         SubLevelContainer container = SubLevelContainer.getContainer(world);
         if (container == null) return null;
@@ -269,8 +289,8 @@ public final class SableDimensionStackDedicatedClientTest {
             "client Create seat passenger graph is inconsistent after gravity recross");
         require(hasSubLevel(Level.NETHER), "gravity-recrossed Sable sublevel missing in Nether");
         verifyInterpolationHistory(Level.NETHER, "gravity recross destination");
-        require(dimensionTransitions == EXPECTED_DIMENSION_TRANSITIONS,
-            "unexpected client dimension transition count: " + dimensionTransitions);
+        require(seamTransitions == EXPECTED_SEAM_TRANSITIONS,
+            "unexpected client seam-transition count: " + seamTransitions);
 
         SableDimensionStackIntegrationMarkers.acknowledge("recross");
         minecraft.getConnection().send(new ServerboundPlayerCommandPacket(
@@ -288,20 +308,71 @@ public final class SableDimensionStackDedicatedClientTest {
             return;
         }
         ridingSyncTicks = 0;
+        require(seamTransitions == EXPECTED_SEAM_TRANSITIONS,
+            "dimension flicker occurred before remote-observer setup");
         SableDimensionStackIntegrationMarkers.acknowledge("dismount");
+        phase = Phase.WAIT_FOR_REMOTE_SOURCE;
+        phaseTicks = 0;
+    }
+
+    /**
+     * The server intentionally moves only the player back to Overworld. The Sable body remains
+     * canonical in Nether and must stay loaded/tracked in the client's remote Nether world.
+     */
+    private static void waitForRemoteSource(Minecraft minecraft) {
+        if (!minecraft.level.dimension().equals(Level.OVERWORLD)) return;
+        require(minecraft.player.getVehicle() == null,
+            "remote observer unexpectedly remounted a vehicle");
+
+        ClientSubLevel remote = getClientSubLevel(Level.NETHER);
+        require(remote != null,
+            "remote Nether Sable sublevel disappeared when observer returned to Overworld");
+        remoteSourceX = remote.logicalPose().position().x();
+        require(Double.isFinite(remoteSourceX),
+            "remote Nether Sable sublevel has a non-finite source pose");
+        SableDimensionStackIntegrationMarkers.acknowledge("remote-source");
+        phase = Phase.WAIT_FOR_REMOTE_MOVEMENT;
+        phaseTicks = 0;
+    }
+
+    /** Prove live movement packets continue updating the non-current client world. */
+    private static void waitForRemoteMovement(Minecraft minecraft) {
+        require(minecraft.level.dimension().equals(Level.OVERWORLD),
+            "remote observer left Overworld while waiting for Nether movement");
+        require(minecraft.player.getVehicle() == null,
+            "remote observer remounted while waiting for Nether movement");
+
+        ClientSubLevel remote = getClientSubLevel(Level.NETHER);
+        require(remote != null,
+            "remote Nether Sable sublevel disappeared while it was moving");
+        double currentX = remote.logicalPose().position().x();
+        require(Double.isFinite(currentX),
+            "remote Nether Sable sublevel produced a non-finite moving pose");
+        if (Math.abs(currentX - remoteSourceX) < MIN_REMOTE_OBSERVED_MOVEMENT) return;
+
+        SableDimensionStackIntegrationMarkers.acknowledge("remote-moved");
         phase = Phase.WAIT_FOR_SERVER_PASS;
         phaseTicks = 0;
     }
 
-    private static void waitForStableServerConfirmedDismount(Minecraft minecraft) {
+    private static void waitForStableServerConfirmedRemoteMovement(Minecraft minecraft) {
         if (!SableDimensionStackIntegrationMarkers.exists("server-pass.txt")) return;
+        require(minecraft.level.dimension().equals(Level.OVERWORLD),
+            "observer was not left in Overworld after remote tracking proof");
         require(minecraft.player.getVehicle() == null,
             "client became mounted again after server-confirmed dismount");
-        require(dimensionTransitions == EXPECTED_DIMENSION_TRANSITIONS,
-            "dimension flicker occurred after the expected crossing sequence");
+        require(seamTransitions == EXPECTED_SEAM_TRANSITIONS,
+            "dimension flicker occurred during the expected three portal crossings");
+
+        ClientSubLevel remote = getClientSubLevel(Level.NETHER);
+        require(remote != null,
+            "remote Nether Sable sublevel vanished before final client confirmation");
+        require(Math.abs(remote.logicalPose().position().x() - remoteSourceX) >= MIN_REMOTE_OBSERVED_MOVEMENT,
+            "remote Nether Sable pose regressed before final client confirmation");
+
         phase = Phase.DONE;
         SableDimensionStackIntegrationMarkers.clientPass(
-            "real client verified continuous Sable ownership/interpolation, exact three-crossing sequence, rider tracking, gravity recross, and dismount"
+            "real client verified continuous Sable ownership/interpolation, exact three-crossing sequence, rider tracking/dismount, and opposite-dimension live movement"
         );
         minecraft.stop();
     }
@@ -312,11 +383,13 @@ public final class SableDimensionStackDedicatedClientTest {
             return " clientWorld=not-ready connectionRequested=" + connectionRequested;
         }
         Entity vehicle = minecraft.player.getVehicle();
+        ClientSubLevel remote = getClientSubLevel(Level.NETHER);
         return " clientDim=" + minecraft.level.dimension().location()
             + " riding=" + (vehicle == null ? "none" : vehicle.getUUID())
             + " expectedVehicle=" + vehicleId
             + " subLevel=" + subLevelId
-            + " transitions=" + dimensionTransitions;
+            + " seamTransitions=" + seamTransitions
+            + " remoteNether=" + (remote == null ? "missing" : remote.logicalPose().position());
     }
 
     private static void require(boolean condition, String detail) {
