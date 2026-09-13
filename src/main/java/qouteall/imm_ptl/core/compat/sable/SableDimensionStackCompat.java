@@ -47,28 +47,16 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
-/**
- * Seamless runtime bridge between Sable's per-ServerLevel sublevels and Immersive Portals.
- *
- * <p>Crossings are detected from the rigid body's swept logical pose after every Sable physics
- * substep. The destination Sable object is built and fully synchronized to every source watcher
- * before any retained rider/player changes dimension. Only after the entity graph migrates
- * successfully is the source owner retired. This keeps both server ownership and client
- * visibility continuous at the portal seam.</p>
- */
+/** Seamless runtime bridge between Sable sublevels and Immersive Portals. */
 public final class SableDimensionStackCompat {
     private static final Logger LOGGER = LogUtils.getLogger();
     private static final int CLIENT_HANDOFF_TIMEOUT_TICKS = 100;
-
-    /** Last observed physics-substep pose in the current owning dimension. */
     private static final Map<UUID, CrossingSample> LAST_SAMPLES = new HashMap<>();
-
-    /** Handoffs retained until Sable's queued duplicate destination full-sync is consumed. */
     private static final Map<UUID, ClientHandoff> CLIENT_HANDOFFS = new HashMap<>();
 
     private SableDimensionStackCompat() {}
 
-    /** Invoked immediately after Sable copies one completed native physics substep into poses. */
+    /** Invoked after each completed Sable native physics substep. */
     public static void afterPhysicsSubstep(ServerLevel level, ServerSubLevelContainer container) {
         expireStaleClientHandoffs(level);
 
@@ -83,9 +71,8 @@ public final class SableDimensionStackCompat {
                 ? new Pose3d(previousSample.pose())
                 : new Pose3d(subLevel.lastPose());
 
-            // Keep the last committed sample while the network handoff drains. If physics
-            // crosses back during that short interval, the next unlocked sample still spans
-            // the crossing instead of silently forgetting it.
+            // Keep the last committed sample while network handoff drains. If physics crosses
+            // back meanwhile, the next unlocked segment still spans that crossing.
             if (CLIENT_HANDOFFS.containsKey(id)) continue;
 
             Portal portal = findCrossedPortal(level, previousPose, currentPose);
@@ -102,7 +89,6 @@ public final class SableDimensionStackCompat {
                 ));
             }
             else {
-                // Avoid repeatedly consuming the same failed movement segment every substep.
                 rememberSample(level, id, currentPose);
             }
         }
@@ -112,11 +98,7 @@ public final class SableDimensionStackCompat {
         LAST_SAMPLES.put(id, new CrossingSample(level.dimension(), new Pose3d(pose), level.getGameTime()));
     }
 
-    /**
-     * Use IP's own portal-shape ray tracing on the physics anchor trajectory. Requiring a
-     * front-to-back signed-plane transition prevents numerical seam chatter and removes the old
-     * full-AABB delay that trapped tall bodies halfway through vertical dimension stacks.
-     */
+    /** Swept anchor crossing through the actual IP portal shape; no full-AABB seam delay. */
     private static Portal findCrossedPortal(ServerLevel level, Pose3d previousPose, Pose3d currentPose) {
         Vec3 previous = JOMLConversion.toMojang(previousPose.position());
         Vec3 current = JOMLConversion.toMojang(currentPose.position());
@@ -164,7 +146,7 @@ public final class SableDimensionStackCompat {
 
         RigidBodyHandle sourceHandle = RigidBodyHandle.of(sourceSubLevel);
         if (sourceHandle == null || !sourceHandle.isValid()) {
-            LOGGER.error("Cannot migrate Sable sublevel {}: source physics handle is unavailable",
+            LOGGER.error("Cannot migrate Sable sublevel {}: source physics handle unavailable",
                 sourceSubLevel.getUniqueId());
             return null;
         }
@@ -196,17 +178,16 @@ public final class SableDimensionStackCompat {
         }
 
         try {
-            // Persistence loading intentionally damps velocity. Portal traversal must not.
             restoreExactVelocity(destinationSubLevel, destinationLinearVelocity, destinationAngularVelocity);
             destinationSubLevel.latestLinearVelocity.set(destinationLinearVelocity);
             destinationSubLevel.latestAngularVelocity.set(destinationAngularVelocity);
-
-            // Make StartTracking interpolate from the transformed previous physics sample.
             ((AccessorSubLevel_SablePortalCompat) (Object) destinationSubLevel)
                 .ip_getLastPose().set(transformPose(previousPhysicsPose, portal));
 
+            // Pre-send the destination while every player is still in the source world. This
+            // guarantees the later player dimension-change cannot outrun Sable visibility.
             beginClientHandoff(
-                sourceWorld, destinationWorld, sourceSubLevel, destinationSubLevel,
+                sourceWorld, destinationContainer, sourceSubLevel, destinationSubLevel,
                 ChunkPos.asLong(localPlotX, localPlotZ)
             );
         }
@@ -229,29 +210,20 @@ public final class SableDimensionStackCompat {
             }
             else {
                 LOGGER.error(
-                    "Sable entity rollback for sublevel {} was incomplete; keeping both sublevel copies to avoid deleting retained entities",
+                    "Sable entity rollback for {} incomplete; keeping both sublevel copies",
                     sourceSubLevel.getUniqueId()
                 );
             }
-            LOGGER.error(
-                "Failed to migrate entities with Sable sublevel {} from {} to {}; source copy kept",
-                sourceSubLevel.getUniqueId(), sourceWorld.dimension().location(),
-                destinationWorld.dimension().location(), exception
-            );
+            LOGGER.error("Failed Sable entity migration from {} to {}; source kept",
+                sourceWorld.dimension().location(), destinationWorld.dimension().location(), exception);
             return null;
         }
 
-        // Source removal is suppressed while the handoff record exists. Only after the server
-        // source is gone do we retire each old client-world copy; destination data was already
-        // queued before any player/rider dimension-change packet.
         sourceContainer.removeSubLevel(sourceSubLevel, SubLevelRemovalReason.REMOVED);
         commitClientHandoff(sourceWorld, sourceSubLevel.getUniqueId());
-
-        LOGGER.debug(
-            "Migrated Sable sublevel {} from {} to {} through portal {}",
+        LOGGER.debug("Migrated Sable sublevel {} from {} to {} through portal {}",
             destinationSubLevel.getUniqueId(), sourceWorld.dimension().location(),
-            destinationWorld.dimension().location(), portal.getUUID()
-        );
+            destinationWorld.dimension().location(), portal.getUUID());
         return destinationSubLevel;
     }
 
@@ -260,37 +232,36 @@ public final class SableDimensionStackCompat {
         Vector3d exactLinearVelocity,
         Vector3d exactAngularVelocity
     ) {
-        RigidBodyHandle destinationHandle = RigidBodyHandle.of(destinationSubLevel);
-        if (destinationHandle == null || !destinationHandle.isValid()) {
+        RigidBodyHandle handle = RigidBodyHandle.of(destinationSubLevel);
+        if (handle == null || !handle.isValid()) {
             throw new IllegalStateException(
                 "Destination Sable physics handle unavailable for " + destinationSubLevel.getUniqueId()
             );
         }
-        Vector3d currentLinear = destinationHandle.getLinearVelocity(new Vector3d());
-        Vector3d currentAngular = destinationHandle.getAngularVelocity(new Vector3d());
-        destinationHandle.addLinearAndAngularVelocity(
+        Vector3d currentLinear = handle.getLinearVelocity(new Vector3d());
+        Vector3d currentAngular = handle.getAngularVelocity(new Vector3d());
+        handle.addLinearAndAngularVelocity(
             new Vector3d(exactLinearVelocity).sub(currentLinear),
             new Vector3d(exactAngularVelocity).sub(currentAngular)
         );
     }
 
-    /**
-     * Build and send every destination client copy before any retained player can receive a
-     * dimension-change packet. Sable's later additionQueue full-sync is suppressed once.
-     */
     private static void beginClientHandoff(
         ServerLevel sourceWorld,
-        ServerLevel destinationWorld,
+        ServerSubLevelContainer destinationContainer,
         ServerSubLevel sourceSubLevel,
         ServerSubLevel destinationSubLevel,
         long plotCoordinate
     ) {
         Set<UUID> watchers = new HashSet<>();
         for (UUID playerId : sourceSubLevel.getTrackingPlayers()) {
-            if (sourceWorld.getServer().getPlayerList().getPlayer(playerId) != null) watchers.add(playerId);
+            if (sourceWorld.getServer().getPlayerList().getPlayer(playerId) != null) {
+                watchers.add(playerId);
+            }
         }
         if (watchers.isEmpty()) return;
 
+        ServerLevel destinationWorld = destinationContainer.getLevel();
         ClientHandoff handoff = new ClientHandoff(
             sourceWorld.dimension(), destinationWorld.dimension(), plotCoordinate,
             watchers, sourceWorld.getGameTime()
@@ -299,27 +270,13 @@ public final class SableDimensionStackCompat {
         destinationSubLevel.getTrackingPlayers().addAll(watchers);
 
         InvokerSubLevelTrackingSystem_SablePortalCompat tracking =
-            (InvokerSubLevelTrackingSystem_SablePortalCompat) (Object) destinationWorld
-                .getServer().getLevel(destinationWorld.dimension())
-                .getDataStorage();
-        // The cast above is intentionally replaced below before invocation. Keeping the
-        // tracking-system lookup in one expression makes Sable API drift fail compilation.
-        tracking = (InvokerSubLevelTrackingSystem_SablePortalCompat) (Object)
-            destinationContainer(destinationWorld).trackingSystem();
-
+            (InvokerSubLevelTrackingSystem_SablePortalCompat) (Object) destinationContainer.trackingSystem();
         for (UUID playerId : watchers) {
             ServerPlayer player = sourceWorld.getServer().getPlayerList().getPlayer(playerId);
             if (player != null) tracking.ip_sendFullSync(player, destinationSubLevel, null);
         }
     }
 
-    private static ServerSubLevelContainer destinationContainer(ServerLevel level) {
-        ServerSubLevelContainer container = SubLevelContainer.getContainer(level);
-        if (container == null) throw new IllegalStateException("Missing Sable destination container");
-        return container;
-    }
-
-    /** Sable source removal must not beat the destination pre-sync onto the network. */
     public static boolean shouldSuppressSourceRemoval(
         ServerLevel level, ServerSubLevel subLevel, SubLevelRemovalReason reason
     ) {
@@ -328,7 +285,7 @@ public final class SableDimensionStackCompat {
         return handoff != null && handoff.sourceDimension.equals(level.dimension());
     }
 
-    /** Consume exactly one queued Sable duplicate full-sync after our explicit pre-sync. */
+    /** Consume Sable's queued full-sync once when this player was already pre-synchronized. */
     public static boolean shouldSkipDuplicateDestinationFullSync(
         ServerLevel level, ServerPlayer player, ServerSubLevel subLevel
     ) {
@@ -401,16 +358,16 @@ public final class SableDimensionStackCompat {
             ClientHandoff handoff = entry.getValue();
             ServerLevel sourceWorld = level.getServer().getLevel(handoff.sourceDimension);
             if (sourceWorld == null
-                || sourceWorld.getGameTime() - handoff.createdGameTime <= CLIENT_HANDOFF_TIMEOUT_TICKS) continue;
+                || sourceWorld.getGameTime() - handoff.createdGameTime <= CLIENT_HANDOFF_TIMEOUT_TICKS) {
+                continue;
+            }
 
             for (UUID playerId : List.copyOf(handoff.pendingSourceRemoval)) {
                 ServerPlayer player = level.getServer().getPlayerList().getPlayer(playerId);
                 if (player != null) sendSourceRemoval(level, player, handoff);
             }
-            LOGGER.warn(
-                "Timed out draining Sable handoff {}; retired {} stale source client copies",
-                entry.getKey(), handoff.pendingSourceRemoval.size()
-            );
+            LOGGER.warn("Timed out draining Sable handoff {}; retired {} stale source copies",
+                entry.getKey(), handoff.pendingSourceRemoval.size());
             iterator.remove();
         }
     }
