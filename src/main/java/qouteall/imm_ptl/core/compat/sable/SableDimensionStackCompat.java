@@ -90,8 +90,6 @@ public final class SableDimensionStackCompat {
                 }
             }
 
-            // The destination already exists on the client while a handoff drains. Keep the
-            // physics sample advancing so an old pre-transfer segment can never retrigger later.
             if (CLIENT_HANDOFFS.containsKey(id)) {
                 rememberSample(level, id, currentAnchor);
                 continue;
@@ -106,8 +104,6 @@ public final class SableDimensionStackCompat {
             if (guard != null
                 && portal.getDestDim().equals(guard.sourceDimension())
                 && signedDestinationClearance(guard, currentAnchor) < HANDOFF_CLEARANCE) {
-                // Numerical/gravity bounce at the same seam: ownership remains in destination
-                // until the COM has genuinely cleared the exit plane once.
                 rememberSample(level, id, currentAnchor);
                 continue;
             }
@@ -122,12 +118,9 @@ public final class SableDimensionStackCompat {
     }
 
     /**
-     * Called from the player portal path before IP sends the dimension change. If a player is
-     * riding a Sable-retained vehicle, the owning dependency chain must move first so the client
-     * already has destination Sable state when its player world changes.
-     *
-     * @return false when a ridden Sable handoff could not be prepared and the player teleport
-     *         must be cancelled/corrected instead of leaving the body behind.
+     * Move the ridden Sable body before IP changes the player's world. This closes the race
+     * where the client can enter the destination dimension before that dimension owns the
+     * sublevel the rider is sitting on.
      */
     public static boolean beforePlayerPortalTeleport(ServerPlayer player, Portal portal) {
         Entity vehicle = player.getVehicle();
@@ -148,10 +141,8 @@ public final class SableDimensionStackCompat {
     }
 
     /**
-     * Sable's default first-free allocator is dimension-local. Cross-dimensional runtime
-     * transfer requires a stable hidden plot coordinate, so new server sublevels use the first
-     * slot that is free in every loaded Sable dimension. Occupancy includes unloaded plots,
-     * which keeps the invariant stable across normal Sable unload/reload cycles.
+     * Use one hidden plot coordinate across every server dimension so live portal migration does
+     * not need to rewrite arbitrary block-entity/attachment NBT containing hidden-world coords.
      */
     public static Vector2i findGloballyFreePlot(
         ServerLevel allocatingLevel, SubLevelContainer requestingContainer
@@ -186,13 +177,12 @@ public final class SableDimensionStackCompat {
         LAST_SAMPLES.put(id, new CrossingSample(level.dimension(), anchor, level.getGameTime()));
     }
 
-    /** Use the physical COM, not Pose3d.position(), because Sable re-centres pose origins on save/load. */
+    /** Use physical COM because Sable may recenter Pose3d.position() during serialization. */
     private static Vec3 getWorldCenterOfMass(ServerSubLevel subLevel, Pose3d pose) {
         Vector3dc localCenterOfMass = subLevel.getSelfMassTracker().getCenterOfMass();
         return JOMLConversion.toMojang(pose.transformPosition(new Vector3d(localCenterOfMass)));
     }
 
-    /** Swept COM crossing through the actual IP portal aperture. */
     private static Portal findCrossedPortal(ServerLevel level, Vec3 previous, Vec3 current) {
         if (previous.distanceToSqr(current) < 1.0e-14) return null;
 
@@ -210,11 +200,7 @@ public final class SableDimensionStackCompat {
         return anchor.subtract(guard.destinationPlane()).dot(guard.destinationDirection());
     }
 
-    /**
-     * Migrates the complete Sable loading-dependency chain as one transaction. Destination
-     * sublevels/tickets are staged before entities move. Any pre-commit failure removes the
-     * staged side and restores source entities/tickets.
-     */
+    /** Migrate the complete Sable loading dependency chain as one commit. */
     private static ServerSubLevel migrateSubLevel(
         ServerSubLevelContainer sourceContainer,
         ServerSubLevel sourceSubLevel,
@@ -283,7 +269,6 @@ public final class SableDimensionStackCompat {
                 ));
             }
 
-            // Every destination body exists before any watcher or entity can change dimension.
             for (MigrationUnit unit : units) {
                 beginClientHandoff(
                     sourceWorld, destinationContainer, unit.source(), unit.destination(),
@@ -309,6 +294,15 @@ public final class SableDimensionStackCompat {
             return null;
         }
 
+        // This is the last point at which complete rollback is possible. Do not touch source
+        // tickets or source sublevels unless every member still owns exactly the plot we staged.
+        if (!verifySourceOwnership(sourceContainer, units)) {
+            rollbackAllEntities(units, sourceWorld);
+            cleanupStagedUnits(destinationContainer, units);
+            LOGGER.error("Sable source ownership changed while a portal handoff was staged; transaction aborted");
+            return null;
+        }
+
         try {
             for (MigrationUnit unit : units) {
                 removeForceLoadTickets(sourceContainer, unit.source(), unit.tickets());
@@ -324,7 +318,6 @@ public final class SableDimensionStackCompat {
             return null;
         }
 
-        // Commit ownership only after the whole dependency chain, entity graph and tickets are ready.
         for (MigrationUnit unit : units) {
             sourceContainer.removeSubLevel(unit.source(), SubLevelRemovalReason.REMOVED);
         }
@@ -348,6 +341,18 @@ public final class SableDimensionStackCompat {
             destinationWorld.dimension().location(), portal.getUUID()
         );
         return migratedSource;
+    }
+
+    private static boolean verifySourceOwnership(
+        ServerSubLevelContainer sourceContainer, List<MigrationUnit> units
+    ) {
+        for (MigrationUnit unit : units) {
+            if (unit.source().isRemoved()) return false;
+            if (sourceContainer.getSubLevel(unit.localPlotX(), unit.localPlotZ()) != unit.source()) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static MigrationUnit stageDestinationUnit(
@@ -590,7 +595,6 @@ public final class SableDimensionStackCompat {
         return handoff != null && handoff.sourceDimension.equals(level.dimension());
     }
 
-    /** Consume Sable's queued full-sync once when this player was already pre-synchronized. */
     public static boolean shouldSkipDuplicateDestinationFullSync(
         ServerLevel level, ServerPlayer player, ServerSubLevel subLevel
     ) {
@@ -603,7 +607,6 @@ public final class SableDimensionStackCompat {
         return skip;
     }
 
-    /** Called after any destination sendFullSync, including the explicit pre-sync. */
     public static void onDestinationFullSync(
         ServerLevel level, ServerPlayer player, ServerSubLevel subLevel
     ) {
@@ -700,6 +703,8 @@ public final class SableDimensionStackCompat {
                 if (index < 0 || index >= destinationSectionCount) return false;
             }
         }
+
+        boolean verticalOriginChanged = sourceMinSection != destinationMinSection;
         for (String chunkKey : chunks.getAllKeys()) {
             CompoundTag chunk = chunks.getCompound(chunkKey);
             CompoundTag sections = chunk.getCompound("sections");
@@ -709,6 +714,14 @@ public final class SableDimensionStackCompat {
                 rebased.put(Integer.toString(index), sections.get(key));
             }
             chunk.put("sections", rebased);
+
+            // Vanilla Heightmap stores height relative to chunk.getMinBuildHeight(). Even when
+            // the packed array length happens to match, reusing Overworld data in Nether (or
+            // vice versa) shifts every decoded height. Missing keys make Sable prime them from
+            // the newly loaded block sections, which is the correct cross-dimension behavior.
+            if (verticalOriginChanged) {
+                chunk.put("heightmaps", new CompoundTag());
+            }
         }
         return true;
     }
