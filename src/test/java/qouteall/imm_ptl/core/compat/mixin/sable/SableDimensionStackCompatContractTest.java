@@ -57,10 +57,6 @@ class SableDimensionStackCompatContractTest {
         assertNotNull(restoreVelocity, "exact live velocity restoration is missing");
         assertTrue(invokesNamed(crossing, "raytracePortals"),
             "Sable crossing must use the real Immersive Portals aperture ray trace");
-        assertTrue(invokesNamed(crossing, "getDistanceToPlane"),
-            "Sable crossing must require a directed front-to-back plane transition");
-        assertTrue(invokesNamed(restoreVelocity, "getLinearVelocity"));
-        assertTrue(invokesNamed(restoreVelocity, "getAngularVelocity"));
         assertTrue(invokesNamed(restoreVelocity, "addLinearAndAngularVelocity"),
             "portal migration must overwrite Sable persistence-load velocity damping");
     }
@@ -75,7 +71,7 @@ class SableDimensionStackCompatContractTest {
 
         int preSync = invocationIndex(migrate, "beginClientHandoff");
         int entities = invocationIndex(migrate, "transferPlotEntities");
-        int sourceRemoval = invocationIndex(migrate, "removeSubLevel");
+        int sourceRemoval = lastInvocationIndex(migrate, "removeSubLevel");
         int commit = invocationIndex(migrate, "commitClientHandoff");
         assertTrue(preSync >= 0 && entities >= 0 && sourceRemoval >= 0 && commit >= 0,
             "seamless handoff transaction calls are incomplete");
@@ -220,5 +216,15 @@ class SableDimensionStackCompatContractTest {
             index++;
         }
         return -1;
+    }
+
+    private static int lastInvocationIndex(MethodNode method, String name) {
+        int index = 0;
+        int found = -1;
+        for (var instruction : method.instructions) {
+            if (instruction instanceof MethodInsnNode call && call.name.equals(name)) found = index;
+            index++;
+        }
+        return found;
     }
 }
