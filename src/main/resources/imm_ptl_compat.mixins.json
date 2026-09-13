@@ -19,6 +19,7 @@
     "sable.MixinEntity_SableCollisionCompat",
     "sable.MixinClientboundStartTrackingSubLevelPacket_SablePortalCompat",
     "sable.MixinServerSubLevel_SablePortalCompat",
+    "sable.MixinServerTeleportationManager_SableRiderCompat",
     "sable.MixinSubLevelPhysicsSystem_SableDimensionStackCompat",
     "sable.MixinSubLevelTrackingSystem_SablePortalCompat",
     "sodium.IESodiumWorldRenderer",
