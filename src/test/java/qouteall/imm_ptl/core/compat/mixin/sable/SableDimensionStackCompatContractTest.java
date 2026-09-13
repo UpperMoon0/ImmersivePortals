@@ -2,6 +2,7 @@ package qouteall.imm_ptl.core.compat.mixin.sable;
 
 import dev.ryanhcode.sable.api.sublevel.ServerSubLevelContainer;
 import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
+import dev.ryanhcode.sable.api.sublevel.ticket.SubLevelLoadingTicketType;
 import dev.ryanhcode.sable.sublevel.ServerSubLevel;
 import dev.ryanhcode.sable.sublevel.storage.serialization.SubLevelData;
 import dev.ryanhcode.sable.sublevel.storage.serialization.SubLevelSerializer;
@@ -47,18 +48,41 @@ class SableDimensionStackCompatContractTest {
     }
 
     @Test
-    void compatUsesSweptCrossingAndRestoresExactLiveVelocity() throws Exception {
+    void compatUsesSweptCenterOfMassCrossingAndRestoresExactLiveVelocity() throws Exception {
         ClassNode compat = readClass(
             "qouteall/imm_ptl/core/compat/sable/SableDimensionStackCompat.class"
         );
         MethodNode crossing = findMethodByName(compat, "findCrossedPortal");
+        MethodNode centerOfMass = findMethodByName(compat, "getWorldCenterOfMass");
         MethodNode restoreVelocity = findMethodByName(compat, "restoreExactVelocity");
         assertNotNull(crossing, "swept Sable portal crossing detector is missing");
+        assertNotNull(centerOfMass, "physical Sable COM anchor is missing");
         assertNotNull(restoreVelocity, "exact live velocity restoration is missing");
         assertTrue(invokesNamed(crossing, "raytracePortals"),
             "Sable crossing must use the real Immersive Portals aperture ray trace");
+        assertTrue(invokesNamed(centerOfMass, "getSelfMassTracker"),
+            "crossing must use Sable's physical center of mass rather than mutable pose origin");
+        assertTrue(invokesNamed(centerOfMass, "transformPosition"),
+            "local center of mass must be projected through the current Sable pose");
         assertTrue(invokesNamed(restoreVelocity, "addLinearAndAngularVelocity"),
             "portal migration must overwrite Sable persistence-load velocity damping");
+    }
+
+    @Test
+    void seamGuardOutlivesNetworkHandoffUntilBodyClearsDestinationPlane() throws Exception {
+        ClassNode compat = readClass(
+            "qouteall/imm_ptl/core/compat/sable/SableDimensionStackCompat.class"
+        );
+        MethodNode substep = findMethodByName(compat, "afterPhysicsSubstep");
+        MethodNode clearance = findMethodByName(compat, "signedDestinationClearance");
+        MethodNode migrate = findMethodByName(compat, "migrateSubLevel");
+        assertNotNull(substep);
+        assertNotNull(clearance);
+        assertNotNull(migrate);
+        assertTrue(invokesNamed(clearance, "subtract"));
+        assertTrue(invokesNamed(clearance, "dot"));
+        assertTrue(invokesNamed(migrate, "getContentDirection"),
+            "handoff guard must retain the destination-facing portal direction");
     }
 
     @Test
@@ -86,6 +110,73 @@ class SableDimensionStackCompatContractTest {
         assertNotNull(begin);
         assertTrue(invokesNamed(begin, "ip_sendFullSync"),
             "destination full-sync must be explicit rather than waiting for Sable's next tracking tick");
+    }
+
+    @Test
+    void migrationPreservesDependencyChainsAndForceLoadTickets() throws Exception {
+        ClassNode compat = readClass(
+            "qouteall/imm_ptl/core/compat/sable/SableDimensionStackCompat.class"
+        );
+        MethodNode migrate = findMethodByName(compat, "migrateSubLevel");
+        MethodNode stage = findMethodByName(compat, "stageDestinationUnit");
+        MethodNode captureTickets = findMethodByName(compat, "captureForceLoadTickets");
+        MethodNode installTickets = findMethodByName(compat, "installForceLoadTickets");
+        MethodNode removeTickets = findMethodByName(compat, "removeForceLoadTickets");
+
+        assertNotNull(migrate);
+        assertNotNull(stage);
+        assertNotNull(captureTickets);
+        assertNotNull(installTickets);
+        assertNotNull(removeTickets);
+        assertTrue(invokesNamed(migrate, "getLoadingDependencyChain"),
+            "portal transfer must migrate Sable's complete loading dependency chain");
+        assertTrue(invokesNamed(stage, "toData"),
+            "each migrated dependency must preserve dependency UUID serialization");
+        assertTrue(invokesNamed(captureTickets, "collectForceLoadTickets"));
+        assertTrue(invokesNamed(installTickets, "addForceLoadTicketUnchecked"));
+        assertTrue(invokesNamed(removeTickets, "removeForceLoadTicketUnchecked"));
+
+        assertNotNull(ServerSubLevelContainer.class.getMethod(
+            "addForceLoadTicket", ServerSubLevel.class, SubLevelLoadingTicketType.class, Object.class
+        ));
+        assertNotNull(ServerSubLevelContainer.class.getMethod(
+            "removeForceLoadTicket", ServerSubLevel.class, SubLevelLoadingTicketType.class, Object.class
+        ));
+        assertNotNull(ServerSubLevelContainer.class.getMethod("collectForceLoadTickets"));
+    }
+
+    @Test
+    void serverPlotAllocationIsGloballyCoordinatedAcrossDimensions() throws Exception {
+        ClassNode compat = readClass(
+            "qouteall/imm_ptl/core/compat/sable/SableDimensionStackCompat.class"
+        );
+        MethodNode allocator = findMethodByName(compat, "findGloballyFreePlot");
+        assertNotNull(allocator);
+        assertTrue(invokesNamed(allocator, "getAllLevels"));
+        assertTrue(invokesNamed(allocator, "getOccupancy"));
+        assertTrue(invokesNamed(allocator, "getIndex"));
+
+        ClassNode allocatorMixin = readClass(
+            "qouteall/imm_ptl/core/compat/mixin/sable/MixinSubLevelContainer_SableGlobalPlotAllocator.class"
+        );
+        MethodNode hook = findMethodByName(allocatorMixin, "ip_allocateGloballyUniquePlot");
+        assertNotNull(hook);
+        assertTrue(invokesNamed(hook, "findGloballyFreePlot"));
+        assertTrue(invokesNamed(hook, "allocateSubLevel"));
+    }
+
+    @Test
+    void riddenPlayerTeleportIsCancelledWhenBodyHandoffCannotCommit() throws Exception {
+        ClassNode riderMixin = readClass(
+            "qouteall/imm_ptl/core/compat/mixin/sable/MixinServerTeleportationManager_SableRiderCompat.class"
+        );
+        MethodNode hook = findMethodByName(riderMixin, "ip_prepareRiddenSableBeforePlayer");
+        assertNotNull(hook);
+        assertTrue(invokesNamed(hook, "beforePlayerPortalTeleport"));
+        assertTrue(invokesNamed(hook, "forceTeleportPlayer"),
+            "failed body handoff must correct the player back to the source dimension");
+        assertTrue(invokesNamed(hook, "cancel"),
+            "failed body handoff must cancel the rest of IP's portal-teleport callback");
     }
 
     @Test
@@ -166,6 +257,8 @@ class SableDimensionStackCompatContractTest {
             "qouteall/imm_ptl/core/compat/mixin/sable/AccessorSubLevel_SablePortalCompat.class",
             "qouteall/imm_ptl/core/compat/mixin/sable/InvokerSubLevelTrackingSystem_SablePortalCompat.class",
             "qouteall/imm_ptl/core/compat/mixin/sable/MixinServerSubLevel_SablePortalCompat.class",
+            "qouteall/imm_ptl/core/compat/mixin/sable/MixinServerTeleportationManager_SableRiderCompat.class",
+            "qouteall/imm_ptl/core/compat/mixin/sable/MixinSubLevelContainer_SableGlobalPlotAllocator.class",
             "qouteall/imm_ptl/core/compat/mixin/sable/MixinSubLevelPhysicsSystem_SableDimensionStackCompat.class",
             "qouteall/imm_ptl/core/compat/mixin/sable/MixinSubLevelTrackingSystem_SablePortalCompat.class"
         )) {
@@ -180,6 +273,8 @@ class SableDimensionStackCompatContractTest {
             assertTrue(json.contains("sable.AccessorSubLevel_SablePortalCompat"));
             assertTrue(json.contains("sable.InvokerSubLevelTrackingSystem_SablePortalCompat"));
             assertTrue(json.contains("sable.MixinServerSubLevel_SablePortalCompat"));
+            assertTrue(json.contains("sable.MixinServerTeleportationManager_SableRiderCompat"));
+            assertTrue(json.contains("sable.MixinSubLevelContainer_SableGlobalPlotAllocator"));
             assertTrue(json.contains("sable.MixinSubLevelPhysicsSystem_SableDimensionStackCompat"));
             assertTrue(json.contains("sable.MixinSubLevelTrackingSystem_SablePortalCompat"));
         }
@@ -193,6 +288,10 @@ class SableDimensionStackCompatContractTest {
             new ClassReader(stream).accept(node, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
             return node;
         }
+    }
+
+    private static MethodNode findMethod(String resource, String name, String descriptor) throws Exception {
+        return findMethod(readClass(resource), name, descriptor);
     }
 
     private static MethodNode findMethod(ClassNode node, String name, String descriptor) {
