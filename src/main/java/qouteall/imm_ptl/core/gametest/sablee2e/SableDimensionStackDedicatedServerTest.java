@@ -1,6 +1,5 @@
 package qouteall.imm_ptl.core.gametest.sablee2e;
 
-import com.mojang.datafixers.util.Unit;
 import dev.ryanhcode.sable.Sable;
 import dev.ryanhcode.sable.api.entity.EntitySubLevelUtil;
 import dev.ryanhcode.sable.api.physics.handle.RigidBodyHandle;
@@ -16,6 +15,7 @@ import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.util.Unit;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.level.Level;
@@ -142,9 +142,6 @@ public final class SableDimensionStackDedicatedServerTest {
         require(VerticalConnectingPortal.getConnectingPortal(nether, VerticalConnectingPortal.ConnectorType.ceil) != null,
             "nether ceiling connector was not created");
 
-        // Occupy the first Nether hidden plot before allocating the moving Overworld body.
-        // Without the global allocator both dimensions choose the same first-free slot and the
-        // later crossing fails at the seam.
         Pose3d occupiedPose = new Pose3d();
         occupiedPose.position().set(1000.0, nether.getMinBuildHeight() + 32.0, 1000.0);
         ServerSubLevel occupiedNether = (ServerSubLevel) destinationContainer.allocateNewSubLevel(occupiedPose);
@@ -300,9 +297,6 @@ public final class SableDimensionStackDedicatedServerTest {
         require(returnedVehicle.getPassengers().contains(player),
             "returned vehicle does not contain the original rider");
 
-        // Deliberately do not teleport, park, or zero the returned body. Its retained
-        // upward velocity must decay under normal Overworld gravity and make it fall
-        // back through the floor connector, reproducing the real seam-bounce report.
         phase = Phase.WAIT_FOR_GRAVITY_RECROSS;
         phaseTicks = 0;
     }
