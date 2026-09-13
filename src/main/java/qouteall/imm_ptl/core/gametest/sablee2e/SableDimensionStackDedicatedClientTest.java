@@ -29,7 +29,7 @@ public final class SableDimensionStackDedicatedClientTest {
     private static final int EXPECTED_SEAM_TRANSITIONS = 3;
     private static final int MIN_HANDOFF_HISTORY_SNAPSHOTS = 3;
     private static final double MAX_BODY_RIDER_DISTANCE = 32.0;
-    private static final double MIN_REMOTE_OBSERVED_MOVEMENT = 0.15;
+    private static final double MIN_REMOTE_OBSERVED_MOVEMENT = 0.30;
 
     private enum Phase {
         CONNECT,
