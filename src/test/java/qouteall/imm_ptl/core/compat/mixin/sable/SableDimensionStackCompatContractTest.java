@@ -5,6 +5,7 @@ import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
 import dev.ryanhcode.sable.sublevel.ServerSubLevel;
 import dev.ryanhcode.sable.sublevel.storage.serialization.SubLevelData;
 import dev.ryanhcode.sable.sublevel.storage.serialization.SubLevelSerializer;
+import dev.ryanhcode.sable.util.SubLevelInclusiveLevelEntityGetter;
 import net.minecraft.world.level.Level;
 import org.junit.jupiter.api.Test;
 import org.objectweb.asm.ClassReader;
@@ -16,6 +17,9 @@ import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 
+import qouteall.imm_ptl.core.mixin.common.mc_util.IELevelEntityGetterAdapter;
+
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -78,6 +82,26 @@ class SableDimensionStackCompatContractTest {
             "plot-space riders must be converted to logical world space before portal transfer");
     }
 
+    @Test
+    void plotEntityCaptureBypassesSableWrappedLevelEntityGetter() throws Exception {
+        assertFalse(IELevelEntityGetterAdapter.class.isAssignableFrom(SubLevelInclusiveLevelEntityGetter.class),
+            "Sable deliberately wraps LevelEntityGetterAdapter; compat must not cast the wrapper to IP's adapter");
+
+        ClassNode compat = readClass(
+            "qouteall/imm_ptl/core/compat/sable/SableDimensionStackCompat.class"
+        );
+        MethodNode capture = compat.methods.stream()
+            .filter(method -> method.name.equals("capturePlotEntities"))
+            .findFirst()
+            .orElse(null);
+        assertNotNull(capture, "dimension-stack entity capture is missing");
+        assertTrue(invokesNamed(capture, "ip_getEntityManager"),
+            "plot migration must read the authoritative PersistentEntitySectionManager");
+        assertTrue(invokesNamed(capture, "ip_getSectionStorage"),
+            "plot migration must enumerate the entity manager's stored sections");
+        assertFalse(invokesNamed(capture, "portal_getEntityLookup"),
+            "Sable wraps ServerLevel#getEntities(); using it here reintroduces the crash");
+    }
     @Test
     void dimensionStackMixinIsPackagedAndEnabled() throws Exception {
         assertNotNull(getClass().getClassLoader().getResource(

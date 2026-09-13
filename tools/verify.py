@@ -4,7 +4,9 @@
 Modes:
   core  - build + JUnit + NeoForge GameTests in one Gradle invocation
   e2e   - dedicated Sable server + real graphical client + marker validation
-  full  - core followed by e2e
+  visual - real portal pixels + shader reload + runtime timing budgets
+  full  - core followed by e2e and visual
+  matrix - visual suite across renderer and optional-Sable configurations
 """
 
 from __future__ import annotations
@@ -164,7 +166,8 @@ def launch_windows_interactive(
 
 
     wrapper = RESULT_DIR / "client-session.cmd"
-    inherited = ("IP_SABLE_E2E", "IP_SABLE_E2E_PORT", "IP_SABLE_E2E_RESULT_DIR", "GRADLE_USER_HOME")
+    inherited = ("IP_SABLE_E2E", "IP_SABLE_E2E_PORT", "IP_SABLE_E2E_RESULT_DIR", "GRADLE_USER_HOME",
+                 "IP_PORTAL_SMOKE", "IP_SMOKE_SAMPLES", "IP_SMOKE_RENDERER", "IP_SMOKE_SABLE")
     lines = ["@echo off", f'cd /d "{ROOT}"']
     for key in inherited:
         value = env.get(key)
@@ -330,24 +333,26 @@ def check_failures() -> None:
             raise RuntimeError(marker.read_text(encoding="utf-8", errors="replace").strip())
 
 
-def validate_results(client_exit: int) -> None:
+def validate_results(client_exit: int, smoke: bool = False) -> None:
     check_failures()
     if client_exit != 0:
         raise RuntimeError(f"graphical client exited with status {client_exit}")
-    for name in ("server-pass", "client-pass", "client-source", "client-destination", "client-return"):
+    required = ("server-pass", "client-pass", "visual-pass") if smoke else (
+        "server-pass", "client-pass", "client-source", "client-destination", "client-return", "client-recross", "client-dismount")
+    for name in required:
         marker = RESULT_DIR / f"{name}.txt"
         if not marker.exists() or not marker.read_text(encoding="utf-8").strip():
             raise RuntimeError(f"missing or empty authoritative result: {name}")
 
 
-def wait_for_client(server: subprocess.Popen, client: subprocess.Popen, timeout: float = 300) -> None:
+def wait_for_client(server: subprocess.Popen, client: subprocess.Popen, timeout: float = 300, smoke: bool = False) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         check_failures()
         if server.poll() is not None:
             raise RuntimeError(f"dedicated server exited during E2E (exit={server.returncode})")
         if client.poll() is not None:
-            validate_results(client.returncode)
+            validate_results(client.returncode, smoke=smoke)
             return
         time.sleep(0.25)
     raise TimeoutError(f"graphical client timed out after {timeout} seconds")
@@ -404,14 +409,32 @@ def validate_log_health() -> None:
         raise RuntimeError("critical runtime errors found after E2E pass: " + ", ".join(bad))
 
 
-def run_e2e() -> None:
-    print("[verify] e2e: dedicated Sable server + automated graphical client", flush=True)
+def validate_metrics(samples: int) -> None:
+    import math
+    for side, budget in (("server", 100.0), ("client", 250.0)):
+        values = json.loads((RESULT_DIR / f"{side}-metrics.json").read_text(encoding="utf-8"))
+        if values["samples"] < samples:
+            raise RuntimeError(f"{side}: too few runtime timing samples")
+        value = values["p95_ms"]
+        if not isinstance(value, (int, float)) or not math.isfinite(value) or not 0 < value <= budget:
+            raise RuntimeError(f"{side}: p95 {value} ms exceeds {budget} ms budget or is invalid")
+        print(f"[verify] {side}: p95={value:.2f} ms, heap={values['heap_used_bytes']} bytes", flush=True)
+
+
+def run_e2e(smoke: bool = False, renderer: str = "sodium", sable: bool = True, samples: int = 200) -> None:
+    print(f"[verify] {'visual ' + renderer if smoke else 'e2e'}: dedicated server + automated graphical client", flush=True)
     env = prepare_e2e()
+    if smoke:
+        env.update(IP_SABLE_E2E="false", IP_PORTAL_SMOKE="true", IP_SMOKE_RENDERER=renderer,
+                   IP_SMOKE_SABLE=str(sable).lower(), IP_SMOKE_SAMPLES=str(samples))
+    else:
+        env["IP_PORTAL_SMOKE"] = "false"
+    properties = [f"-PverificationRenderer={renderer}", f"-PverificationSable={str(sable).lower()}"]
 
     server_log = SERVER_LOG.open("wb")
     creation = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt" else {"start_new_session": True}
     server = subprocess.Popen(
-        gradle_cmd("runSableE2EServer"),
+        gradle_cmd("runPortalSmokeServer" if smoke else "runSableE2EServer", *properties),
         cwd=ROOT,
         env=env,
         stdin=subprocess.PIPE,
@@ -424,7 +447,7 @@ def run_e2e() -> None:
         wait_for_server(server)
         print("[verify] e2e server ready; launching automated client", flush=True)
 
-        client_command = gradle_cmd("runSableE2EClient")
+        client_command = gradle_cmd("runPortalSmokeClient" if smoke else "runSableE2EClient", *properties)
         if os.name != "nt" and not os.environ.get("DISPLAY"):
             if shutil.which("xvfb-run") is None:
                 raise RuntimeError("xvfb-run is required for headless Linux graphical E2E")
@@ -432,13 +455,15 @@ def run_e2e() -> None:
 
         client, client_log = launch_graphical_client(client_command, env, creation)
         try:
-            wait_for_client(server, client)
+            wait_for_client(server, client, timeout=max(300, samples / 20 + 240), smoke=smoke)
         finally:
             stop_process_tree(client)
             if client_log is not None:
                 client_log.close()
 
         validate_log_health()
+        if smoke:
+            validate_metrics(samples)
         print("[verify] " + (RESULT_DIR / "server-pass.txt").read_text(encoding="utf-8").strip(), flush=True)
         print("[verify] " + (RESULT_DIR / "client-pass.txt").read_text(encoding="utf-8").strip(), flush=True)
     except Exception:
@@ -457,19 +482,43 @@ def run_e2e() -> None:
         server_log.close()
 
 
+def run_visual(renderer: str, sable: bool, samples: int) -> None:
+    # Keep each matrix member's evidence, including failed runs.
+    global RESULT_DIR, SERVER_LOG, CLIENT_LOG
+    previous = RESULT_DIR, SERVER_LOG, CLIENT_LOG
+    RESULT_DIR = ROOT / "build" / f"portal-visual-{renderer}-{'sable' if sable else 'no-sable'}"
+    SERVER_LOG, CLIENT_LOG = RESULT_DIR / "server.log", RESULT_DIR / "client.log"
+    try:
+        run_e2e(smoke=True, renderer=renderer, sable=sable, samples=samples)
+    finally:
+        RESULT_DIR, SERVER_LOG, CLIENT_LOG = previous
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run the canonical Immersive Portals verification suite")
-    parser.add_argument("mode", choices=("core", "e2e", "full"), nargs="?", default="full")
+    parser.add_argument("mode", choices=("core", "e2e", "visual", "full", "matrix"), nargs="?", default="full")
+    parser.add_argument("--renderer", choices=("vanilla", "sodium", "iris", "veil"), default="sodium")
+    parser.add_argument("--no-sable", action="store_true")
+    parser.add_argument("--samples", type=int, default=200)
     args = parser.parse_args()
+    if not 200 <= args.samples <= 12000:
+        parser.error("--samples must be between 200 and 12000")
 
     started = time.monotonic()
     try:
         with checkout_lock():
             stages = []
             try:
-                for name, action in (("core", run_core), ("e2e", run_e2e)):
-                    if args.mode not in (name, "full"):
-                        continue
+                actions = [("core", run_core), ("e2e", run_e2e),
+                           ("visual", lambda: run_visual(args.renderer, not args.no_sable, args.samples))]
+                if args.mode == "matrix":
+                    actions = [(f"visual-{renderer}-{'sable' if sable else 'no-sable'}",
+                                lambda r=renderer, s=sable: run_visual(r, s, args.samples))
+                               for renderer, sable in (("vanilla", True), ("sodium", True),
+                                                       ("iris", True), ("veil", False), ("vanilla", False))]
+                else:
+                    actions = [(name, action) for name, action in actions if args.mode in (name, "full")]
+                for name, action in actions:
                     stage_started = time.monotonic()
                     stage = {"name": name, "status": "failed"}
                     stages.append(stage)
@@ -478,9 +527,13 @@ def main() -> int:
                         stage["status"] = "passed"
                     except Exception as exc:
                         stage["error"] = str(exc)
-                        raise
+                        if args.mode != "matrix":
+                            raise
                     finally:
                         stage["seconds"] = round(time.monotonic() - stage_started, 2)
+                failed = [stage["name"] for stage in stages if stage["status"] != "passed"]
+                if failed:
+                    raise RuntimeError("failed matrix configurations: " + ", ".join(failed))
             finally:
                 (ROOT / "build" / f"verification-{args.mode}.json").write_text(
                     json.dumps({"stages": stages, "seconds": round(time.monotonic() - started, 2)}, indent=2),

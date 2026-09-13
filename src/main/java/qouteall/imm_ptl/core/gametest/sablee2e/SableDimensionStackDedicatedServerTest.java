@@ -9,15 +9,16 @@ import dev.ryanhcode.sable.companion.math.Pose3d;
 import dev.ryanhcode.sable.sublevel.ServerSubLevel;
 import dev.ryanhcode.sable.sublevel.plot.LevelPlot;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Entity;
-import net.minecraft.world.entity.vehicle.Minecart;
+import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.phys.Vec3;
-import net.neoforged.bus.api.SubscribeEvent;
-import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.neoforge.event.entity.player.PlayerEvent;
 import net.neoforged.neoforge.event.tick.ServerTickEvent;
 import org.joml.Vector3d;
@@ -28,16 +29,18 @@ import java.util.UUID;
 /**
  * Dedicated-server half of the Sable stacked-dimension regression test.
  *
- * <p>This intentionally uses a real Sable physics body, a real retained vanilla minecart,
- * and the connected player's real {@link ServerPlayer}. The minecart remains in Sable plot
- * space while Sable kicks the rider into logical world space, reproducing the passenger graph
- * that originally split at a dimension-stack boundary.</p>
+ * <p>This intentionally uses a real Sable physics body, Create's real SeatEntity resolved
+ * from the runtime registry, and the connected player's real {@link ServerPlayer}. The body
+ * is deliberately tall so its origin crosses the seam before its complete bounds do. After
+ * returning from Nether to Overworld the test leaves gravity and velocity untouched, forcing
+ * the body to fall back through the seam before exercising a real client dismount.</p>
  */
-@EventBusSubscriber(modid = qouteall.imm_ptl.core.platform_specific.IPModEntry.MODID)
 public final class SableDimensionStackDedicatedServerTest {
     private static final int LOGIN_SETTLE_TICKS = 40;
     private static final int TIMEOUT_TICKS = 1200;
     private static final double CROSSING_SPEED = 80.0;
+    private static final double RETURN_SPEED = 18.0;
+    private static final int BODY_HEIGHT = 6;
 
     private enum Phase {
         WAIT_FOR_LOGIN_SETTLE,
@@ -45,7 +48,8 @@ public final class SableDimensionStackDedicatedServerTest {
         WAIT_FOR_FIRST_CROSSING,
         HOLD_IN_DESTINATION,
         WAIT_FOR_RETURN,
-        HOLD_AFTER_RETURN,
+        WAIT_FOR_GRAVITY_RECROSS,
+        WAIT_FOR_DISMOUNT,
         DONE
     }
 
@@ -55,13 +59,13 @@ public final class SableDimensionStackDedicatedServerTest {
     private static int phaseTicks;
     private static UUID subLevelId;
     private static UUID vehicleId;
+    private static Entity recrossedSeat;
     private static ServerLevel overworld;
     private static ServerLevel nether;
     private static Vector3d heldPosition;
 
     private SableDimensionStackDedicatedServerTest() {}
 
-    @SubscribeEvent
     public static void onPlayerLogin(PlayerEvent.PlayerLoggedInEvent event) {
         if (!SableDimensionStackIntegrationMarkers.enabled()) return;
         if (!(event.getEntity() instanceof ServerPlayer serverPlayer)) return;
@@ -72,11 +76,11 @@ public final class SableDimensionStackDedicatedServerTest {
         phaseTicks = 0;
         subLevelId = null;
         vehicleId = null;
+        recrossedSeat = null;
         overworld = null;
         nether = null;
     }
 
-    @SubscribeEvent
     public static void onServerTick(ServerTickEvent.Post event) {
         if (!SableDimensionStackIntegrationMarkers.enabled() || player == null || phase == Phase.DONE) return;
 
@@ -99,13 +103,8 @@ public final class SableDimensionStackDedicatedServerTest {
                 case WAIT_FOR_FIRST_CROSSING -> verifyFirstCrossingOrWait();
                 case HOLD_IN_DESTINATION -> holdAndStartReturn();
                 case WAIT_FOR_RETURN -> verifyReturnOrWait();
-                case HOLD_AFTER_RETURN -> {
-                    ServerSubLevel returned = findSubLevel(requireContainer(overworld), subLevelId);
-                    require(returned != null, "returned body disappeared during client verification");
-                    RigidBodyHandle handle = requireHandle(returned);
-                    handle.teleport(heldPosition, returned.logicalPose().orientation());
-                    setLinearVelocity(handle, new Vector3d());
-                }
+                case WAIT_FOR_GRAVITY_RECROSS -> verifyGravityRecrossOrWait();
+                case WAIT_FOR_DISMOUNT -> verifyDismountOrWait();
                 case DONE -> { }
             }
         }
@@ -134,22 +133,32 @@ public final class SableDimensionStackDedicatedServerTest {
         ServerSubLevel subLevel = (ServerSubLevel) sourceContainer.allocateNewSubLevel(pose);
         LevelPlot plot = subLevel.getPlot();
         plot.newEmptyChunk(plot.getCenterChunk());
-        plot.getEmbeddedLevelAccessor().setBlock(BlockPos.ZERO, Blocks.STONE.defaultBlockState(), 3);
+
+        ResourceLocation seatBlockId = ResourceLocation.fromNamespaceAndPath("create", "red_seat");
+        ResourceLocation seatEntityId = ResourceLocation.fromNamespaceAndPath("create", "seat");
+        require(BuiltInRegistries.BLOCK.containsKey(seatBlockId), "Create red seat block is missing from E2E runtime");
+        require(BuiltInRegistries.ENTITY_TYPE.containsKey(seatEntityId), "Create seat entity is missing from E2E runtime");
+        Block seatBlock = BuiltInRegistries.BLOCK.get(seatBlockId);
+        plot.getEmbeddedLevelAccessor().setBlock(BlockPos.ZERO, seatBlock.defaultBlockState(), 3);
+        for (int y = 1; y < BODY_HEIGHT; y++) {
+            plot.getEmbeddedLevelAccessor().setBlock(new BlockPos(0, y, 0), Blocks.STONE.defaultBlockState(), 3);
+        }
         subLevel.updateLastPose();
+        subLevel.updateBoundingBox();
         subLevelId = subLevel.getUniqueId();
 
         BlockPos plotCenter = plot.getCenterBlock();
-        Minecart vehicle = new Minecart(overworld,
-            plotCenter.getX() + 0.5,
-            plotCenter.getY() + 1.0,
-            plotCenter.getZ() + 0.5);
-        require(overworld.addFreshEntity(vehicle), "could not add retained minecart to Sable plot");
-        require(Sable.HELPER.getContaining(vehicle) == subLevel, "minecart was not retained inside the source Sable sublevel");
-        require(!EntitySubLevelUtil.shouldKick(vehicle), "minecart unexpectedly is not Sable-retained");
+        EntityType<?> seatType = BuiltInRegistries.ENTITY_TYPE.get(seatEntityId);
+        Entity vehicle = seatType.create(overworld);
+        require(vehicle != null, "could not construct Create SeatEntity");
+        vehicle.setPos(plotCenter.getX() + 0.5, plotCenter.getY(), plotCenter.getZ() + 0.5);
+        require(overworld.addFreshEntity(vehicle), "could not add Create SeatEntity to Sable plot");
+        require(Sable.HELPER.getContaining(vehicle) == subLevel, "Create seat was not retained inside the source Sable sublevel");
+        require(!EntitySubLevelUtil.shouldKick(vehicle), "Create seat unexpectedly is not Sable-retained");
         require(EntitySubLevelUtil.shouldKick(player), "player unexpectedly uses Sable retained-entity handling");
         vehicleId = vehicle.getUUID();
 
-        require(player.startRiding(vehicle, true), "server player could not mount retained Sable minecart");
+        require(player.startRiding(vehicle, true), "server player could not mount Create SeatEntity");
         heldPosition = new Vector3d(subLevel.logicalPose().position());
         setLinearVelocity(requireHandle(subLevel), new Vector3d());
     }
@@ -181,8 +190,8 @@ public final class SableDimensionStackDedicatedServerTest {
         if (destination == null) return;
 
         require(source == null, "source Sable sublevel still exists after destination reconstruction");
-        require(destination.getPlot().getEmbeddedLevelAccessor().getBlockState(BlockPos.ZERO).is(Blocks.STONE),
-            "serialized Sable block payload did not survive first crossing");
+        require(destination.getPlot().getEmbeddedLevelAccessor().getBlockState(new BlockPos(0, BODY_HEIGHT - 1, 0)).is(Blocks.STONE),
+            "serialized tall Sable block payload did not survive first crossing");
 
         Entity destinationVehicle = nether.getEntity(vehicleId);
         require(destinationVehicle != null, "retained vehicle did not migrate to the destination level");
@@ -217,7 +226,7 @@ public final class SableDimensionStackDedicatedServerTest {
             return;
         }
 
-        setLinearVelocity(handle, new Vector3d(0.0, CROSSING_SPEED, 0.0));
+        setLinearVelocity(handle, new Vector3d(0.0, RETURN_SPEED, 0.0));
         phase = Phase.WAIT_FOR_RETURN;
         phaseTicks = 0;
     }
@@ -228,8 +237,8 @@ public final class SableDimensionStackDedicatedServerTest {
 
         require(findSubLevel(requireContainer(nether), subLevelId) == null,
             "destination Sable sublevel still exists after reverse crossing");
-        require(returned.getPlot().getEmbeddedLevelAccessor().getBlockState(BlockPos.ZERO).is(Blocks.STONE),
-            "serialized Sable block payload did not survive round trip");
+        require(returned.getPlot().getEmbeddedLevelAccessor().getBlockState(new BlockPos(0, BODY_HEIGHT - 1, 0)).is(Blocks.STONE),
+            "serialized tall Sable block payload did not survive round trip");
 
         Entity returnedVehicle = overworld.getEntity(vehicleId);
         require(returnedVehicle != null, "retained vehicle did not survive round trip");
@@ -241,15 +250,46 @@ public final class SableDimensionStackDedicatedServerTest {
         require(returnedVehicle.getPassengers().contains(player),
             "returned vehicle does not contain the original rider");
 
-        heldPosition = new Vector3d(returned.logicalPose().position());
-        // The body may straddle the boundary when reconstructed. Park it fully
-        // inside the source so gravity cannot trigger an unintended third crossing.
-        heldPosition.y = Math.max(heldPosition.y, overworld.getMinBuildHeight() + 4.0);
-        requireHandle(returned).teleport(heldPosition, returned.logicalPose().orientation());
-        setLinearVelocity(requireHandle(returned), new Vector3d());
-        phase = Phase.HOLD_AFTER_RETURN;
+        // Deliberately do not teleport, park, or zero the returned body. Its retained
+        // upward velocity must decay under normal Overworld gravity and make it fall
+        // back through the floor connector, reproducing the real seam-bounce report.
+        phase = Phase.WAIT_FOR_GRAVITY_RECROSS;
+        phaseTicks = 0;
+    }
+
+    private static void verifyGravityRecrossOrWait() {
+        ServerSubLevel recrossed = findSubLevel(requireContainer(nether), subLevelId);
+        if (recrossed == null) return;
+
+        require(findSubLevel(requireContainer(overworld), subLevelId) == null,
+            "Overworld sublevel remained after gravity-driven recross");
+        Entity seat = nether.getEntity(vehicleId);
+        require(seat != null, "Create seat disappeared during gravity-driven recross");
+        require(overworld.getEntity(vehicleId) == null, "duplicate Create seat remained in Overworld after recross");
+        require(player.serverLevel() == nether, "rider did not follow gravity-driven recross to Nether");
+        require(player.getVehicle() != null && player.getVehicle().getUUID().equals(vehicleId),
+            "rider/seat relation broke during gravity-driven recross");
+        require(seat.getPassengers().contains(player),
+            "recrossed Create seat does not contain the original rider");
+        recrossedSeat = seat;
+
+        phase = Phase.WAIT_FOR_DISMOUNT;
+        phaseTicks = 0;
+    }
+
+    private static void verifyDismountOrWait() {
+        if (!SableDimensionStackIntegrationMarkers.exists("client-recross.txt")) return;
+        if (player.getVehicle() != null) return;
+        if (!SableDimensionStackIntegrationMarkers.exists("client-dismount.txt")) return;
+
+        // Create deliberately discards SeatEntity once it has no passengers. Keep
+        // the observed instance to verify its graph even if it has left the lookup.
+        require(recrossedSeat != null && !recrossedSeat.getPassengers().contains(player),
+            "Create seat still contains player after dismount");
+
+        phase = Phase.DONE;
         SableDimensionStackIntegrationMarkers.serverPass(
-            "real Sable physics crossed Overworld->Nether->Overworld; sublevel block payload, retained minecart, and player riding graph survived"
+            "tall Sable body crossed Overworld->Nether->Overworld, fell back through under gravity, and real Create SeatEntity rider dismounted cleanly"
         );
     }
 

@@ -1,0 +1,61 @@
+name: Portal visual and runtime checks
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        type: string
+        default: ''
+      renderer:
+        type: string
+        default: sodium
+      sable:
+        type: boolean
+        default: true
+      samples:
+        type: number
+        default: 200
+
+permissions:
+  contents: read
+
+jobs:
+  visual:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@v6
+      - name: Install headless graphics runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb libgl1-mesa-dri
+          chmod +x ./gradlew
+      - name: Verify portal pixels, shader reload and live timing budgets
+        env:
+          RENDERER: ${{ inputs.renderer }}
+          SABLE: ${{ inputs.sable }}
+          SAMPLES: ${{ inputs.samples }}
+        run: |
+          extra=()
+          if [[ "$SABLE" == false ]]; then extra+=(--no-sable); fi
+          python3 tools/verify.py visual --renderer "$RENDERER" --samples "$SAMPLES" "${extra[@]}"
+      - name: Preserve images, timings and runtime diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: portal-visual-${{ inputs.renderer }}-sable-${{ inputs.sable }}
+          if-no-files-found: warn
+          path: |
+            build/verification-visual.json
+            build/portal-visual-*/**
+            run-sable-e2e-server/logs/**
+            run-sable-e2e-server/crash-reports/**
+            run-sable-e2e-client/logs/**
+            run-sable-e2e-client/crash-reports/**

@@ -15,7 +15,9 @@ import qouteall.imm_ptl.core.commands.SubCommandArgumentType;
 import qouteall.imm_ptl.core.commands.TimingFunctionArgumentType;
 import qouteall.imm_ptl.core.compat.GravityChangerInterface;
 import qouteall.imm_ptl.core.compat.sable.SableInterface;
+import qouteall.imm_ptl.peripheral.platform_specific.PeripheralModEntry;
 import qouteall.q_misc_util.Helper;
+import qouteall.q_misc_util.MiscUtilModEntry;
 
 @Mod(IPModEntry.MODID)
 public class IPModEntry {
@@ -39,6 +41,11 @@ public class IPModEntry {
         SubCommandArgumentType.init(modEventBus);
         TimingFunctionArgumentType.init(modEventBus);
         AxisArgumentType.init(modEventBus);
+
+        // q_misc_util and imm_ptl are internal modules of this distribution, not
+        // separate user-facing mods. Attach their registrations to this mod bus.
+        new MiscUtilModEntry(modEventBus);
+        new PeripheralModEntry(modEventBus);
     }
 
     public void onInitialize(IEventBus eventBus) {

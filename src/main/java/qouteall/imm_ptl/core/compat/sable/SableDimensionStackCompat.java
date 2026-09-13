@@ -1,10 +1,10 @@
 package qouteall.imm_ptl.core.compat.sable;
 
 import com.mojang.logging.LogUtils;
-import dev.ryanhcode.sable.Sable;
 import dev.ryanhcode.sable.api.entity.EntitySubLevelUtil;
 import dev.ryanhcode.sable.api.sublevel.ServerSubLevelContainer;
 import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
+import dev.ryanhcode.sable.companion.math.BoundingBox3dc;
 import dev.ryanhcode.sable.companion.math.JOMLConversion;
 import dev.ryanhcode.sable.companion.math.Pose3d;
 import dev.ryanhcode.sable.mixinhelpers.entity.entity_riding_sub_level_vehicle.EntityRidingSubLevelVehicleHelper;
@@ -17,12 +17,15 @@ import net.minecraft.nbt.CompoundTag;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.entity.EntitySectionStorage;
 import net.minecraft.world.phys.Vec3;
 import org.joml.Quaterniond;
 import org.joml.Vector3d;
 import org.slf4j.Logger;
 import qouteall.imm_ptl.core.portal.global_portals.VerticalConnectingPortal;
 import qouteall.imm_ptl.core.teleportation.ServerTeleportationManager;
+import qouteall.imm_ptl.core.ducks.IEServerEntityManager;
+import qouteall.imm_ptl.core.ducks.IEServerWorld;
 import qouteall.q_misc_util.my_util.DQuaternion;
 
 import java.util.ArrayList;
@@ -68,27 +71,48 @@ public final class SableDimensionStackCompat {
         }
     }
 
+    private static final double FULL_BODY_CROSSING_EPSILON = 1.0e-4;
+
     private static VerticalConnectingPortal findCrossedStackPortal(
         ServerLevel level, ServerSubLevel subLevel
     ) {
-        Vec3 previous = JOMLConversion.toMojang(subLevel.lastPose().position());
-        Vec3 current = JOMLConversion.toMojang(subLevel.logicalPose().position());
+        // Sable refreshes global bounds before its physics observer runs, so after the
+        // physics step they still describe the previous pose. Refresh them here before
+        // deciding whether a rigid body has crossed a dimension-stack seam.
+        subLevel.updateBoundingBox();
+        BoundingBox3dc bounds = subLevel.boundingBox();
 
         VerticalConnectingPortal floor = VerticalConnectingPortal.getConnectingPortal(
             level, VerticalConnectingPortal.ConnectorType.floor
         );
-        if (floor != null && floor.isMovedThroughPortal(previous, current)) {
+        if (floor != null && isFullyThroughPortal(bounds, floor)) {
             return floor;
         }
 
         VerticalConnectingPortal ceiling = VerticalConnectingPortal.getConnectingPortal(
             level, VerticalConnectingPortal.ConnectorType.ceil
         );
-        if (ceiling != null && ceiling.isMovedThroughPortal(previous, current)) {
+        if (ceiling != null && isFullyThroughPortal(bounds, ceiling)) {
             return ceiling;
         }
 
         return null;
+    }
+
+    static boolean isFullyThroughPortal(BoundingBox3dc bounds, VerticalConnectingPortal portal) {
+        Vec3 normal = portal.getNormal();
+        Vec3 origin = portal.getOriginPos();
+
+        // Portal crossing goes from the normal-facing side (positive signed distance)
+        // to the destination side (negative signed distance). Evaluate the AABB corner
+        // with the greatest signed distance; only when even that corner is behind the
+        // plane is the entire rigid body safe to reconstruct in the destination world.
+        double furthestFront =
+            normal.x * (normal.x >= 0.0 ? bounds.maxX() : bounds.minX()) +
+            normal.y * (normal.y >= 0.0 ? bounds.maxY() : bounds.minY()) +
+            normal.z * (normal.z >= 0.0 ? bounds.maxZ() : bounds.minZ()) -
+            origin.dot(normal);
+        return furthestFront < -FULL_BODY_CROSSING_EPSILON;
     }
 
     private static void migrateSubLevel(
@@ -253,10 +277,21 @@ public final class SableDimensionStackCompat {
         Set<UUID> migrationIds = new HashSet<>();
         Set<UUID> plotResidentIds = new HashSet<>();
 
-        for (Entity entity : sourceWorld.getAllEntities()) {
-            if (Sable.HELPER.getContaining(entity) == sourceSubLevel) {
+        // Plot chunks are not ordinary player-visible chunks. After a dimension
+        // transfer their entities can be in HIDDEN sections, absent from getAllEntities().
+        // Use the same stored sections that Sable visits when removing a plot, or a
+        // return crossing can delete the body while abandoning its seat and riders.
+        // Sable intentionally wraps ServerLevel#getEntities(), so it is not safe to
+        // assume the returned LevelEntityGetter is Minecraft's adapter. Read the
+        // authoritative PersistentEntitySectionManager storage instead, matching
+        // Sable's own ServerLevelPlot#kickAllEntities() implementation.
+        EntitySectionStorage<Entity> storage = ((IEServerEntityManager)
+            ((IEServerWorld) sourceWorld).ip_getEntityManager()).ip_getSectionStorage();
+        for (var chunk : sourceSubLevel.getPlot().getLoadedChunks()) {
+            for (Entity entity : storage.getExistingSectionsInChunk(chunk.getChunk().getPos().toLong())
+                .flatMap(section -> section.getEntities()).toList()) {
+                if (entity.isRemoved() || !migrationIds.add(entity.getUUID())) continue;
                 migrationEntities.add(entity);
-                migrationIds.add(entity.getUUID());
                 plotResidentIds.add(entity.getUUID());
             }
         }

@@ -4,17 +4,14 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.ConnectScreen;
 import net.minecraft.client.multiplayer.ServerData;
 import net.minecraft.client.multiplayer.resolver.ServerAddress;
+import net.minecraft.network.protocol.game.ServerboundPlayerCommandPacket;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.Level;
-import net.neoforged.api.distmarker.Dist;
-import net.neoforged.bus.api.SubscribeEvent;
-import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.neoforge.client.event.ClientTickEvent;
 
 import java.util.UUID;
 
 /** Real-client observer for the Sable dimension-stack dedicated integration test. */
-@EventBusSubscriber(modid = qouteall.imm_ptl.core.platform_specific.IPModEntry.MODID, value = Dist.CLIENT)
 public final class SableDimensionStackDedicatedClientTest {
     private static final String DEDICATED_ADDRESS = "127.0.0.1:" + System.getenv().getOrDefault("IP_SABLE_E2E_PORT", "25565");
     private static final int TIMEOUT_TICKS = 1200;
@@ -26,6 +23,8 @@ public final class SableDimensionStackDedicatedClientTest {
         WAIT_FOR_SOURCE_RIDE,
         WAIT_FOR_DESTINATION_RIDE,
         WAIT_FOR_RETURN_RIDE,
+        WAIT_FOR_GRAVITY_RECROSS,
+        WAIT_FOR_DISMOUNT,
         WAIT_FOR_SERVER_PASS,
         DONE
     }
@@ -40,7 +39,6 @@ public final class SableDimensionStackDedicatedClientTest {
 
     private SableDimensionStackDedicatedClientTest() {}
 
-    @SubscribeEvent
     public static void onClientTick(ClientTickEvent.Post event) {
         if (!SableDimensionStackIntegrationMarkers.enabled() || phase == Phase.DONE) return;
 
@@ -63,7 +61,9 @@ public final class SableDimensionStackDedicatedClientTest {
                 case WAIT_FOR_SOURCE_RIDE -> waitForSourceRide(minecraft);
                 case WAIT_FOR_DESTINATION_RIDE -> waitForDestinationRide(minecraft);
                 case WAIT_FOR_RETURN_RIDE -> waitForReturnRide(minecraft);
-                case WAIT_FOR_SERVER_PASS -> waitForStableServerConfirmedReturn(minecraft);
+                case WAIT_FOR_GRAVITY_RECROSS -> waitForGravityRecross(minecraft);
+                case WAIT_FOR_DISMOUNT -> waitForDismount(minecraft);
+                case WAIT_FOR_SERVER_PASS -> waitForStableServerConfirmedDismount(minecraft);
                 case CONNECT, DONE -> { }
             }
         }
@@ -141,32 +141,62 @@ public final class SableDimensionStackDedicatedClientTest {
             "client vehicle passenger graph is inconsistent after round trip");
 
         SableDimensionStackIntegrationMarkers.acknowledge("return");
+        stableReturnTicks = 0;
+        phase = Phase.WAIT_FOR_GRAVITY_RECROSS;
+        phaseTicks = 0;
+    }
+
+    private static void waitForGravityRecross(Minecraft minecraft) {
+        if (minecraft.level.dimension().equals(Level.OVERWORLD)) {
+            Entity vehicle = minecraft.player.getVehicle();
+            require(vehicle != null && vehicle.getUUID().equals(vehicleId),
+                "client lost Create seat while gravity was reversing returned body");
+            if (stableReturnTicks < RETURN_STABLE_TICKS) stableReturnTicks++;
+            return;
+        }
+        if (!minecraft.level.dimension().equals(Level.NETHER)) return;
+
+        require(stableReturnTicks >= RETURN_STABLE_TICKS,
+            "body recrossed before client observed a stable returned Overworld state");
+        Entity vehicle = minecraft.player.getVehicle();
+        if (vehicle == null) {
+            require(++ridingSyncTicks <= RIDING_SYNC_GRACE_TICKS,
+                "client reached Nether on gravity recross but Create seat did not synchronize");
+            return;
+        }
+        require(vehicle.getUUID().equals(vehicleId),
+            "client mounted a different vehicle after gravity-driven recross");
+        require(vehicle.getPassengers().contains(minecraft.player),
+            "client Create seat passenger graph is inconsistent after gravity recross");
+
+        SableDimensionStackIntegrationMarkers.acknowledge("recross");
+        minecraft.getConnection().send(new ServerboundPlayerCommandPacket(
+            minecraft.player, ServerboundPlayerCommandPacket.Action.PRESS_SHIFT_KEY
+        ));
+        ridingSyncTicks = 0;
+        phase = Phase.WAIT_FOR_DISMOUNT;
+        phaseTicks = 0;
+    }
+
+    private static void waitForDismount(Minecraft minecraft) {
+        if (minecraft.player.getVehicle() != null) {
+            require(++ridingSyncTicks <= RIDING_SYNC_GRACE_TICKS,
+                "client crouch/dismount input did not detach from Create seat");
+            return;
+        }
+        ridingSyncTicks = 0;
+        SableDimensionStackIntegrationMarkers.acknowledge("dismount");
         phase = Phase.WAIT_FOR_SERVER_PASS;
         phaseTicks = 0;
     }
 
-    private static void waitForStableServerConfirmedReturn(Minecraft minecraft) {
+    private static void waitForStableServerConfirmedDismount(Minecraft minecraft) {
         if (!SableDimensionStackIntegrationMarkers.exists("server-pass.txt")) return;
-
-        Entity vehicle = minecraft.player.getVehicle();
-        boolean stable = minecraft.level.dimension().equals(Level.OVERWORLD)
-            && vehicle != null
-            && vehicle.getUUID().equals(vehicleId)
-            && vehicle.getPassengers().contains(minecraft.player);
-
-        if (!stable) {
-            stableReturnTicks = 0;
-            require(++ridingSyncTicks <= RIDING_SYNC_GRACE_TICKS,
-                "client did not settle in returned dimension with the original riding graph after server pass");
-            return;
-        }
-
-        ridingSyncTicks = 0;
-        if (++stableReturnTicks < RETURN_STABLE_TICKS) return;
-
+        require(minecraft.player.getVehicle() == null,
+            "client became mounted again after server-confirmed dismount");
         phase = Phase.DONE;
         SableDimensionStackIntegrationMarkers.clientPass(
-            "real client verified source, destination, and stable return riding graph with the same vehicle UUID");
+            "real client verified tall-body round trip, gravity recross, Create SeatEntity tracking, and successful dismount");
         minecraft.stop();
     }
 

@@ -6,7 +6,7 @@ on:
       - main
   push:
     branches:
-      - main
+      - '**'
   workflow_dispatch:
 
 permissions:
@@ -17,6 +17,30 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: Select integration checks
+    runs-on: ubuntu-latest
+    outputs:
+      e2e: ${{ steps.select.outputs.e2e }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - id: select
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [[ "$EVENT" == pull_request ]]; then
+            echo "e2e=$(python3 tools/ci_policy.py "$BASE" "$HEAD")" >> "$GITHUB_OUTPUT"
+          elif [[ "$EVENT" == workflow_dispatch || "$REF" == refs/heads/main ]]; then
+            echo 'e2e=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'e2e=false' >> "$GITHUB_OUTPUT"
+          fi
+
   core:
     name: Core verification
     runs-on: ubuntu-latest
@@ -45,6 +69,8 @@ jobs:
 
   graphical-e2e:
     name: Sable dedicated graphical E2E
+    needs: changes
+    if: needs.changes.outputs.e2e == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 35
     steps:
@@ -76,3 +102,29 @@ jobs:
             run-sable-e2e-client/crash-reports/**
             run-sable-e2e-server/logs/**
             run-sable-e2e-client/logs/**
+
+  portal-visual:
+    needs: changes
+    if: needs.changes.outputs.e2e == 'true'
+    uses: ./.github/workflows/visual.yml
+
+  required:
+    name: Required verification
+    if: always()
+    needs: [changes, core, graphical-e2e, portal-visual]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enforce all selected checks
+        env:
+          SELECT: ${{ needs.changes.result }}
+          CORE: ${{ needs.core.result }}
+          HEAVY: ${{ needs.graphical-e2e.result }}
+          VISUAL: ${{ needs.portal-visual.result }}
+          REQUIRED: ${{ needs.changes.outputs.e2e }}
+        run: |
+          [[ "$SELECT" == success && "$CORE" == success ]]
+          if [[ "$REQUIRED" == true ]]; then
+            [[ "$HEAVY" == success && "$VISUAL" == success ]]
+          else
+            [[ "$HEAVY" == skipped && "$VISUAL" == skipped ]]
+          fi

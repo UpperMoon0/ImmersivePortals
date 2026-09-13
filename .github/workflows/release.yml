@@ -4,6 +4,15 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag to verify and publish (v6.0.9)
+        required: true
+        type: string
+
+env:
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
 concurrency:
   group: release-workflow
@@ -19,6 +28,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || github.ref }}
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
@@ -51,6 +62,8 @@ jobs:
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || github.ref }}
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
@@ -79,16 +92,35 @@ jobs:
             run-sable-e2e-server/logs/**
             run-sable-e2e-client/logs/**
 
+  compatibility:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { renderer: vanilla, sable: true }
+          - { renderer: sodium, sable: true }
+          - { renderer: iris, sable: true }
+          - { renderer: veil, sable: false }
+          - { renderer: vanilla, sable: false }
+    uses: ./.github/workflows/visual.yml
+    with:
+      ref: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || github.ref }}
+      renderer: ${{ matrix.renderer }}
+      sable: ${{ matrix.sable }}
+
   release:
     name: Publish verified release
     needs:
       - core-verification
       - graphical-e2e
+      - compatibility
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || github.ref }}
       - name: Restore verified release jar
         uses: actions/download-artifact@v4
         with:
@@ -110,8 +142,8 @@ jobs:
             exit 1
           fi
 
-          if [[ "${GITHUB_REF_NAME}" != "v${mod_version}" ]]; then
-            echo "Tag ${GITHUB_REF_NAME} does not match mod_version v${mod_version}" >&2
+          if [[ "${RELEASE_TAG}" != "v${mod_version}" ]]; then
+            echo "Tag ${RELEASE_TAG} does not match mod_version v${mod_version}" >&2
             exit 1
           fi
 

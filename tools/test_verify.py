@@ -1,5 +1,6 @@
 """Fast regression tests for false passes and failed-process supervision."""
 import tempfile
+import json
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -15,7 +16,7 @@ class VerificationHarnessTest(unittest.TestCase):
         patcher = patch.object(verify, "RESULT_DIR", self.results)
         patcher.start()
         self.addCleanup(patcher.stop)
-        for name in ("server-pass", "client-pass", "client-source", "client-destination", "client-return"):
+        for name in ("server-pass", "client-pass", "client-source", "client-destination", "client-return", "client-recross", "client-dismount"):
             (self.results / f"{name}.txt").write_text("verified\n")
 
     def test_both_sides_and_every_phase_are_required(self):
@@ -96,6 +97,23 @@ class VerificationHarnessTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "unsafe E2E cleanup"):
                 verify.prepare_e2e()
         self.assertTrue((self.results / "client-pass.txt").exists())
+
+    def test_visual_requires_its_own_authoritative_marker(self):
+        with self.assertRaisesRegex(RuntimeError, "visual-pass"):
+            verify.validate_results(0, smoke=True)
+        (self.results / "visual-pass.txt").write_text("pixels verified")
+        verify.validate_results(0, smoke=True)
+
+    def test_live_metrics_reject_missing_samples_nonfinite_and_slow_runs(self):
+        good = {"samples": 200, "p95_ms": 12.0, "heap_used_bytes": 1000000}
+        for side in ("server", "client"):
+            (self.results / f"{side}-metrics.json").write_text(json.dumps(good))
+        verify.validate_metrics(200)
+        for changes in ({"samples": 199}, {"p95_ms": float("nan")}, {"p95_ms": 101}, {"p95_ms": 0}):
+            with self.subTest(changes=changes):
+                (self.results / "server-metrics.json").write_text(json.dumps(good | changes))
+                with self.assertRaises(RuntimeError):
+                    verify.validate_metrics(200)
 
 
 if __name__ == "__main__":

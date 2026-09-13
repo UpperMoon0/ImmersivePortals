@@ -2,13 +2,11 @@ package qouteall.imm_ptl.peripheral.platform_specific;
 
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.neoforged.bus.api.IEventBus;
-import net.neoforged.fml.common.Mod;
 import net.neoforged.fml.loading.FMLEnvironment;
 import net.neoforged.neoforge.registries.DeferredRegister;
 import net.neoforged.neoforge.registries.RegisterEvent;
 import qouteall.imm_ptl.peripheral.PeripheralModMain;
 
-@Mod(PeripheralModEntry.MODID)
 public class PeripheralModEntry {
 
     public static final String MODID = "imm_ptl";
