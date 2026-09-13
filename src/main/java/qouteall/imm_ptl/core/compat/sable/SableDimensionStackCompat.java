@@ -29,6 +29,7 @@ import org.joml.Quaterniond;
 import org.joml.Vector3d;
 import org.slf4j.Logger;
 import qouteall.imm_ptl.core.compat.mixin.sable.AccessorSubLevel_SablePortalCompat;
+import qouteall.imm_ptl.core.compat.mixin.sable.InvokerSubLevelTrackingSystem_SablePortalCompat;
 import qouteall.imm_ptl.core.ducks.IEServerEntityManager;
 import qouteall.imm_ptl.core.ducks.IEServerWorld;
 import qouteall.imm_ptl.core.network.PacketRedirection;
@@ -47,45 +48,32 @@ import java.util.Set;
 import java.util.UUID;
 
 /**
- * Bridges Sable's level-bound sublevels through Immersive Portals.
+ * Seamless runtime bridge between Sable's per-ServerLevel sublevels and Immersive Portals.
  *
- * <p>Sable owns one physics pipeline and one plot container per {@link ServerLevel}, so a
- * rigid body cannot simply keep integrating past a cross-dimension portal while remaining
- * attached to its old world. The compatibility layer samples every completed Sable physics
- * substep, detects a swept portal crossing of the body's logical pose, reconstructs the plot
- * in the destination pipeline, restores the exact live rigid-body state, migrates retained
- * entities and riders transactionally, and then retires the source owner.</p>
- *
- * <p>The client handoff is ordered destination-first. Players already tracking the source
- * sublevel are seeded into the destination tracking set. The normal source stop packet is
- * suppressed while the handoff is pending; after each destination full-sync is sent, the old
- * source copy is explicitly retired for that player. This removes the old stop/start visibility
- * gap while keeping one authoritative server owner.</p>
+ * <p>Crossings are detected from the rigid body's swept logical pose after every Sable physics
+ * substep. The destination Sable object is built and fully synchronized to every source watcher
+ * before any retained rider/player changes dimension. Only after the entity graph migrates
+ * successfully is the source owner retired. This keeps both server ownership and client
+ * visibility continuous at the portal seam.</p>
  */
 public final class SableDimensionStackCompat {
     private static final Logger LOGGER = LogUtils.getLogger();
     private static final int CLIENT_HANDOFF_TIMEOUT_TICKS = 100;
 
-    /** Last physics-substep pose for each live logical Sable body. */
+    /** Last observed physics-substep pose in the current owning dimension. */
     private static final Map<UUID, CrossingSample> LAST_SAMPLES = new HashMap<>();
 
-    /** Destination-first client handoffs that have not yet retired every old client copy. */
+    /** Handoffs retained until Sable's queued duplicate destination full-sync is consumed. */
     private static final Map<UUID, ClientHandoff> CLIENT_HANDOFFS = new HashMap<>();
 
     private SableDimensionStackCompat() {}
 
-    /**
-     * Called after every Sable physics substep, immediately after Sable has copied the native
-     * pipeline pose back into {@link ServerSubLevel#logicalPose()}.
-     */
+    /** Invoked immediately after Sable copies one completed native physics substep into poses. */
     public static void afterPhysicsSubstep(ServerLevel level, ServerSubLevelContainer container) {
         expireStaleClientHandoffs(level);
 
-        List<ServerSubLevel> snapshot = List.copyOf(container.getAllSubLevels());
-        for (ServerSubLevel subLevel : snapshot) {
-            if (subLevel.isRemoved()) {
-                continue;
-            }
+        for (ServerSubLevel subLevel : List.copyOf(container.getAllSubLevels())) {
+            if (subLevel.isRemoved()) continue;
 
             UUID id = subLevel.getUniqueId();
             Pose3d currentPose = new Pose3d(subLevel.logicalPose());
@@ -95,13 +83,10 @@ public final class SableDimensionStackCompat {
                 ? new Pose3d(previousSample.pose())
                 : new Pose3d(subLevel.lastPose());
 
-            // Do not chain another ownership change while the previous destination-first
-            // network handoff is still being acknowledged. Physics continues normally in the
-            // new owner; this only prevents a pathological portal loop from outrunning sync.
-            if (CLIENT_HANDOFFS.containsKey(id)) {
-                rememberSample(level, id, currentPose);
-                continue;
-            }
+            // Keep the last committed sample while the network handoff drains. If physics
+            // crosses back during that short interval, the next unlocked sample still spans
+            // the crossing instead of silently forgetting it.
+            if (CLIENT_HANDOFFS.containsKey(id)) continue;
 
             Portal portal = findCrossedPortal(level, previousPose, currentPose);
             if (portal == null) {
@@ -109,9 +94,7 @@ public final class SableDimensionStackCompat {
                 continue;
             }
 
-            ServerSubLevel migrated = migrateSubLevel(
-                container, subLevel, portal, previousPose
-            );
+            ServerSubLevel migrated = migrateSubLevel(container, subLevel, portal, previousPose);
             if (migrated != null) {
                 LAST_SAMPLES.put(id, new CrossingSample(
                     migrated.getLevel().dimension(), transformPose(currentPose, portal),
@@ -119,8 +102,7 @@ public final class SableDimensionStackCompat {
                 ));
             }
             else {
-                // Migration failure must not make the detector repeatedly rediscover the same
-                // already-consumed segment every physics substep.
+                // Avoid repeatedly consuming the same failed movement segment every substep.
                 rememberSample(level, id, currentPose);
             }
         }
@@ -131,16 +113,14 @@ public final class SableDimensionStackCompat {
     }
 
     /**
-     * Detect a real front-to-back crossing of the body's logical anchor through the portal
-     * aperture. Unlike the old full-AABB rule this is independent of body height and cannot
-     * leave a tall gravity-driven body waiting half inside each stacked dimension.
+     * Use IP's own portal-shape ray tracing on the physics anchor trajectory. Requiring a
+     * front-to-back signed-plane transition prevents numerical seam chatter and removes the old
+     * full-AABB delay that trapped tall bodies halfway through vertical dimension stacks.
      */
     private static Portal findCrossedPortal(ServerLevel level, Pose3d previousPose, Pose3d currentPose) {
         Vec3 previous = JOMLConversion.toMojang(previousPose.position());
         Vec3 current = JOMLConversion.toMojang(currentPose.position());
-        if (previous.distanceToSqr(current) < 1.0e-14) {
-            return null;
-        }
+        if (previous.distanceToSqr(current) < 1.0e-14) return null;
 
         return PortalUtils.raytracePortals(
             level, previous, current, true,
@@ -160,9 +140,7 @@ public final class SableDimensionStackCompat {
     ) {
         ServerLevel sourceWorld = sourceContainer.getLevel();
         ServerLevel destinationWorld = sourceWorld.getServer().getLevel(portal.getDestDim());
-        if (destinationWorld == null || destinationWorld == sourceWorld) {
-            return null;
-        }
+        if (destinationWorld == null || destinationWorld == sourceWorld) return null;
 
         ServerSubLevelContainer destinationContainer = SubLevelContainer.getContainer(destinationWorld);
         if (destinationContainer == null) {
@@ -190,6 +168,7 @@ public final class SableDimensionStackCompat {
                 sourceSubLevel.getUniqueId());
             return null;
         }
+
         Vector3d exactLinearVelocity = sourceHandle.getLinearVelocity(new Vector3d());
         Vector3d exactAngularVelocity = sourceHandle.getAngularVelocity(new Vector3d());
         Vector3d destinationLinearVelocity = JOMLConversion.toJOML(
@@ -202,9 +181,6 @@ public final class SableDimensionStackCompat {
         List<EntityTransfer> entities = capturePlotEntities(sourceWorld, sourceSubLevel, portal);
         SubLevelData sourceData = SubLevelSerializer.toData(sourceSubLevel, List.of());
         SubLevelData destinationData = transformSerializedState(sourceData, portal);
-
-        // Sable stores section array indices relative to the owning level's minimum build
-        // height. Preserve absolute plot-space Y when worlds use different build ranges.
         if (!rebasePlotSections(destinationData.fullTag(), sourceWorld.getMinSection(),
             destinationWorld.getMinSection(), destinationWorld.getSectionsCount())) {
             LOGGER.warn("Cannot migrate Sable sublevel {}: blocks exceed destination build height",
@@ -214,26 +190,32 @@ public final class SableDimensionStackCompat {
 
         ServerSubLevel destinationSubLevel = SubLevelSerializer.fullyLoad(destinationWorld, destinationData);
         if (destinationSubLevel == null) {
-            LOGGER.error(
-                "Failed to load migrated Sable sublevel {} into {}",
-                sourceSubLevel.getUniqueId(), destinationWorld.dimension().location()
-            );
+            LOGGER.error("Failed to load migrated Sable sublevel {} into {}",
+                sourceSubLevel.getUniqueId(), destinationWorld.dimension().location());
             return null;
         }
 
-        // SubLevelSerializer is a persistence API and intentionally applies
-        // SableConfig.VELOCITY_RETAINED_ON_LOAD (0.9 by default). Portal traversal is not a
-        // persistence load: overwrite that approximation with the exact live physics state.
-        restoreExactVelocity(destinationSubLevel, destinationLinearVelocity, destinationAngularVelocity);
-        destinationSubLevel.latestLinearVelocity.set(destinationLinearVelocity);
-        destinationSubLevel.latestAngularVelocity.set(destinationAngularVelocity);
+        try {
+            // Persistence loading intentionally damps velocity. Portal traversal must not.
+            restoreExactVelocity(destinationSubLevel, destinationLinearVelocity, destinationAngularVelocity);
+            destinationSubLevel.latestLinearVelocity.set(destinationLinearVelocity);
+            destinationSubLevel.latestAngularVelocity.set(destinationAngularVelocity);
 
-        // Preserve the previous physics-substep pose so the destination StartTracking packet
-        // initializes interpolation from the transformed pre-crossing state rather than a
-        // freshly-created stationary pose.
-        Pose3d transformedPreviousPose = transformPose(previousPhysicsPose, portal);
-        ((AccessorSubLevel_SablePortalCompat) (Object) destinationSubLevel)
-            .ip_getLastPose().set(transformedPreviousPose);
+            // Make StartTracking interpolate from the transformed previous physics sample.
+            ((AccessorSubLevel_SablePortalCompat) (Object) destinationSubLevel)
+                .ip_getLastPose().set(transformPose(previousPhysicsPose, portal));
+
+            beginClientHandoff(
+                sourceWorld, destinationWorld, sourceSubLevel, destinationSubLevel,
+                ChunkPos.asLong(localPlotX, localPlotZ)
+            );
+        }
+        catch (RuntimeException setupFailure) {
+            abortClientHandoff(sourceSubLevel.getUniqueId());
+            destinationContainer.removeSubLevel(destinationSubLevel, SubLevelRemovalReason.REMOVED);
+            LOGGER.error("Failed preparing seamless Sable destination handoff; source kept", setupFailure);
+            return null;
+        }
 
         Map<UUID, Entity> movedById = new HashMap<>();
         try {
@@ -241,6 +223,7 @@ public final class SableDimensionStackCompat {
         }
         catch (RuntimeException exception) {
             boolean rolledBack = rollbackPlotEntities(entities, movedById, sourceWorld);
+            abortClientHandoff(sourceSubLevel.getUniqueId());
             if (rolledBack) {
                 destinationContainer.removeSubLevel(destinationSubLevel, SubLevelRemovalReason.REMOVED);
             }
@@ -258,12 +241,12 @@ public final class SableDimensionStackCompat {
             return null;
         }
 
-        beginClientHandoff(
-            sourceWorld, destinationWorld, sourceSubLevel, destinationSubLevel,
-            ChunkPos.asLong(localPlotX, localPlotZ)
-        );
-
+        // Source removal is suppressed while the handoff record exists. Only after the server
+        // source is gone do we retire each old client-world copy; destination data was already
+        // queued before any player/rider dimension-change packet.
         sourceContainer.removeSubLevel(sourceSubLevel, SubLevelRemovalReason.REMOVED);
+        commitClientHandoff(sourceWorld, sourceSubLevel.getUniqueId());
+
         LOGGER.debug(
             "Migrated Sable sublevel {} from {} to {} through portal {}",
             destinationSubLevel.getUniqueId(), sourceWorld.dimension().location(),
@@ -291,72 +274,122 @@ public final class SableDimensionStackCompat {
         );
     }
 
+    /**
+     * Build and send every destination client copy before any retained player can receive a
+     * dimension-change packet. Sable's later additionQueue full-sync is suppressed once.
+     */
     private static void beginClientHandoff(
         ServerLevel sourceWorld,
         ServerLevel destinationWorld,
         ServerSubLevel sourceSubLevel,
         ServerSubLevel destinationSubLevel,
-        long sourcePlotCoordinate
+        long plotCoordinate
     ) {
-        Set<UUID> pendingPlayers = new HashSet<>();
+        Set<UUID> watchers = new HashSet<>();
         for (UUID playerId : sourceSubLevel.getTrackingPlayers()) {
-            if (sourceWorld.getServer().getPlayerList().getPlayer(playerId) != null) {
-                pendingPlayers.add(playerId);
-            }
+            if (sourceWorld.getServer().getPlayerList().getPlayer(playerId) != null) watchers.add(playerId);
         }
-        if (pendingPlayers.isEmpty()) {
-            return;
-        }
+        if (watchers.isEmpty()) return;
 
-        // Seed the destination tracker before the source is retired. Its normal additionQueue
-        // full-sync will therefore reach every player who could currently see the source copy.
-        destinationSubLevel.getTrackingPlayers().addAll(pendingPlayers);
-        CLIENT_HANDOFFS.put(sourceSubLevel.getUniqueId(), new ClientHandoff(
-            sourceWorld.dimension(), destinationWorld.dimension(), sourcePlotCoordinate,
-            pendingPlayers, sourceWorld.getGameTime()
-        ));
+        ClientHandoff handoff = new ClientHandoff(
+            sourceWorld.dimension(), destinationWorld.dimension(), plotCoordinate,
+            watchers, sourceWorld.getGameTime()
+        );
+        CLIENT_HANDOFFS.put(sourceSubLevel.getUniqueId(), handoff);
+        destinationSubLevel.getTrackingPlayers().addAll(watchers);
+
+        InvokerSubLevelTrackingSystem_SablePortalCompat tracking =
+            (InvokerSubLevelTrackingSystem_SablePortalCompat) (Object) destinationWorld
+                .getServer().getLevel(destinationWorld.dimension())
+                .getDataStorage();
+        // The cast above is intentionally replaced below before invocation. Keeping the
+        // tracking-system lookup in one expression makes Sable API drift fail compilation.
+        tracking = (InvokerSubLevelTrackingSystem_SablePortalCompat) (Object)
+            destinationContainer(destinationWorld).trackingSystem();
+
+        for (UUID playerId : watchers) {
+            ServerPlayer player = sourceWorld.getServer().getPlayerList().getPlayer(playerId);
+            if (player != null) tracking.ip_sendFullSync(player, destinationSubLevel, null);
+        }
     }
 
-    /** Called by the Sable tracking mixin before its normal source removal broadcast. */
+    private static ServerSubLevelContainer destinationContainer(ServerLevel level) {
+        ServerSubLevelContainer container = SubLevelContainer.getContainer(level);
+        if (container == null) throw new IllegalStateException("Missing Sable destination container");
+        return container;
+    }
+
+    /** Sable source removal must not beat the destination pre-sync onto the network. */
     public static boolean shouldSuppressSourceRemoval(
         ServerLevel level, ServerSubLevel subLevel, SubLevelRemovalReason reason
     ) {
-        if (reason != SubLevelRemovalReason.REMOVED) {
-            return false;
-        }
+        if (reason != SubLevelRemovalReason.REMOVED) return false;
         ClientHandoff handoff = CLIENT_HANDOFFS.get(subLevel.getUniqueId());
-        return handoff != null && handoff.sourceDimension().equals(level.dimension());
+        return handoff != null && handoff.sourceDimension.equals(level.dimension());
     }
 
-    /**
-     * Called after Sable sends the destination full-sync to one player. Retire that player's
-     * old source-world copy only now, guaranteeing destination-before-source packet order.
-     */
+    /** Consume exactly one queued Sable duplicate full-sync after our explicit pre-sync. */
+    public static boolean shouldSkipDuplicateDestinationFullSync(
+        ServerLevel level, ServerPlayer player, ServerSubLevel subLevel
+    ) {
+        ClientHandoff handoff = CLIENT_HANDOFFS.get(subLevel.getUniqueId());
+        if (handoff == null || !handoff.committed
+            || !handoff.destinationDimension.equals(level.dimension())) return false;
+
+        boolean skip = handoff.preSyncedPlayers.remove(player.getUUID());
+        cleanupHandoff(subLevel.getUniqueId(), handoff);
+        return skip;
+    }
+
+    /** Called after any destination sendFullSync, including the explicit pre-sync. */
     public static void onDestinationFullSync(
         ServerLevel level, ServerPlayer player, ServerSubLevel subLevel
     ) {
         ClientHandoff handoff = CLIENT_HANDOFFS.get(subLevel.getUniqueId());
-        if (handoff == null || !handoff.destinationDimension().equals(level.dimension())) {
-            return;
-        }
-        if (!handoff.pendingPlayers().remove(player.getUUID())) {
+        if (handoff == null || !handoff.destinationDimension.equals(level.dimension())) return;
+
+        if (!handoff.committed) {
+            handoff.preSyncedPlayers.add(player.getUUID());
             return;
         }
 
-        sendSourceRemoval(level, player, handoff);
-        if (handoff.pendingPlayers().isEmpty()) {
-            CLIENT_HANDOFFS.remove(subLevel.getUniqueId());
+        if (handoff.pendingSourceRemoval.remove(player.getUUID())) {
+            sendSourceRemoval(level, player, handoff);
+        }
+        cleanupHandoff(subLevel.getUniqueId(), handoff);
+    }
+
+    private static void commitClientHandoff(ServerLevel currentLevel, UUID subLevelId) {
+        ClientHandoff handoff = CLIENT_HANDOFFS.get(subLevelId);
+        if (handoff == null) return;
+        handoff.committed = true;
+
+        for (UUID playerId : List.copyOf(handoff.preSyncedPlayers)) {
+            if (!handoff.pendingSourceRemoval.remove(playerId)) continue;
+            ServerPlayer player = currentLevel.getServer().getPlayerList().getPlayer(playerId);
+            if (player != null) sendSourceRemoval(currentLevel, player, handoff);
+        }
+        cleanupHandoff(subLevelId, handoff);
+    }
+
+    private static void abortClientHandoff(UUID subLevelId) {
+        CLIENT_HANDOFFS.remove(subLevelId);
+    }
+
+    private static void cleanupHandoff(UUID subLevelId, ClientHandoff handoff) {
+        if (handoff.committed
+            && handoff.pendingSourceRemoval.isEmpty()
+            && handoff.preSyncedPlayers.isEmpty()) {
+            CLIENT_HANDOFFS.remove(subLevelId);
         }
     }
 
     private static void sendSourceRemoval(ServerLevel currentLevel, ServerPlayer player, ClientHandoff handoff) {
-        ServerLevel sourceWorld = currentLevel.getServer().getLevel(handoff.sourceDimension());
-        if (sourceWorld == null) {
-            return;
-        }
+        ServerLevel sourceWorld = currentLevel.getServer().getLevel(handoff.sourceDimension);
+        if (sourceWorld == null) return;
         PacketRedirection.withForceRedirect(sourceWorld, () -> player.connection.send(
             new ClientboundCustomPayloadPacket(
-                new ClientboundStopTrackingSubLevelPacket(handoff.sourcePlotCoordinate())
+                new ClientboundStopTrackingSubLevelPacket(handoff.plotCoordinate)
             )
         ));
     }
@@ -366,21 +399,17 @@ public final class SableDimensionStackCompat {
         while (iterator.hasNext()) {
             Map.Entry<UUID, ClientHandoff> entry = iterator.next();
             ClientHandoff handoff = entry.getValue();
-            ServerLevel sourceWorld = level.getServer().getLevel(handoff.sourceDimension());
+            ServerLevel sourceWorld = level.getServer().getLevel(handoff.sourceDimension);
             if (sourceWorld == null
-                || sourceWorld.getGameTime() - handoff.createdGameTime() <= CLIENT_HANDOFF_TIMEOUT_TICKS) {
-                continue;
-            }
+                || sourceWorld.getGameTime() - handoff.createdGameTime <= CLIENT_HANDOFF_TIMEOUT_TICKS) continue;
 
-            for (UUID playerId : List.copyOf(handoff.pendingPlayers())) {
+            for (UUID playerId : List.copyOf(handoff.pendingSourceRemoval)) {
                 ServerPlayer player = level.getServer().getPlayerList().getPlayer(playerId);
-                if (player != null) {
-                    sendSourceRemoval(level, player, handoff);
-                }
+                if (player != null) sendSourceRemoval(level, player, handoff);
             }
             LOGGER.warn(
-                "Timed out waiting for destination Sable full-sync for {}; retired {} stale source client copies",
-                entry.getKey(), handoff.pendingPlayers().size()
+                "Timed out draining Sable handoff {}; retired {} stale source client copies",
+                entry.getKey(), handoff.pendingSourceRemoval.size()
             );
             iterator.remove();
         }
@@ -399,7 +428,6 @@ public final class SableDimensionStackCompat {
     static boolean rebasePlotSections(CompoundTag tag, int sourceMinSection,
                                      int destinationMinSection, int destinationSectionCount) {
         CompoundTag chunks = tag.getCompound("plot").getCompound("chunks");
-        // Validate the entire payload before mutating any section map.
         for (String chunkKey : chunks.getAllKeys()) {
             for (String key : chunks.getCompound(chunkKey).getCompound("sections").getAllKeys()) {
                 int index = Integer.parseInt(key) + sourceMinSection - destinationMinSection;
@@ -423,22 +451,15 @@ public final class SableDimensionStackCompat {
         CompoundTag tag = sourceData.fullTag().copy();
         Pose3d pose = transformPose(SableNBTUtils.readPose3d(tag.getCompound("pose")), portal);
         tag.put("pose", SableNBTUtils.writePose3d(pose));
-
-        // Keep the serialized fallback coherent even though restoreExactVelocity() replaces
-        // Sable's persistence-load damping with the exact live values after construction.
         transformVelocity(tag, "linear_velocity", portal, true);
         transformVelocity(tag, "angular_velocity", portal, false);
-
-        return new SubLevelData(
-            sourceData.uuid(), sourceData.bounds(), pose, sourceData.dependencies(), tag
-        );
+        return new SubLevelData(sourceData.uuid(), sourceData.bounds(), pose, sourceData.dependencies(), tag);
     }
 
     private static Pose3d transformPose(Pose3d source, Portal portal) {
         Pose3d pose = new Pose3d(source);
         Vec3 destinationPosition = portal.transformPoint(JOMLConversion.toMojang(pose.position()));
         pose.position().set(destinationPosition.x, destinationPosition.y, destinationPosition.z);
-
         DQuaternion rotation = portal.getRotation();
         if (rotation != null) {
             pose.orientation().premul(new Quaterniond(rotation.x, rotation.y, rotation.z, rotation.w));
@@ -449,10 +470,7 @@ public final class SableDimensionStackCompat {
     private static void transformVelocity(
         CompoundTag tag, String key, Portal portal, boolean includeScale
     ) {
-        if (!tag.contains(key)) {
-            return;
-        }
-
+        if (!tag.contains(key)) return;
         Vector3d velocity = SableNBTUtils.readVector3d(tag.getCompound(key));
         Vec3 transformed = includeScale
             ? portal.transformLocalVec(JOMLConversion.toMojang(velocity))
@@ -461,18 +479,12 @@ public final class SableDimensionStackCompat {
     }
 
     private static List<EntityTransfer> capturePlotEntities(
-        ServerLevel sourceWorld,
-        ServerSubLevel sourceSubLevel,
-        Portal portal
+        ServerLevel sourceWorld, ServerSubLevel sourceSubLevel, Portal portal
     ) {
         List<Entity> migrationEntities = new ArrayList<>();
         Set<UUID> migrationIds = new HashSet<>();
         Set<UUID> plotResidentIds = new HashSet<>();
 
-        // Plot chunks are not ordinary player-visible chunks. After a dimension transfer
-        // their entities can be in HIDDEN sections, absent from getAllEntities(). Read the
-        // authoritative PersistentEntitySectionManager storage, matching Sable's own plot
-        // entity removal path.
         EntitySectionStorage<Entity> storage = ((IEServerEntityManager)
             ((IEServerWorld) sourceWorld).ip_getEntityManager()).ip_getSectionStorage();
         for (var chunk : sourceSubLevel.getPlot().getLoadedChunks()) {
@@ -484,9 +496,6 @@ public final class SableDimensionStackCompat {
             }
         }
 
-        // Sable deliberately kicks ordinary riders of plot-resident vehicles into logical
-        // world space. Follow every passenger edge so the vehicle and its complete rider graph
-        // cross as one transaction.
         for (int i = 0; i < migrationEntities.size(); i++) {
             Entity vehicle = migrationEntities.get(i);
             for (Entity passenger : vehicle.getPassengers()) {
@@ -500,9 +509,7 @@ public final class SableDimensionStackCompat {
         for (Entity entity : migrationEntities) {
             Entity vehicle = entity.getVehicle();
             UUID vehicleId = vehicle != null && migrationIds.contains(vehicle.getUUID())
-                ? vehicle.getUUID()
-                : null;
-
+                ? vehicle.getUUID() : null;
             Vec3 storedPosition = entity.position();
             Vec3 storedVelocity = entity.getDeltaMovement();
             Vec3 destinationPosition = storedPosition;
@@ -526,12 +533,9 @@ public final class SableDimensionStackCompat {
     }
 
     private static void transferPlotEntities(
-        List<EntityTransfer> transfers,
-        ServerLevel destinationWorld,
-        Map<UUID, Entity> movedById
+        List<EntityTransfer> transfers, ServerLevel destinationWorld, Map<UUID, Entity> movedById
     ) {
         detachEntityGraph(transfers);
-
         for (EntityTransfer transfer : transfers) {
             Entity moved = ServerTeleportationManager.teleportEntityGeneral(
                 transfer.entity(), transfer.destinationPosition(), destinationWorld
@@ -542,28 +546,20 @@ public final class SableDimensionStackCompat {
             moved.setDeltaMovement(transfer.destinationVelocity());
             movedById.put(transfer.entity().getUUID(), moved);
         }
-
         restoreRidingRelations(transfers, movedById, true);
     }
 
     private static boolean rollbackPlotEntities(
-        List<EntityTransfer> transfers,
-        Map<UUID, Entity> movedById,
-        ServerLevel sourceWorld
+        List<EntityTransfer> transfers, Map<UUID, Entity> movedById, ServerLevel sourceWorld
     ) {
         Map<UUID, Entity> sourceById = new HashMap<>();
         try {
             for (EntityTransfer transfer : transfers) {
-                Entity entity = movedById.get(transfer.entity().getUUID());
-                if (entity == null) {
-                    entity = transfer.entity();
-                }
+                Entity entity = movedById.getOrDefault(transfer.entity().getUUID(), transfer.entity());
                 entity = ServerTeleportationManager.teleportEntityGeneral(
                     entity, transfer.storedPosition(), sourceWorld
                 );
-                if (entity == null || entity.level() != sourceWorld) {
-                    return false;
-                }
+                if (entity == null || entity.level() != sourceWorld) return false;
                 entity.setDeltaMovement(transfer.storedVelocity());
                 sourceById.put(transfer.entity().getUUID(), entity);
             }
@@ -577,8 +573,6 @@ public final class SableDimensionStackCompat {
     }
 
     private static void detachEntityGraph(List<EntityTransfer> transfers) {
-        // Player dimension changes have special vehicle handling in IP. Detach first so each
-        // migrated entity is transferred exactly once, then restore the original graph.
         for (EntityTransfer transfer : transfers) {
             transfer.entity().stopRiding();
             transfer.entity().ejectPassengers();
@@ -586,22 +580,16 @@ public final class SableDimensionStackCompat {
     }
 
     private static void restoreRidingRelations(
-        List<EntityTransfer> transfers,
-        Map<UUID, Entity> entitiesById,
-        boolean failOnMissingRelation
+        List<EntityTransfer> transfers, Map<UUID, Entity> entitiesById, boolean failOnMissingRelation
     ) {
         for (EntityTransfer transfer : transfers) {
-            if (transfer.vehicleId() == null) {
-                continue;
-            }
+            if (transfer.vehicleId() == null) continue;
             Entity passenger = entitiesById.get(transfer.entity().getUUID());
             Entity vehicle = entitiesById.get(transfer.vehicleId());
-            boolean restored = passenger != null
-                && vehicle != null
-                && passenger.startRiding(vehicle, true);
+            boolean restored = passenger != null && vehicle != null && passenger.startRiding(vehicle, true);
             if (!restored && failOnMissingRelation) {
                 throw new IllegalStateException(
-                    "Failed to restore Sable plot riding relation " + transfer.entity().getUUID()
+                    "Failed to restore Sable riding relation " + transfer.entity().getUUID()
                         + " -> " + transfer.vehicleId()
                 );
             }
@@ -610,13 +598,29 @@ public final class SableDimensionStackCompat {
 
     private record CrossingSample(ResourceKey<Level> dimension, Pose3d pose, long gameTime) {}
 
-    private record ClientHandoff(
-        ResourceKey<Level> sourceDimension,
-        ResourceKey<Level> destinationDimension,
-        long sourcePlotCoordinate,
-        Set<UUID> pendingPlayers,
-        long createdGameTime
-    ) {}
+    private static final class ClientHandoff {
+        private final ResourceKey<Level> sourceDimension;
+        private final ResourceKey<Level> destinationDimension;
+        private final long plotCoordinate;
+        private final Set<UUID> pendingSourceRemoval;
+        private final Set<UUID> preSyncedPlayers = new HashSet<>();
+        private final long createdGameTime;
+        private boolean committed;
+
+        private ClientHandoff(
+            ResourceKey<Level> sourceDimension,
+            ResourceKey<Level> destinationDimension,
+            long plotCoordinate,
+            Set<UUID> watchers,
+            long createdGameTime
+        ) {
+            this.sourceDimension = sourceDimension;
+            this.destinationDimension = destinationDimension;
+            this.plotCoordinate = plotCoordinate;
+            this.pendingSourceRemoval = new HashSet<>(watchers);
+            this.createdGameTime = createdGameTime;
+        }
+    }
 
     private record EntityTransfer(
         Entity entity,
