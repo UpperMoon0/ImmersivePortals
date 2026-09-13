@@ -26,25 +26,18 @@ import net.neoforged.neoforge.event.entity.player.PlayerEvent;
 import net.neoforged.neoforge.event.tick.ServerTickEvent;
 import org.joml.Vector3d;
 import qouteall.imm_ptl.core.portal.global_portals.VerticalConnectingPortal;
+import qouteall.imm_ptl.core.teleportation.ServerTeleportationManager;
 
 import java.util.Set;
 import java.util.UUID;
 
-/**
- * Dedicated-server half of the Sable stacked-dimension regression test.
- *
- * <p>This intentionally uses a real Sable physics body, Create's real SeatEntity resolved
- * from the runtime registry, and the connected player's real {@link ServerPlayer}. The body
- * is deliberately tall so its center crosses while much of the structure still straddles the
- * seam. A pre-existing Nether body occupies the first hidden Sable plot to prove new allocation
- * is globally coordinated. The moving body also owns a real force-load ticket, whose survival
- * is asserted after every ownership handoff.</p>
- */
+/** Real dedicated-server regression for seamless Sable/IP dimension handoff. */
 public final class SableDimensionStackDedicatedServerTest {
     private static final int LOGIN_SETTLE_TICKS = 40;
     private static final int TIMEOUT_TICKS = 1200;
     private static final double CROSSING_SPEED = 80.0;
     private static final double RETURN_SPEED = 18.0;
+    private static final double REMOTE_MOTION_SPEED = 4.0;
     private static final double MIN_FIRST_HANDOFF_SPEED = CROSSING_SPEED * 0.94;
     private static final int BODY_HEIGHT = 6;
 
@@ -56,6 +49,8 @@ public final class SableDimensionStackDedicatedServerTest {
         WAIT_FOR_RETURN,
         WAIT_FOR_GRAVITY_RECROSS,
         WAIT_FOR_DISMOUNT,
+        PREPARE_REMOTE_OBSERVER,
+        WAIT_FOR_REMOTE_OBSERVER,
         DONE
     }
 
@@ -69,6 +64,8 @@ public final class SableDimensionStackDedicatedServerTest {
     private static ServerLevel overworld;
     private static ServerLevel nether;
     private static Vector3d heldPosition;
+    private static Vector3d remoteHeldPosition;
+    private static boolean remoteMotionStarted;
     private static int sourcePlotX;
     private static int sourcePlotZ;
     private static int occupiedNetherPlotX;
@@ -89,6 +86,9 @@ public final class SableDimensionStackDedicatedServerTest {
         recrossedSeat = null;
         overworld = null;
         nether = null;
+        heldPosition = null;
+        remoteHeldPosition = null;
+        remoteMotionStarted = false;
         sourcePlotX = -1;
         sourcePlotZ = -1;
         occupiedNetherPlotX = -1;
@@ -119,6 +119,8 @@ public final class SableDimensionStackDedicatedServerTest {
                 case WAIT_FOR_RETURN -> verifyReturnOrWait();
                 case WAIT_FOR_GRAVITY_RECROSS -> verifyGravityRecrossOrWait();
                 case WAIT_FOR_DISMOUNT -> verifyDismountOrWait();
+                case PREPARE_REMOTE_OBSERVER -> prepareRemoteObserver();
+                case WAIT_FOR_REMOTE_OBSERVER -> verifyRemoteObserverOrWait();
                 case DONE -> { }
             }
         }
@@ -142,6 +144,7 @@ public final class SableDimensionStackDedicatedServerTest {
         require(VerticalConnectingPortal.getConnectingPortal(nether, VerticalConnectingPortal.ConnectorType.ceil) != null,
             "nether ceiling connector was not created");
 
+        // Prove server allocation does not reuse an occupied hidden plot in another dimension.
         Pose3d occupiedPose = new Pose3d();
         occupiedPose.position().set(1000.0, nether.getMinBuildHeight() + 32.0, 1000.0);
         ServerSubLevel occupiedNether = (ServerSubLevel) destinationContainer.allocateNewSubLevel(occupiedPose);
@@ -334,9 +337,63 @@ public final class SableDimensionStackDedicatedServerTest {
         require(finalBody != null && hasCommandForcedTicket(requireContainer(nether), finalBody),
             "final Sable body lost its force-load ticket after dismount");
 
+        phase = Phase.PREPARE_REMOTE_OBSERVER;
+        phaseTicks = 0;
+    }
+
+    /** Put the real client back in Overworld while the body stays in Nether behind the portal. */
+    private static void prepareRemoteObserver() {
+        ServerSubLevel finalBody = findSubLevel(requireContainer(nether), subLevelId);
+        require(finalBody != null, "Nether Sable body missing before remote-observer phase");
+        require(player.getVehicle() == null, "player remounted before remote-observer phase");
+
+        RigidBodyHandle handle = requireHandle(finalBody);
+        setLinearVelocity(handle, new Vector3d());
+        remoteHeldPosition = new Vector3d(finalBody.logicalPose().position());
+        remoteMotionStarted = false;
+
+        ServerTeleportationManager.of(player.server).forceTeleportPlayer(
+            player,
+            Level.OVERWORLD,
+            new Vec3(0.0, overworld.getMinBuildHeight() + 3.0, 0.0),
+            true
+        );
+        require(player.serverLevel() == overworld,
+            "could not place remote observer on Overworld side of stacked portal");
+
+        phase = Phase.WAIT_FOR_REMOTE_OBSERVER;
+        phaseTicks = 0;
+    }
+
+    private static void verifyRemoteObserverOrWait() {
+        ServerSubLevel body = findSubLevel(requireContainer(nether), subLevelId);
+        require(body != null, "Nether Sable body disappeared during remote-observer phase");
+        require(player.serverLevel() == overworld,
+            "remote observer unexpectedly left Overworld");
+        require(hasCommandForcedTicket(requireContainer(nether), body),
+            "force-load ticket disappeared during remote-observer phase");
+
+        RigidBodyHandle handle = requireHandle(body);
+        if (!SableDimensionStackIntegrationMarkers.exists("client-remote-source.txt")) {
+            handle.teleport(remoteHeldPosition, body.logicalPose().orientation());
+            setLinearVelocity(handle, new Vector3d());
+            return;
+        }
+
+        if (!remoteMotionStarted) {
+            setLinearVelocity(handle, new Vector3d(REMOTE_MOTION_SPEED, 0.0, 0.0));
+            remoteMotionStarted = true;
+        }
+
+        if (!SableDimensionStackIntegrationMarkers.exists("client-remote-moved.txt")) return;
+        double moved = Math.abs(body.logicalPose().position().x() - remoteHeldPosition.x);
+        require(moved >= 0.25,
+            "server body did not move enough to prove remote movement synchronization: " + moved);
+        setLinearVelocity(handle, new Vector3d());
+
         phase = Phase.DONE;
         SableDimensionStackIntegrationMarkers.serverPass(
-            "tall Sable body kept global plot identity, exact live velocity, force-load ticket, rider graph, gravity recross, and dismount across three portal handoffs"
+            "Sable body kept global plot identity, exact live velocity, tickets, rider graph and anti-flicker handoff; opposite-dimension client also received live remote movement"
         );
     }
 
@@ -394,7 +451,8 @@ public final class SableDimensionStackDedicatedServerTest {
             + " subLevel=" + subLevelId
             + " vehicle=" + vehicleId
             + " sourcePlot=" + sourcePlotX + "," + sourcePlotZ
-            + " occupiedNetherPlot=" + occupiedNetherPlotX + "," + occupiedNetherPlotZ;
+            + " occupiedNetherPlot=" + occupiedNetherPlotX + "," + occupiedNetherPlotZ
+            + " remoteMotion=" + remoteMotionStarted;
     }
 
     private static void require(boolean condition, String detail) {
