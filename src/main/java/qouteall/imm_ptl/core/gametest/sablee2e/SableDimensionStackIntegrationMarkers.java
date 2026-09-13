@@ -19,6 +19,13 @@ final class SableDimensionStackIntegrationMarkers {
     }
 
     static void serverPass(String detail) {
+        requireMarker("client-source.txt");
+        requireMarker("client-destination.txt");
+        requireMarker("client-return.txt");
+        requireMarker("client-recross.txt");
+        requireMarker("client-dismount.txt");
+        requireMarker("client-remote-source.txt");
+        requireMarker("client-remote-moved.txt");
         write("server-pass.txt", detail, null);
     }
 
@@ -27,6 +34,9 @@ final class SableDimensionStackIntegrationMarkers {
     }
 
     static void clientPass(String detail) {
+        requireMarker("server-pass.txt");
+        requireMarker("client-remote-source.txt");
+        requireMarker("client-remote-moved.txt");
         write("client-pass.txt", detail, null);
     }
 
@@ -40,6 +50,21 @@ final class SableDimensionStackIntegrationMarkers {
 
     static boolean exists(String file) {
         return Files.isRegularFile(resultDir().resolve(file));
+    }
+
+    private static void requireMarker(String file) {
+        Path marker = resultDir().resolve(file);
+        if (!Files.isRegularFile(marker)) {
+            throw new IllegalStateException("Required Sable dimension-stack E2E marker is missing: " + file);
+        }
+        try {
+            if (Files.readString(marker, StandardCharsets.UTF_8).isBlank()) {
+                throw new IllegalStateException("Required Sable dimension-stack E2E marker is empty: " + file);
+            }
+        }
+        catch (IOException io) {
+            throw new IllegalStateException("Cannot read required Sable dimension-stack E2E marker " + file, io);
+        }
     }
 
     private static Path resultDir() {
