@@ -55,9 +55,11 @@ public final class SableServerFirstClientHandoff {
         @Nullable DQuaternion rotation,
         boolean teleportChangesGravity
     ) {
+        boolean hadDeferredClientRequest = false;
         if (serverInitiated) {
             if (!markServerHandoffCompleted(handoffId)) return;
             if (pending != null && pending.portalId().equals(portalId)) {
+                hadDeferredClientRequest = true;
                 pending = null;
             }
         }
@@ -68,6 +70,7 @@ public final class SableServerFirstClientHandoff {
                 || !expected.portalId().equals(portalId)) {
                 return;
             }
+            hadDeferredClientRequest = true;
             pending = null;
         }
 
@@ -76,7 +79,9 @@ public final class SableServerFirstClientHandoff {
         if (player == null) return;
 
         if (!success) {
-            clearClientPendingGate(player);
+            if (hadDeferredClientRequest) {
+                clearClientPendingGate(player);
+            }
             return;
         }
 
@@ -85,7 +90,9 @@ public final class SableServerFirstClientHandoff {
                 "Sable server-first teleport {} for portal {} was acknowledged before the authoritative dimension switch (expected {}, got {})",
                 handoffId, portalId, destinationDimension.location(), player.level().dimension().location()
             );
-            clearClientPendingGate(player);
+            if (hadDeferredClientRequest) {
+                clearClientPendingGate(player);
+            }
             return;
         }
 
