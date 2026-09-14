@@ -98,8 +98,10 @@ class SableClientHandoffContractTest {
         MethodNode finish = findMethodByName(migrationMixin, "ip_finishMigrationTransformContext");
         assertNotNull(correlate, "physics-first rider correlation hook is missing");
         assertNotNull(finish, "physics-first terminal acknowledgement hook is missing");
+        assertTrue(invokesNamed(correlate, "getActiveClientRequestHandoffId"),
+            "request-first migration must defer its transform acknowledgement to the outer request handler");
         assertTrue(invokesNamed(correlate, "randomUUID"),
-            "each server-initiated rider migration must use a unique handoff nonce");
+            "each pure server-initiated rider migration must use a unique handoff nonce");
         assertTrue(invokesNamed(correlate, "call"),
             "the authoritative cross-dimension entity move must still execute");
         assertTrue(invokesNamed(finish, "sendServerInitiatedAck"),
