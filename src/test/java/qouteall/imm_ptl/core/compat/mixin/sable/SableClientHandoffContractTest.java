@@ -73,7 +73,7 @@ class SableClientHandoffContractTest {
         MethodNode request = findMethodByName(requestMixin, "ip_useExplicitServerFirstAcknowledgement");
         assertNotNull(request, "explicit Sable server-first client request hook is missing");
         assertTrue(invokesNamed(request, "begin"),
-            "client must retain the exact portal until the server acknowledges the deferred handoff");
+            "client must create a correlated handoff before sending its deferred request");
         assertTrue(invokesNamed(request, "send"),
             "deferred Sable handoff must send the explicit server-first request payload");
         assertTrue(invokesNamed(request, "cancel"),
@@ -91,6 +91,20 @@ class SableClientHandoffContractTest {
         assertTrue(invokesNamed(handle, "sendAck"),
             "every handled server-first request must terminate with an explicit success/failure acknowledgement");
 
+        ClassNode migrationMixin = readClass(
+            "qouteall/imm_ptl/core/compat/mixin/sable/MixinSableDimensionStackCompat_ServerFirstRotation.class"
+        );
+        MethodNode correlate = findMethodByName(migrationMixin, "ip_correlateRiderBeforeAuthoritativeMove");
+        MethodNode finish = findMethodByName(migrationMixin, "ip_finishMigrationTransformContext");
+        assertNotNull(correlate, "physics-first rider correlation hook is missing");
+        assertNotNull(finish, "physics-first terminal acknowledgement hook is missing");
+        assertTrue(invokesNamed(correlate, "randomUUID"),
+            "each server-initiated rider migration must use a unique handoff nonce");
+        assertTrue(invokesNamed(correlate, "call"),
+            "the authoritative cross-dimension entity move must still execute");
+        assertTrue(invokesNamed(finish, "sendServerInitiatedAck"),
+            "physics-first migration must send transform context only after the transaction returns");
+
         ClassNode clientHandoff = readClass(
             "qouteall/imm_ptl/core/compat/sable/SableServerFirstClientHandoff.class"
         );
@@ -102,7 +116,7 @@ class SableClientHandoffContractTest {
         assertTrue(invokesNamed(clientAck, "setWorldVelocity"),
             "camera/gravity transformation must preserve the already-authoritative world velocity");
         assertTrue(invokesNamed(clientAck, "clearClientPendingGate"),
-            "negative acknowledgements must release the client's deferred-teleport gate");
+            "negative acknowledgements must release a client-deferred teleport gate");
     }
 
     @Test
@@ -137,6 +151,9 @@ class SableClientHandoffContractTest {
         assertNotNull(getClass().getClassLoader().getResource(
             "qouteall/imm_ptl/core/compat/mixin/sable/MixinClientTeleportationManager_SableServerFirstAck.class"
         ));
+        assertNotNull(getClass().getClassLoader().getResource(
+            "qouteall/imm_ptl/core/compat/mixin/sable/MixinSableDimensionStackCompat_ServerFirstRotation.class"
+        ));
 
         try (InputStream stream = getClass().getClassLoader().getResourceAsStream(
             "imm_ptl_compat.mixins.json"
@@ -145,6 +162,7 @@ class SableClientHandoffContractTest {
             String json = new String(stream.readAllBytes(), StandardCharsets.UTF_8);
             assertTrue(json.contains("sable.MixinClientboundStartTrackingSubLevelPacket_SablePortalCompat"));
             assertTrue(json.contains("sable.MixinClientTeleportationManager_SableServerFirstAck"));
+            assertTrue(json.contains("sable.MixinSableDimensionStackCompat_ServerFirstRotation"));
         }
     }
 
