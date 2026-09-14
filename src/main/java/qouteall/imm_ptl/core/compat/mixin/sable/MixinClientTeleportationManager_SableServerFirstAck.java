@@ -48,13 +48,14 @@ public abstract class MixinClientTeleportationManager_SableServerFirstAck {
 
         pendingServerFirstPortalId = portal.getUUID();
         lastTeleportGameTime = ClientTeleportationManager.tickTimeForTeleportation;
-        SableServerFirstClientHandoff.begin(portal);
+        UUID handoffId = SableServerFirstClientHandoff.begin(portal);
 
         player.connection.send(new ServerboundCustomPayloadPacket(
             new SableServerFirstTeleportNetworking.Request(
                 PortalAPI.clientDimKeyToInt(sourceDimension),
                 eyePos,
-                portal.getUUID()
+                portal.getUUID(),
+                handoffId
             )
         ));
         ci.cancel();
