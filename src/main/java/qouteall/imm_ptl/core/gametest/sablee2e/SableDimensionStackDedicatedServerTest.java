@@ -25,6 +25,7 @@ import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.event.entity.player.PlayerEvent;
 import net.neoforged.neoforge.event.tick.ServerTickEvent;
 import org.joml.Vector3d;
+import qouteall.imm_ptl.core.portal.PortalManipulation;
 import qouteall.imm_ptl.core.portal.global_portals.GlobalPortalStorage;
 import qouteall.imm_ptl.core.portal.global_portals.VerticalConnectingPortal;
 import qouteall.imm_ptl.core.teleportation.ServerTeleportationManager;
@@ -153,13 +154,16 @@ public final class SableDimensionStackDedicatedServerTest {
 
         // A non-identity portal rotation is essential here: the real client must prove that the
         // server-first Sable handoff preserves IP's camera/facing transformation, not only body
-        // ownership. The reverse connector uses the inverse rotation so a round trip restores yaw.
-        floorPortal.setRotation(DQuaternion.rotationByDegrees(
+        // ownership. Match PortalManipulation.createReversePortal exactly: the reverse portal's
+        // body axes are transformed by the forward rotation before its stored transform becomes
+        // the conjugate. Setting only the conjugate creates a geometrically inconsistent pair and
+        // makes a nominal round trip rotate facing by 180 degrees.
+        DQuaternion forwardRotation = DQuaternion.rotationByDegrees(
             new Vec3(0.0, 1.0, 0.0), PORTAL_ROTATION_DEGREES
-        ));
-        ceilingPortal.setRotation(DQuaternion.rotationByDegrees(
-            new Vec3(0.0, 1.0, 0.0), -PORTAL_ROTATION_DEGREES
-        ));
+        );
+        floorPortal.setRotation(forwardRotation);
+        PortalManipulation.rotatePortalBody(ceilingPortal, forwardRotation);
+        ceilingPortal.setRotation(forwardRotation.getConjugated());
         GlobalPortalStorage.get(overworld).onDataChanged();
         GlobalPortalStorage.get(nether).onDataChanged();
 
