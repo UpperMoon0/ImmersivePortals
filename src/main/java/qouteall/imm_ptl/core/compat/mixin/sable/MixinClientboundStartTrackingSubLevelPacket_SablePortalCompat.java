@@ -27,6 +27,7 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import qouteall.imm_ptl.core.ClientWorldLoader;
+import qouteall.imm_ptl.core.compat.sable.SableClientPacketContext;
 
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -54,7 +55,7 @@ public abstract class MixinClientboundStartTrackingSubLevelPacket_SablePortalCom
      */
     @Inject(method = "handle", at = @At("HEAD"))
     private void ip_captureSourceInterpolation(PacketContext context, CallbackInfo ci) {
-        Level destinationLevel = context.level();
+        Level destinationLevel = SableClientPacketContext.resolve(context);
         ip_sourceHistory = null;
         ip_sourceReference = null;
         ip_sourceReferenceTick = Integer.MIN_VALUE;
@@ -122,7 +123,7 @@ public abstract class MixinClientboundStartTrackingSubLevelPacket_SablePortalCom
     private void ip_graftSourceInterpolation(PacketContext context, CallbackInfo ci) {
         if (ip_sourceHistory == null || ip_sourceHistory.isEmpty() || ip_sourceReference == null) return;
 
-        SubLevelContainer rawContainer = SubLevelContainer.getContainer(context.level());
+        SubLevelContainer rawContainer = SubLevelContainer.getContainer(SableClientPacketContext.resolve(context));
         if (!(rawContainer instanceof ClientSubLevelContainer destinationContainer)) return;
         SubLevel rawDestination = destinationContainer.getSubLevel(subLevelID());
         if (!(rawDestination instanceof ClientSubLevel destination)) return;

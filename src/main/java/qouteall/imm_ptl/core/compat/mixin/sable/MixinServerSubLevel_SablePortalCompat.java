@@ -27,7 +27,8 @@ public abstract class MixinServerSubLevel_SablePortalCompat {
     private Player ip_findPortalWatcher(
         ServerLevel level, UUID uuid, Operation<Player> original
     ) {
-        return level.getServer().getPlayerList().getPlayer(uuid);
+        Player globalPlayer = level.getServer().getPlayerList().getPlayer(uuid);
+        return globalPlayer != null ? globalPlayer : original.call(level, uuid);
     }
 
     @WrapOperation(

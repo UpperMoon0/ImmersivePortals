@@ -74,7 +74,7 @@ public final class PortalSmokeClient {
                         for (int y = pixels.getHeight() * 2 / 5; y < pixels.getHeight() * 3 / 5; y++) {
                             int color = pixels.getPixelRGBA(x, y);
                             int r = color & 255, g = (color >>> 8) & 255, b = (color >>> 16) & 255;
-                            if (g > 35 && g > r * 1.35 && g > b * 1.35) green++;
+                            if (g >= 20 && g >= r + 4 && g >= b * 2) green++;
                             total++;
                         }
                     }

@@ -302,6 +302,11 @@ public class McHelper {
         if (vehicle == null) {
             return;
         }
+        // Sable retains seats in hidden block plots and projects their passengers into
+        // world space. Moving the seat to the passenger would detach it from its block.
+        if (qouteall.imm_ptl.core.compat.sable.SableInterface.invoker.isRetainedVehicle(vehicle)) {
+            return;
+        }
         
         Vec3 vehicleOffset = getVehicleOffsetFromPassenger(vehicle, entity);
         

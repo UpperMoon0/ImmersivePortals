@@ -60,6 +60,17 @@ repositories {
     exclusiveContent {
         forRepository {
             maven {
+                name = "Sinytra"
+                url = "https://maven.sinytra.org"
+            }
+        }
+        filter {
+            includeGroup "org.sinytra.forgified-fabric-api"
+        }
+    }
+    exclusiveContent {
+        forRepository {
+            maven {
                 name = "Sable"
                 url = "https://maven.ryanhcode.dev/releases"
             }
@@ -136,9 +147,14 @@ def localAeronauticsJars = [
 def localAeronauticsAvailable = localAeronauticsJars.every { it.exists() }
 def verificationRenderer = providers.gradleProperty('verificationRenderer').getOrElse('sodium')
 def verificationSable = providers.gradleProperty('verificationSable').getOrElse('true').toBoolean()
+def verificationRendererStaged = providers.gradleProperty('verificationRendererStaged').getOrElse('false').toBoolean()
 if (!(verificationRenderer in ['vanilla', 'sodium', 'iris', 'veil'])) {
     throw new GradleException('Unknown verificationRenderer: ' + verificationRenderer)
 }
+
+// Runtime verification uses the standalone NeoForge Sodium release. The
+// net.caffeinemc sodium-neoforge is the complete installable artifact;
+// sodium-neoforge-mod is only the split platform overlay.
 runs {
     configureEach {
         systemProperty 'forge.logging.markers', 'REGISTRIES'
@@ -151,7 +167,7 @@ runs {
     client {
         systemProperty 'neoforge.enabledGameTestNamespaces', project.mod_id
         dependencies {
-            runtime "net.caffeinemc:sodium-neoforge-mod:0.8.12+mc1.21.1"
+            runtime("net.caffeinemc:sodium-neoforge:0.8.12+mc1.21.1") { transitive = false }
             // Local Aeronautics component jars are staged into runs/client/mods
             // below. Raw file dependencies land on the Java classpath but are
             // not discovered as NeoForge mods in this UserDev setup.
@@ -186,7 +202,7 @@ runs {
         systemProperty 'ip.sable.e2e', 'true'
         systemProperty 'ip.sable.e2e.resultDir', project.file('build/sable-dimension-stack-e2e').absolutePath
         dependencies {
-            runtime "net.caffeinemc:sodium-neoforge-mod:0.8.12+mc1.21.1"
+            runtime("net.caffeinemc:sodium-neoforge:0.8.12+mc1.21.1") { transitive = false }
         }
     }
 
@@ -200,16 +216,22 @@ runs {
         runType 'client'
         workingDirectory project.file('run-sable-e2e-client')
         dependencies {
-            if (verificationRenderer == 'sodium' || verificationRenderer == 'veil') {
-                runtime "net.caffeinemc:sodium-neoforge-mod:0.8.12+mc1.21.1"
-            }
-            if (verificationRenderer == 'iris') {
-                runtime "maven.modrinth:iris:1.8.12+1.21.1-neoforge"
-                runtime "maven.modrinth:sodium:mc1.21.1-0.6.13-neoforge"
-            }
-            if (verificationRenderer == 'veil') {
-                runtime("foundry.veil:veil-neoforge-1.21.1:4.3.2") {
-                    exclude group: 'maven.modrinth'
+            // The verification harness first resolves these artifacts from the
+            // generated classpath, then stages them in the client mods folder.
+            // Suppress the UserDev runtime copy for the actual staged launch so
+            // Java does not see the same mod on both the module path and mod path.
+            if (!verificationRendererStaged) {
+                if (verificationRenderer == 'sodium' || verificationRenderer == 'veil') {
+                    runtime("net.caffeinemc:sodium-neoforge:0.8.12+mc1.21.1") { transitive = false }
+                }
+                if (verificationRenderer == 'iris') {
+                    runtime "maven.modrinth:iris:1.8.14-beta.1+1.21.1-neoforge"
+                    runtime("net.caffeinemc:sodium-neoforge:0.8.12+mc1.21.1") { transitive = false }
+                }
+                if (verificationRenderer == 'veil') {
+                    runtime("foundry.veil:veil-neoforge-1.21.1:4.3.2") {
+                        exclude group: 'maven.modrinth'
+                    }
                 }
             }
         }
@@ -277,7 +299,7 @@ dependencies {
     testImplementation platform("org.junit:junit-bom:5.11.4")
     testImplementation "org.junit.jupiter:junit-jupiter"
     testImplementation "org.ow2.asm:asm-tree:9.7.1"
-    compileOnly "maven.modrinth:iris:1.8.12+1.21.1-neoforge"
+    compileOnly "maven.modrinth:iris:1.8.14-beta.1+1.21.1-neoforge"
     // Optional compile-time API for Veil shader recompilation compatibility.
     compileOnly "foundry.veil:veil-neoforge-${minecraft_version}:4.3.2"
 

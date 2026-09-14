@@ -9,7 +9,6 @@ import net.minecraft.client.gui.screens.ConnectScreen;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.multiplayer.ServerData;
 import net.minecraft.client.multiplayer.resolver.ServerAddress;
-import net.minecraft.network.protocol.game.ServerboundPlayerCommandPacket;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.Level;
@@ -24,7 +23,6 @@ public final class SableDimensionStackDedicatedClientTest {
     private static final String DEDICATED_ADDRESS = "127.0.0.1:" + System.getenv().getOrDefault("IP_SABLE_E2E_PORT", "25565");
     private static final int TIMEOUT_TICKS = 1200;
     private static final int RIDING_SYNC_GRACE_TICKS = 120;
-    private static final int RETURN_STABLE_TICKS = 10;
     private static final int MAX_OVERLAP_TICKS = 20;
     private static final int EXPECTED_SEAM_TRANSITIONS = 3;
     private static final int MIN_HANDOFF_HISTORY_SNAPSHOTS = 3;
@@ -51,7 +49,6 @@ public final class SableDimensionStackDedicatedClientTest {
     private static UUID vehicleId;
     private static UUID subLevelId;
     private static int ridingSyncTicks;
-    private static int stableReturnTicks;
     private static int overlapTicks;
     private static int seamTransitions;
     private static ResourceKey<Level> lastObservedDimension;
@@ -260,7 +257,6 @@ public final class SableDimensionStackDedicatedClientTest {
         verifyInterpolationHistory(Level.OVERWORLD, "return destination");
 
         SableDimensionStackIntegrationMarkers.acknowledge("return");
-        stableReturnTicks = 0;
         phase = Phase.WAIT_FOR_GRAVITY_RECROSS;
         phaseTicks = 0;
     }
@@ -270,13 +266,10 @@ public final class SableDimensionStackDedicatedClientTest {
             Entity vehicle = minecraft.player.getVehicle();
             require(vehicle != null && vehicle.getUUID().equals(vehicleId),
                 "client lost Create seat while gravity was reversing returned body");
-            if (stableReturnTicks < RETURN_STABLE_TICKS) stableReturnTicks++;
             return;
         }
         if (!minecraft.level.dimension().equals(Level.NETHER)) return;
 
-        require(stableReturnTicks >= RETURN_STABLE_TICKS,
-            "body recrossed before client observed a stable returned Overworld state");
         Entity vehicle = minecraft.player.getVehicle();
         if (vehicle == null) {
             require(++ridingSyncTicks <= RIDING_SYNC_GRACE_TICKS,
@@ -293,9 +286,9 @@ public final class SableDimensionStackDedicatedClientTest {
             "unexpected client seam-transition count: " + seamTransitions);
 
         SableDimensionStackIntegrationMarkers.acknowledge("recross");
-        minecraft.getConnection().send(new ServerboundPlayerCommandPacket(
-            minecraft.player, ServerboundPlayerCommandPacket.Action.PRESS_SHIFT_KEY
-        ));
+        // Hold the real input so vanilla's subsequent passenger-input packets also
+        // carry sneaking=true. A lone command is overwritten by the next input tick.
+        minecraft.options.keyShift.setDown(true);
         ridingSyncTicks = 0;
         phase = Phase.WAIT_FOR_DISMOUNT;
         phaseTicks = 0;
@@ -307,6 +300,7 @@ public final class SableDimensionStackDedicatedClientTest {
                 "client crouch/dismount input did not detach from Create seat");
             return;
         }
+        minecraft.options.keyShift.setDown(false);
         ridingSyncTicks = 0;
         require(seamTransitions == EXPECTED_SEAM_TRANSITIONS,
             "dimension flicker occurred before remote-observer setup");

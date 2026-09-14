@@ -264,6 +264,8 @@ public final class SableDimensionStackDedicatedServerTest {
         require(player.serverLevel() == nether, "rider left destination before reverse crossing began");
         require(player.getVehicle() != null && player.getVehicle().getUUID().equals(vehicleId),
             "riding graph broke while held in destination");
+        require(Sable.HELPER.getContaining(player.getVehicle()) == destination,
+            "portal correction moved the retained seat out of its Sable plot");
         require(hasCommandForcedTicket(requireContainer(nether), destination),
             "force-load ticket disappeared while held in Nether");
 

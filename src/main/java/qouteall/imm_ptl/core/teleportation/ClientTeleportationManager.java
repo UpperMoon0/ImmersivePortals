@@ -28,6 +28,7 @@ import qouteall.imm_ptl.core.api.PortalAPI;
 import qouteall.imm_ptl.core.collision.CollisionHelper;
 import qouteall.imm_ptl.core.collision.PortalCollisionHandler;
 import qouteall.imm_ptl.core.compat.GravityChangerInterface;
+import qouteall.imm_ptl.core.compat.sable.SableInterface;
 import qouteall.imm_ptl.core.ducks.IEAbstractClientPlayer;
 import qouteall.imm_ptl.core.ducks.IEClientPlayNetworkHandler;
 import qouteall.imm_ptl.core.ducks.IEEntity;
@@ -55,6 +56,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
+import java.util.UUID;
 import java.util.function.Function;
 
 //@OnlyIn(Dist.CLIENT)
@@ -79,12 +81,14 @@ public class ClientTeleportationManager {
     private static final int teleportLimitPerFrame = 3;
     
     private static long teleportationCounter = 0;
+    private static UUID pendingServerFirstPortalId = null;
     
     public static void init() {
         NeoForge.EVENT_BUS.addListener(IPGlobal.PostClientTickEvent.class, postClientTickEvent -> ClientTeleportationManager.tick());
 
         NeoForge.EVENT_BUS.addListener(ClientCleanupEvent.class, e -> {
             lastPlayerEyePos = null;
+            pendingServerFirstPortalId = null;
 //            disableTeleportFor(2);
         });
     }
@@ -287,6 +291,15 @@ public class ClientTeleportationManager {
         if (teleportation != null) {
             Portal portal = teleportation.portal();
             Vec3 collidingPos = teleportation.worldCollisionPoint();
+
+            Entity vehicle = player.getVehicle();
+            if (pendingServerFirstPortalId != null) {
+                return null;
+            }
+            if (vehicle != null && SableInterface.invoker.shouldUseServerFirstRiderTeleport(vehicle, portal)) {
+                requestServerFirstTeleport(teleportation);
+                return null;
+            }
             
             client.getProfiler().push("portal_teleport");
             teleportPlayer(teleportation, partialTicks);
@@ -314,6 +327,29 @@ public class ClientTeleportationManager {
         return client.player.getEyePosition(partialTick);
     }
     
+    private static void requestServerFirstTeleport(TeleportationUtil.Teleportation teleportation) {
+        LocalPlayer player = client.player;
+        Validate.isTrue(player != null);
+
+        Portal portal = teleportation.portal();
+        ResourceKey<Level> fromDimension = player.level().dimension();
+        Vec3 thisTickEyePos = McHelper.getEyePos(player);
+
+        pendingServerFirstPortalId = portal.getUUID();
+        lastTeleportGameTime = tickTimeForTeleportation;
+        player.connection.send(new ServerboundCustomPayloadPacket(
+            new ImmPtlNetworking.TeleportPacket(
+                PortalAPI.clientDimKeyToInt(fromDimension),
+                thisTickEyePos,
+                portal.getUUID()
+            )
+        ));
+        LOGGER.debug(
+            "Deferring local rider teleport through {} until server Sable handoff completes",
+            portal.getUUID()
+        );
+    }
+
     private static void teleportPlayer(
         TeleportationUtil.Teleportation teleportation, float partialTicks
     ) {
@@ -426,6 +462,7 @@ public class ClientTeleportationManager {
     }
     
     public static void forceTeleportPlayer(ResourceKey<Level> toDimension, Vec3 destination) {
+        pendingServerFirstPortalId = null;
         LOGGER.info("client player force teleported {} {}", toDimension.location(), destination);
         
         ClientLevel fromWorld = client.level;
@@ -459,6 +496,7 @@ public class ClientTeleportationManager {
         Validate.isTrue(!PacketRedirectionClient.getIsProcessingRedirectedMessage());
         
         Entity vehicle = player.getVehicle();
+        boolean retainedVehicle = SableInterface.invoker.isRetainedVehicle(vehicle);
         player.unRide();
         
         ResourceKey<Level> toDimension = toWorld.dimension();
@@ -494,7 +532,16 @@ public class ClientTeleportationManager {
         
         client.getBlockEntityRenderDispatcher().setLevel(toWorld);
         
-        if (vehicle != null) {
+        if (retainedVehicle) {
+            // The server migrates plot residents and their passenger packets. Reuse its
+            // destination entity when already available; never move a hidden seat to
+            // the rider's projected world position or overwrite the destination copy.
+            Entity destinationVehicle = toWorld.getEntity(vehicle.getId());
+            if (destinationVehicle != null && destinationVehicle.getUUID().equals(vehicle.getUUID())) {
+                player.startRiding(destinationVehicle, true);
+            }
+        }
+        else if (vehicle != null) {
             Vec3 offset = McHelper.getVehicleOffsetFromPassenger(vehicle, player);
             Vec3 vehiclePos = player.position().add(offset);
             moveClientEntityAcrossDimension(

@@ -77,8 +77,9 @@ public abstract class MixinSubLevelTrackingSystem_SablePortalCompat {
         at = @At(value = "INVOKE", target = "Lnet/minecraft/server/level/ServerLevel;getPlayerByUUID(Ljava/util/UUID;)Lnet/minecraft/world/entity/player/Player;"),
         require = 2
     )
-    private Player ip_findPortalWatcherDuringTracking(ServerLevel ignored, UUID uuid) {
-        return level.getServer().getPlayerList().getPlayer(uuid);
+    private Player ip_findPortalWatcherDuringTracking(ServerLevel queriedLevel, UUID uuid) {
+        Player globalPlayer = level.getServer().getPlayerList().getPlayer(uuid);
+        return globalPlayer != null ? globalPlayer : queriedLevel.getPlayerByUUID(uuid);
     }
 
     @Redirect(
@@ -86,8 +87,9 @@ public abstract class MixinSubLevelTrackingSystem_SablePortalCompat {
         at = @At(value = "INVOKE", target = "Lnet/minecraft/server/level/ServerLevel;getPlayerByUUID(Ljava/util/UUID;)Lnet/minecraft/world/entity/player/Player;"),
         require = 2
     )
-    private Player ip_findPortalWatcherDuringMovement(ServerLevel ignored, UUID uuid) {
-        return level.getServer().getPlayerList().getPlayer(uuid);
+    private Player ip_findPortalWatcherDuringMovement(ServerLevel queriedLevel, UUID uuid) {
+        Player globalPlayer = level.getServer().getPlayerList().getPlayer(uuid);
+        return globalPlayer != null ? globalPlayer : queriedLevel.getPlayerByUUID(uuid);
     }
 
     @Inject(method = "onSubLevelRemoved", at = @At("HEAD"), cancellable = true)

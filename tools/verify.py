@@ -16,6 +16,7 @@ from contextlib import contextmanager
 import ctypes
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import signal
@@ -30,6 +31,7 @@ SERVER_DIR = ROOT / "run-sable-e2e-server"
 CLIENT_DIR = ROOT / "run-sable-e2e-client"
 SERVER_LOG = RESULT_DIR / "server.log"
 CLIENT_LOG = RESULT_DIR / "client.log"
+GAMETEST_LOG = ROOT / "runs" / "gameTestServer" / "logs" / "latest.log"
 
 
 @contextmanager
@@ -256,10 +258,151 @@ def launch_graphical_client(command: list[str], env: dict[str, str], creation: d
         raise
 
 
+def validate_gametest_log(path: Path = GAMETEST_LOG) -> None:
+    if not path.is_file():
+        raise RuntimeError(f"GameTest log missing: {path}")
+    content = path.read_text(encoding="utf-8", errors="replace")
+    if not re.search(r"All \d+ required tests passed", content):
+        raise RuntimeError("NeoForge GameTest server did not report that all required tests passed")
+
+
+def invalidate_generated_run_classpath(run_name: str) -> None:
+    """Force NeoGradle to rebuild property-sensitive run classpaths between matrix entries."""
+    neoform = ROOT / ".gradle" / "configuration" / "neoForm"
+    if not neoform.is_dir():
+        return
+    expected_parent = f"writeMinecraftClasspath{run_name}"
+    for classpath in neoform.rglob("classpath.txt"):
+        if classpath.parent.name == expected_parent:
+            classpath.unlink(missing_ok=True)
+
+
+def find_generated_run_classpath(run_name: str) -> Path:
+    neoform = ROOT / ".gradle" / "configuration" / "neoForm"
+    expected_parent = f"writeMinecraftClasspath{run_name}"
+    matches = sorted(
+        path for path in neoform.rglob("classpath.txt")
+        if path.parent.name == expected_parent
+    ) if neoform.is_dir() else []
+    if len(matches) != 1:
+        raise RuntimeError(
+            f"expected one generated classpath for {run_name}, found {len(matches)}"
+        )
+    return matches[0]
+
+
+def renderer_mod_sources(classpath: Path, renderer: str) -> list[Path]:
+    """Select direct renderer mod jars from NeoGradle's resolved client classpath."""
+    entries = [Path(line.strip()) for line in classpath.read_text(encoding="utf-8").splitlines() if line.strip()]
+    patterns = {
+        "vanilla": (),
+        "sodium": (re.compile(r"^sodium-neoforge-.*\.jar$", re.I),),
+        "iris": (
+            re.compile(r"^iris-.*-neoforge\.jar$", re.I),
+            re.compile(r"^sodium-neoforge-.*\.jar$", re.I),
+        ),
+        "veil": (
+            re.compile(r"^sodium-neoforge-.*\.jar$", re.I),
+            re.compile(r"^veil-neoforge-.*\.jar$", re.I),
+        ),
+    }
+    if renderer not in patterns:
+        raise RuntimeError(f"unknown renderer staging request: {renderer}")
+
+    selected: list[Path] = []
+    for pattern in patterns[renderer]:
+        matches = [
+            path for path in entries
+            if path.is_file() and "-sources.jar" not in path.name and pattern.match(path.name)
+        ]
+        if len(matches) != 1:
+            raise RuntimeError(
+                f"expected one {renderer} renderer jar matching {pattern.pattern}, found {len(matches)}"
+            )
+        if matches[0] not in selected:
+            selected.append(matches[0])
+    return selected
+
+
+def stage_renderer_mods(renderer: str, properties: list[str]) -> list[Path]:
+    """Stage renderer jars as discoverable NeoForge mods for the smoke client."""
+    if renderer == "vanilla":
+        return []
+    subprocess.run(
+        gradle_cmd("writeMinecraftClasspathPortalSmokeClient", *properties),
+        cwd=ROOT,
+        check=True,
+    )
+    sources = renderer_mod_sources(find_generated_run_classpath("PortalSmokeClient"), renderer)
+    mods = CLIENT_DIR / "mods"
+    mods.mkdir(parents=True, exist_ok=True)
+    created: list[Path] = []
+    try:
+        for source in sources:
+            target = mods / f"__ip_verify__{source.name}"
+            if target.exists():
+                raise RuntimeError(f"renderer verification will not overwrite existing mod: {target}")
+            shutil.copy2(source, target)
+            created.append(target)
+        return created
+    except Exception:
+        for target in created:
+            target.unlink(missing_ok=True)
+        raise
+
+
+def cleanup_staged_renderer_mods(paths: list[Path]) -> None:
+    for path in paths:
+        path.unlink(missing_ok=True)
+
+
 def run_core() -> None:
     print("[verify] core: build + JUnit + GameTests", flush=True)
     subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "tools", "-p", "test_*.py"], cwd=ROOT, check=True)
     subprocess.run(gradle_cmd("coreCheck"), cwd=ROOT, check=True)
+    validate_gametest_log()
+
+
+def run_staff() -> None:
+    """Exercise the actual optional Aeronautics staff against native Sable physics."""
+    mods = ROOT / "runs" / "gameTestServer" / "mods"
+    sources = [ROOT.parent / "Simulated-Project" / component / "neoforge" / "build" / "libs"
+               / f"{component}-neoforge-1.21.1-1.3.1.jar"
+               for component in ("simulated", "aeronautics", "offroad")]
+    for source in sources:
+        if not source.is_file():
+            raise RuntimeError(f"staff verification requires local Aeronautics artifact: {source}")
+    mods.mkdir(parents=True, exist_ok=True)
+    created = []
+    try:
+        for source in sources:
+            target = mods / source.name
+            if target.exists():
+                raise RuntimeError(f"staff verification will not overwrite existing mod: {target}")
+            shutil.copy2(source, target)
+            created.append(target)
+        run_core()
+        game_test_log = GAMETEST_LOG.read_text(encoding="utf-8", errors="replace")
+        if "Running test batch 'staff:0' (1 tests)" not in game_test_log:
+            raise RuntimeError("Creative Physics Staff regression did not run")
+    finally:
+        for target in created:
+            target.unlink(missing_ok=True)
+
+
+def choose_tcp_udp_port(attempts: int = 64) -> int:
+    """Choose one localhost port number that both Minecraft TCP and Sable UDP can bind."""
+    for _ in range(attempts):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as tcp:
+            tcp.bind(("127.0.0.1", 0))
+            port = tcp.getsockname()[1]
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp:
+                    udp.bind(("127.0.0.1", port))
+                return port
+            except OSError:
+                continue
+    raise RuntimeError("could not find a localhost port free for both TCP and UDP")
 
 
 def prepare_e2e() -> dict[str, str]:
@@ -275,9 +418,7 @@ def prepare_e2e() -> dict[str, str]:
     SERVER_DIR.mkdir(parents=True, exist_ok=True)
     CLIENT_DIR.mkdir(parents=True, exist_ok=True)
 
-    with socket.socket() as listener:
-        listener.bind(("127.0.0.1", 0))
-        port = listener.getsockname()[1]
+    port = choose_tcp_udp_port()
 
     # Deterministic low-cost graphics; real rendering and Sodium remain enabled.
     (CLIENT_DIR / "options.txt").write_text(
@@ -430,24 +571,35 @@ def run_e2e(smoke: bool = False, renderer: str = "sodium", sable: bool = True, s
     else:
         env["IP_PORTAL_SMOKE"] = "false"
     properties = [f"-PverificationRenderer={renderer}", f"-PverificationSable={str(sable).lower()}"]
+    server_run = "PortalSmokeServer" if smoke else "SableE2EServer"
+    client_run = "PortalSmokeClient" if smoke else "SableE2EClient"
+    invalidate_generated_run_classpath(server_run)
+    invalidate_generated_run_classpath(client_run)
+    staged_renderer_mods = stage_renderer_mods(renderer, properties) if smoke else []
+    client_properties = properties
+    if staged_renderer_mods:
+        client_properties = [*properties, "-PverificationRendererStaged=true"]
+        # The resolution pass above deliberately included renderer jars so they
+        # could be located. Rebuild the actual launch classpath without them.
+        invalidate_generated_run_classpath(client_run)
 
     server_log = SERVER_LOG.open("wb")
     creation = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt" else {"start_new_session": True}
-    server = subprocess.Popen(
-        gradle_cmd("runPortalSmokeServer" if smoke else "runSableE2EServer", *properties),
-        cwd=ROOT,
-        env=env,
-        stdin=subprocess.PIPE,
-        stdout=server_log,
-        stderr=subprocess.STDOUT,
-        **creation,
-    )
-
+    server = None
     try:
+        server = subprocess.Popen(
+            gradle_cmd("run" + server_run, *properties),
+            cwd=ROOT,
+            env=env,
+            stdin=subprocess.PIPE,
+            stdout=server_log,
+            stderr=subprocess.STDOUT,
+            **creation,
+        )
         wait_for_server(server)
         print("[verify] e2e server ready; launching automated client", flush=True)
 
-        client_command = gradle_cmd("runPortalSmokeClient" if smoke else "runSableE2EClient", *properties)
+        client_command = gradle_cmd("run" + client_run, *client_properties)
         if os.name != "nt" and not os.environ.get("DISPLAY"):
             if shutil.which("xvfb-run") is None:
                 raise RuntimeError("xvfb-run is required for headless Linux graphical E2E")
@@ -473,13 +625,15 @@ def run_e2e(smoke: bool = False, renderer: str = "sodium", sable: bool = True, s
         print(tail(CLIENT_LOG), file=sys.stderr)
         raise
     finally:
-        if server.stdin:
-            try:
-                server.stdin.close()
-            except OSError:
-                pass
-        stop_process_tree(server)
+        if server is not None:
+            if server.stdin:
+                try:
+                    server.stdin.close()
+                except OSError:
+                    pass
+            stop_process_tree(server)
         server_log.close()
+        cleanup_staged_renderer_mods(staged_renderer_mods)
 
 
 def run_visual(renderer: str, sable: bool, samples: int) -> None:
@@ -496,7 +650,7 @@ def run_visual(renderer: str, sable: bool, samples: int) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run the canonical Immersive Portals verification suite")
-    parser.add_argument("mode", choices=("core", "e2e", "visual", "full", "matrix"), nargs="?", default="full")
+    parser.add_argument("mode", choices=("core", "e2e", "visual", "full", "matrix", "staff"), nargs="?", default="full")
     parser.add_argument("--renderer", choices=("vanilla", "sodium", "iris", "veil"), default="sodium")
     parser.add_argument("--no-sable", action="store_true")
     parser.add_argument("--samples", type=int, default=200)
@@ -518,6 +672,8 @@ def main() -> int:
                                                        ("iris", True), ("veil", False), ("vanilla", False))]
                 else:
                     actions = [(name, action) for name, action in actions if args.mode in (name, "full")]
+                    if args.mode == "staff":
+                        actions = [("staff", run_staff)]
                 for name, action in actions:
                     stage_started = time.monotonic()
                     stage = {"name": name, "status": "failed"}

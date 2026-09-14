@@ -37,6 +37,7 @@ public class MixinServerGamePacketListenerImpl_Redirect {
             if (positionPacket.ip_getPlayerDimension() == null) {
                 positionPacket.ip_setPlayerDimension(gameListener.player.level().dimension());
             }
+
         }
         if (PacketRedirection.getForceRedirectDimension() == null) {
             return originalPacket;

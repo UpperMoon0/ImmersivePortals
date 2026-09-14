@@ -180,6 +180,34 @@ class SableDimensionStackCompatContractTest {
     }
 
     @Test
+    void sableRiderUsesServerFirstClientTeleportHandshake() throws Exception {
+        ClassNode clientTeleport = readClass(
+            "qouteall/imm_ptl/core/teleportation/ClientTeleportationManager.class"
+        );
+        MethodNode tryTeleport = findMethodByName(clientTeleport, "tryTeleport");
+        MethodNode request = findMethodByName(clientTeleport, "requestServerFirstTeleport");
+        MethodNode force = findMethodByName(clientTeleport, "forceTeleportPlayer");
+        assertNotNull(tryTeleport);
+        assertNotNull(request);
+        assertNotNull(force);
+        assertTrue(invokesNamed(tryTeleport, "shouldUseServerFirstRiderTeleport"),
+            "client must gate Sable riders before its local dimension switch");
+        assertTrue(invokesNamed(request, "send"),
+            "server-first handoff must notify the server before local dimension ownership changes");
+    }
+
+    @Test
+    void remoteClientWorldAdvancesSableInterpolation() throws Exception {
+        ClassNode loader = readClass(
+            "qouteall/imm_ptl/core/ClientWorldLoader.class"
+        );
+        MethodNode remoteTick = findMethodByName(loader, "tickRemoteWorld");
+        assertNotNull(remoteTick, "Immersive Portals remote-client world tick is missing");
+        assertTrue(loader.methods.stream().anyMatch(method -> invokesNamed(method, "tickClientRemoteWorld")),
+            "remote IP ClientLevels must advance their Sable containers/interpolation exactly once per remote tick");
+    }
+
+    @Test
     void remoteTrackingCoversMovementAuxiliaryPacketsAndUdp() throws Exception {
         ClassNode trackingMixin = readClass(
             "qouteall/imm_ptl/core/compat/mixin/sable/MixinSubLevelTrackingSystem_SablePortalCompat.class"

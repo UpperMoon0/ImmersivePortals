@@ -59,7 +59,8 @@ import java.util.UUID;
 public final class SableDimensionStackCompat {
     private static final Logger LOGGER = LogUtils.getLogger();
     private static final int CLIENT_HANDOFF_TIMEOUT_TICKS = 100;
-    private static final double HANDOFF_CLEARANCE = 0.25;
+    private static final double HANDOFF_CLEARANCE = 1.0e-7;
+    private static final double PORTAL_ENDPOINT_EPSILON = 1.0e-7;
     private static final Map<UUID, CrossingSample> LAST_SAMPLES = new HashMap<>();
     private static final Map<UUID, ClientHandoff> CLIENT_HANDOFFS = new HashMap<>();
     private static final Map<UUID, HandoffGuard> HANDOFF_GUARDS = new HashMap<>();
@@ -79,18 +80,26 @@ public final class SableDimensionStackCompat {
             Vec3 previousAnchor = previousSample != null
                 && previousSample.dimension().equals(level.dimension())
                 ? previousSample.anchor()
-                : getWorldCenterOfMass(subLevel, subLevel.lastPose());
+                : getWorldCenterOfMass(subLevel, new Pose3d(subLevel.lastPose()));
 
             HandoffGuard guard = HANDOFF_GUARDS.get(id);
             if (guard != null && guard.destinationDimension().equals(level.dimension())) {
-                double clearance = signedDestinationClearance(guard, currentAnchor);
-                if (clearance >= HANDOFF_CLEARANCE) {
+                // A rider can trigger migration before the body's COM enters the destination.
+                // Once either sample is inside, a reverse sweep is real motion (including
+                // immediate gravity return), even when penetration was less than 0.25 blocks.
+                double previousClearance = signedDestinationClearance(guard, previousAnchor);
+                double currentClearance = signedDestinationClearance(guard, currentAnchor);
+                boolean enteredDestination = Math.max(previousClearance, currentClearance) >= HANDOFF_CLEARANCE;
+                boolean reversedFromSeam = Math.abs(previousClearance) <= HANDOFF_CLEARANCE
+                    && currentClearance < -HANDOFF_CLEARANCE;
+                if (enteredDestination || reversedFromSeam) {
                     HANDOFF_GUARDS.remove(id);
                     guard = null;
                 }
             }
 
-            if (CLIENT_HANDOFFS.containsKey(id)) {
+            ClientHandoff pendingHandoff = CLIENT_HANDOFFS.get(id);
+            if (pendingHandoff != null && !pendingHandoff.committed) {
                 rememberSample(level, id, currentAnchor);
                 continue;
             }
@@ -122,11 +131,31 @@ public final class SableDimensionStackCompat {
      * where the client can enter the destination dimension before that dimension owns the
      * sublevel the rider is sitting on.
      */
+    public static boolean isRiderAlreadyMigrated(ServerPlayer player, Portal portal) {
+        if (!player.serverLevel().dimension().equals(portal.getDestDim())) return false;
+
+        Entity vehicle = player.getVehicle();
+        while (vehicle != null) {
+            SubLevel containing = Sable.HELPER.getContaining(vehicle);
+            if (containing instanceof ServerSubLevel serverSubLevel) {
+                return serverSubLevel.getLevel() == player.serverLevel();
+            }
+            vehicle = vehicle.getVehicle();
+        }
+        return false;
+    }
     public static boolean beforePlayerPortalTeleport(ServerPlayer player, Portal portal) {
         Entity vehicle = player.getVehicle();
         while (vehicle != null) {
             SubLevel containing = Sable.HELPER.getContaining(vehicle);
             if (containing instanceof ServerSubLevel sourceSubLevel) {
+                // Physics can commit the body+rider handoff before the client's portal notification
+                // reaches the server. Treat that delayed acknowledgement as success; sending the
+                // fallback source correction here would split the rider back from the migrated body.
+                if (sourceSubLevel.getLevel() == player.serverLevel()
+                    && player.serverLevel().dimension().equals(portal.getDestDim())) {
+                    return true;
+                }
                 if (sourceSubLevel.getLevel() != player.serverLevel()) return false;
                 ServerSubLevelContainer sourceContainer = SubLevelContainer.getContainer(player.serverLevel());
                 if (sourceContainer == null) return false;
@@ -184,15 +213,29 @@ public final class SableDimensionStackCompat {
     }
 
     private static Portal findCrossedPortal(ServerLevel level, Vec3 previous, Vec3 current) {
-        if (previous.distanceToSqr(current) < 1.0e-14) return null;
+        Vec3 delta = current.subtract(previous);
+        double lengthSqr = delta.lengthSqr();
+        if (lengthSqr < 1.0e-14) return null;
+
+        // RectangularPortalShape deliberately uses strict from>0/to<0 plane tests. Extend the
+        // sweep only by numerical epsilon so a native physics sample that lands exactly on the
+        // plane is handled in that substep instead of being lost before the next sample.
+        Vec3 endpointOffset = delta.scale(PORTAL_ENDPOINT_EPSILON / Math.sqrt(lengthSqr));
+        Vec3 traceFrom = previous.subtract(endpointOffset);
+        Vec3 traceTo = current.add(endpointOffset);
 
         return PortalUtils.raytracePortals(
-            level, previous, current, true,
-            portal -> portal.isTeleportable()
-                && !portal.hasScaling()
-                && !portal.getDestDim().equals(level.dimension())
-                && portal.getDistanceToPlane(previous) > 0.0
-                && portal.getDistanceToPlane(current) <= 0.0
+            level, traceFrom, traceTo, true,
+            portal -> {
+                double previousDistance = portal.getDistanceToPlane(previous);
+                double currentDistance = portal.getDistanceToPlane(current);
+                return portal.isTeleportable()
+                    && !portal.hasScaling()
+                    && !portal.getDestDim().equals(level.dimension())
+                    && previousDistance >= -PORTAL_ENDPOINT_EPSILON
+                    && currentDistance <= PORTAL_ENDPOINT_EPSILON
+                    && currentDistance < previousDistance;
+            }
         ).map(Pair::getFirst).orElse(null);
     }
 

@@ -39,9 +39,19 @@ public abstract class MixinServerTeleportationManager_SableRiderCompat {
         CallbackInfo ci,
         @Local Portal portal
     ) {
+        ServerTeleportationManager manager = (ServerTeleportationManager) (Object) this;
+
+        if (SableDimensionStackCompat.isRiderAlreadyMigrated(player, portal)) {
+            // Physics committed the body and rider before this delayed client acknowledgement.
+            // Do not transform them a second time. Send an authoritative position packet tagged
+            // with the destination dimension so the deferred client handoff can complete.
+            manager.forceTeleportPlayer(player, player.serverLevel().dimension(), player.position(), true);
+            ci.cancel();
+            return;
+        }
+
         if (SableDimensionStackCompat.beforePlayerPortalTeleport(player, portal)) return;
 
-        ServerTeleportationManager manager = (ServerTeleportationManager) (Object) this;
         manager.forceTeleportPlayer(player, dimensionBefore, player.position(), true);
         ci.cancel();
     }
