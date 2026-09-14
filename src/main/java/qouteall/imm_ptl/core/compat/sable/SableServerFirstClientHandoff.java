@@ -1,9 +1,11 @@
 package qouteall.imm_ptl.core.compat.sable;
 
 import com.mojang.logging.LogUtils;
+import de.nick1st.imm_ptl.events.ClientCleanupEvent;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.world.phys.Vec3;
+import net.neoforged.neoforge.common.NeoForge;
 import org.slf4j.Logger;
 import qouteall.imm_ptl.core.McHelper;
 import qouteall.imm_ptl.core.ScaleUtilsClient;
@@ -17,6 +19,10 @@ import java.util.UUID;
 public final class SableServerFirstClientHandoff {
     private static final Logger LOGGER = LogUtils.getLogger();
     private static Portal pendingPortal;
+
+    static {
+        NeoForge.EVENT_BUS.addListener(ClientCleanupEvent.class, event -> clear());
+    }
 
     private SableServerFirstClientHandoff() {}
 
