@@ -104,6 +104,8 @@ class SableClientHandoffContractTest {
             "each pure server-initiated rider migration must use a unique handoff nonce");
         assertTrue(invokesNamed(correlate, "call"),
             "the authoritative cross-dimension entity move must still execute");
+        assertTrue(invokesNamed(finish, "setBaseGravityDirectionServer"),
+            "pure physics-first migration must mirror normal IP server gravity transformation after commit");
         assertTrue(invokesNamed(finish, "sendServerInitiatedAck"),
             "physics-first migration must send transform context only after the transaction returns");
 
