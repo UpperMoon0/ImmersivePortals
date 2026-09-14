@@ -51,22 +51,39 @@ public abstract class MixinServerTeleportationManager_SableRiderCompat {
         }
 
         if (SableDimensionStackCompat.beforePlayerPortalTeleport(player, portal)) {
-            // The server-first request can itself be what commits the body+rider handoff. In
-            // that ordering the client deliberately has not changed dimensions yet, so IP's
-            // normal onPlayerTeleportedInClient path cannot be allowed to continue silently: it
-            // assumes the client already performed the local teleport and sends no position
-            // acknowledgement. Re-check after staging and explicitly complete the deferred
-            // client handoff when the rider is now owned by the destination Sable world.
-            if (SableDimensionStackCompat.isRiderAlreadyMigrated(player, portal)) {
-                manager.forceTeleportPlayer(
-                    player, player.serverLevel().dimension(), player.position(), true
-                );
-                ci.cancel();
-            }
+            // The request itself may commit the body+rider handoff. Let the normal server portal
+            // path finish its position/callback/gravity work, then acknowledge the deferred
+            // client in ip_acknowledgePreparedRiderAfterPlayerTeleport below.
             return;
         }
 
         manager.forceTeleportPlayer(player, dimensionBefore, player.position(), true);
         ci.cancel();
+    }
+
+    @Inject(
+        method = "onPlayerTeleportedInClient",
+        at = @At(
+            value = "INVOKE",
+            target = "Lqouteall/imm_ptl/core/teleportation/ServerTeleportationManager;teleportPlayer(Lnet/minecraft/server/level/ServerPlayer;Lnet/minecraft/resources/ResourceKey;Lnet/minecraft/world/phys/Vec3;)V",
+            shift = At.Shift.AFTER
+        )
+    )
+    private void ip_acknowledgePreparedRiderAfterPlayerTeleport(
+        ServerPlayer player,
+        ResourceKey<Level> dimensionBefore,
+        Vec3 eyePosBeforeTeleportation,
+        UUID portalId,
+        CallbackInfo ci,
+        @Local Portal portal
+    ) {
+        if (!SableDimensionStackCompat.isRiderAlreadyMigrated(player, portal)) return;
+
+        // Server-first Sable riders intentionally did not switch dimensions locally. Once the
+        // normal IP server teleport has finished, send a dimension-tagged authoritative position
+        // so the client can complete that deferred handoff. This is required when this request,
+        // rather than an earlier physics substep, was what migrated the Sable body.
+        ServerTeleportationManager manager = (ServerTeleportationManager) (Object) this;
+        manager.forceTeleportPlayer(player, player.serverLevel().dimension(), player.position(), true);
     }
 }
