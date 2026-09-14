@@ -25,8 +25,10 @@ import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.event.entity.player.PlayerEvent;
 import net.neoforged.neoforge.event.tick.ServerTickEvent;
 import org.joml.Vector3d;
+import qouteall.imm_ptl.core.portal.global_portals.GlobalPortalStorage;
 import qouteall.imm_ptl.core.portal.global_portals.VerticalConnectingPortal;
 import qouteall.imm_ptl.core.teleportation.ServerTeleportationManager;
+import qouteall.q_misc_util.my_util.DQuaternion;
 
 import java.util.Set;
 import java.util.UUID;
@@ -39,6 +41,7 @@ public final class SableDimensionStackDedicatedServerTest {
     private static final double RETURN_SPEED = 18.0;
     private static final double REMOTE_MOTION_SPEED = 4.0;
     private static final double MIN_FIRST_HANDOFF_SPEED = CROSSING_SPEED * 0.94;
+    private static final double PORTAL_ROTATION_DEGREES = 90.0;
     private static final int BODY_HEIGHT = 6;
 
     private enum Phase {
@@ -139,10 +142,26 @@ public final class SableDimensionStackDedicatedServerTest {
         ServerSubLevelContainer destinationContainer = requireContainer(nether);
 
         VerticalConnectingPortal.connectMutually(Level.OVERWORLD, Level.NETHER, false);
-        require(VerticalConnectingPortal.getConnectingPortal(overworld, VerticalConnectingPortal.ConnectorType.floor) != null,
-            "overworld floor connector was not created");
-        require(VerticalConnectingPortal.getConnectingPortal(nether, VerticalConnectingPortal.ConnectorType.ceil) != null,
-            "nether ceiling connector was not created");
+        VerticalConnectingPortal floorPortal = VerticalConnectingPortal.getConnectingPortal(
+            overworld, VerticalConnectingPortal.ConnectorType.floor
+        );
+        VerticalConnectingPortal ceilingPortal = VerticalConnectingPortal.getConnectingPortal(
+            nether, VerticalConnectingPortal.ConnectorType.ceil
+        );
+        require(floorPortal != null, "overworld floor connector was not created");
+        require(ceilingPortal != null, "nether ceiling connector was not created");
+
+        // A non-identity portal rotation is essential here: the real client must prove that the
+        // server-first Sable handoff preserves IP's camera/facing transformation, not only body
+        // ownership. The reverse connector uses the inverse rotation so a round trip restores yaw.
+        floorPortal.setRotation(DQuaternion.rotationByDegrees(
+            new Vec3(0.0, 1.0, 0.0), PORTAL_ROTATION_DEGREES
+        ));
+        ceilingPortal.setRotation(DQuaternion.rotationByDegrees(
+            new Vec3(0.0, 1.0, 0.0), -PORTAL_ROTATION_DEGREES
+        ));
+        GlobalPortalStorage.get(overworld).onDataChanged();
+        GlobalPortalStorage.get(nether).onDataChanged();
 
         // Prove server allocation does not reuse an occupied hidden plot in another dimension.
         Pose3d occupiedPose = new Pose3d();
@@ -395,7 +414,7 @@ public final class SableDimensionStackDedicatedServerTest {
 
         phase = Phase.DONE;
         SableDimensionStackIntegrationMarkers.serverPass(
-            "Sable body kept global plot identity, exact live velocity, tickets, rider graph and anti-flicker handoff; opposite-dimension client also received live remote movement"
+            "Sable body kept global plot identity, exact live velocity, tickets, rider graph and anti-flicker handoff through rotated portals; opposite-dimension client also received live remote movement"
         );
     }
 
