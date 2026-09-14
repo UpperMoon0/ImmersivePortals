@@ -17,6 +17,7 @@
     "sable.AccessorSubLevel_SablePortalCompat",
     "sable.InvokerSubLevelTrackingSystem_SablePortalCompat",
     "sable.MixinEntity_SableCollisionCompat",
+    "sable.MixinSableDimensionStackCompat_ServerFirstRotation",
     "sable.MixinServerSubLevel_SablePortalCompat",
     "sable.MixinServerTeleportationManager_SableRiderCompat",
     "sable.MixinSubLevelContainer_SableGlobalPlotAllocator",
