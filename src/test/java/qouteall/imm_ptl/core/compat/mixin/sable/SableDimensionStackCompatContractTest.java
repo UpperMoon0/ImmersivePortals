@@ -107,9 +107,19 @@ class SableDimensionStackCompatContractTest {
             "old client copy must not retire until the source server owner is removed");
 
         MethodNode begin = findMethodByName(compat, "beginClientHandoff");
+        MethodNode preSyncDestination = findMethodByName(compat, "sendPreSyncedDestination");
+        MethodNode commitHandoff = findMethodByName(compat, "commitClientHandoff");
         assertNotNull(begin);
-        assertTrue(invokesNamed(begin, "ip_sendFullSync"),
+        assertNotNull(preSyncDestination);
+        assertNotNull(commitHandoff);
+        assertTrue(invokesNamed(begin, "sendPreSyncedDestination"),
             "destination full-sync must be explicit rather than waiting for Sable's next tracking tick");
+        int markPreSynced = invocationIndex(preSyncDestination, "add");
+        int sendPreSync = invocationIndex(preSyncDestination, "ip_sendFullSync");
+        assertTrue(markPreSynced >= 0 && sendPreSync >= 0 && markPreSynced < sendPreSync,
+            "explicit destination pre-sync must be recorded before its packet is queued");
+        assertTrue(invokesNamed(commitHandoff, "sendSourceRemoval"),
+            "migration commit must retire pre-synced source copies without a later tracking tick");
     }
 
     @Test

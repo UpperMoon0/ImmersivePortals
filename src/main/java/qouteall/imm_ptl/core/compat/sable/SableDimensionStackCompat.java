@@ -626,8 +626,23 @@ public final class SableDimensionStackCompat {
             (InvokerSubLevelTrackingSystem_SablePortalCompat) (Object) destinationContainer.trackingSystem();
         for (UUID playerId : watchers) {
             ServerPlayer player = sourceWorld.getServer().getPlayerList().getPlayer(playerId);
-            if (player != null) tracking.ip_sendFullSync(player, destinationSubLevel, null);
+            if (player != null) {
+                sendPreSyncedDestination(tracking, player, destinationSubLevel, handoff);
+            }
         }
+    }
+
+    private static void sendPreSyncedDestination(
+        InvokerSubLevelTrackingSystem_SablePortalCompat tracking,
+        ServerPlayer player,
+        ServerSubLevel destinationSubLevel,
+        ClientHandoff handoff
+    ) {
+        // Record the exact connection before queueing its destination bundle. Once migration commits,
+        // source retirement can follow that bundle on the same ordered connection immediately; it
+        // must not wait for Sable's next tracking tick (which can lag badly under UDP/slow CI).
+        handoff.preSyncedPlayers.add(player.getUUID());
+        tracking.ip_sendFullSync(player, destinationSubLevel, null);
     }
 
     public static boolean shouldSuppressSourceRemoval(
