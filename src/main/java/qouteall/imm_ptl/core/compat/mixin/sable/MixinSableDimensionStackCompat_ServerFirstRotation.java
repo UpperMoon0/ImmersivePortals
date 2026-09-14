@@ -5,6 +5,7 @@ import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import dev.ryanhcode.sable.api.sublevel.ServerSubLevelContainer;
 import dev.ryanhcode.sable.companion.math.Pose3d;
 import dev.ryanhcode.sable.sublevel.ServerSubLevel;
+import net.minecraft.core.Direction;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Entity;
@@ -14,6 +15,7 @@ import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
+import qouteall.imm_ptl.core.compat.GravityChangerInterface;
 import qouteall.imm_ptl.core.compat.sable.SableDimensionStackCompat;
 import qouteall.imm_ptl.core.compat.sable.SableServerFirstTeleportNetworking;
 import qouteall.imm_ptl.core.portal.Portal;
@@ -98,6 +100,15 @@ public abstract class MixinSableDimensionStackCompat_ServerFirstRotation {
                 ServerPlayer player = sourceContainer.getLevel().getServer()
                     .getPlayerList().getPlayer(entry.getKey());
                 if (player != null) {
+                    // Request-first crossings are excluded from this map and use the normal outer
+                    // IP server path. Pure physics-first crossings must mirror that path's gravity
+                    // change here, once, after the Sable transaction has committed successfully.
+                    if (success && migrationPortal.getTeleportChangesGravity()) {
+                        Direction oldGravityDir = GravityChangerInterface.invoker.getGravityDirection(player);
+                        GravityChangerInterface.invoker.setBaseGravityDirectionServer(
+                            player, migrationPortal.getTransformedGravityDirection(oldGravityDir)
+                        );
+                    }
                     SableServerFirstTeleportNetworking.sendServerInitiatedAck(
                         player, entry.getValue(), migrationPortal, success
                     );
