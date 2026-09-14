@@ -76,6 +76,8 @@ class SableClientHandoffContractTest {
             "destination logical/last poses must be resampled after history graft");
         assertTrue(invokesNamed(graft, "forceUpdateBounds"),
             "destination bounds must match the resampled pose immediately");
+        assertTrue(invokesNamed(graft, "getActiveInterpolationRotation"),
+            "active rider handoff must use its exact portal rotation instead of inferring rotation from lagged TCP samples");
         assertTrue(invokesNamed(transform, "premul"),
             "historical orientations must be transformed into destination portal space");
     }
@@ -194,6 +196,8 @@ class SableClientHandoffContractTest {
             "deferred look/gravity completion must preserve the already-authoritative world velocity");
         assertTrue(invokesNamed(clientApply, "setPlayerRawRotation"),
             "retained rider completion must restore source-local facing only after Sable reattachment");
+        assertTrue(invokesNamed(clientApply, "guardAgainstImmediatePortalRetrigger"),
+            "completed Sable handoff must guard against a stale client portal retrigger during dismount projection");
         assertTrue(invokesNamed(clientAck, "clearClientPendingGate"),
             "negative or out-of-order acknowledgements must release a client-deferred teleport gate");
     }

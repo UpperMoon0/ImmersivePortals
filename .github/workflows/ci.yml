@@ -100,14 +100,19 @@ jobs:
           disable_udp_pipeline = true
           attempt_udp_networking = false
           EOF
-            cp run-sable-e2e-server/config/sable-common.toml run-sable-e2e-client/config/sable-common.toml
+            cat > run-sable-e2e-client/config/sable-client.toml <<'EOF'
+          attempt_udp_networking = false
+          EOF
           else
             cat > run-sable-e2e-server/config/sable-common.toml <<'EOF'
           disable_udp_pipeline = false
           attempt_udp_networking = true
           EOF
-            cp run-sable-e2e-server/config/sable-common.toml run-sable-e2e-client/config/sable-common.toml
+            cat > run-sable-e2e-client/config/sable-client.toml <<'EOF'
+          attempt_udp_networking = true
+          EOF
           fi
+          cp run-sable-e2e-server/config/sable-common.toml run-sable-e2e-client/config/sable-common.toml
       - run: chmod +x ./gradlew
       - name: Dedicated server and automated client
         run: python3 tools/verify.py e2e
@@ -122,6 +127,7 @@ jobs:
             build/sable-dimension-stack-e2e/**
             run-sable-e2e-server/config/sable-common.toml
             run-sable-e2e-client/config/sable-common.toml
+            run-sable-e2e-client/config/sable-client.toml
             run-sable-e2e-server/crash-reports/**
             run-sable-e2e-client/crash-reports/**
             run-sable-e2e-server/logs/**

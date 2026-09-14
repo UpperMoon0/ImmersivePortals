@@ -26,6 +26,7 @@ import java.util.UUID;
 public final class SableServerFirstClientHandoff {
     private static final Logger LOGGER = LogUtils.getLogger();
     private static final int RIDER_SYNC_TIMEOUT_TICKS = 100;
+    private static final int POST_HANDOFF_TELEPORT_GUARD_TICKS = 2;
     private static Pending pending;
     private static ReadyToApply readyToApply;
 
@@ -40,7 +41,10 @@ public final class SableServerFirstClientHandoff {
     public static UUID begin(Portal portal) {
         UUID handoffId = UUID.randomUUID();
         LocalPlayer player = Minecraft.getInstance().player;
-        pending = new Pending(handoffId, portal.getUUID(), null,
+        PreparedTransform interpolationTransform = new PreparedTransform(
+            portal.getDestDim(), portal.getRotation(), portal.getTeleportChangesGravity()
+        );
+        pending = new Pending(handoffId, portal.getUUID(), null, interpolationTransform,
             TransformationManager.capturePlayerRotationContext(), player.getXRot(), player.getYRot());
         return handoffId;
     }
@@ -62,14 +66,38 @@ public final class SableServerFirstClientHandoff {
             return;
         }
         LocalPlayer player = Minecraft.getInstance().player;
+        PreparedTransform transform = new PreparedTransform(
+            destinationDimension, rotation, teleportChangesGravity
+        );
         pending = new Pending(
             handoffId,
             portalId,
-            new PreparedTransform(destinationDimension, rotation, teleportChangesGravity),
+            transform,
+            transform,
             TransformationManager.capturePlayerRotationContext(),
             player.getXRot(),
             player.getYRot()
         );
+    }
+
+    /**
+     * Return the exact portal rotation for a destination full-sync belonging to the active rider
+     * handoff. TCP snapshots can lag the migration tick; inferring this from mismatched source and
+     * destination snapshots would fold body motion into the portal transform.
+     */
+    public static @Nullable DQuaternion getActiveInterpolationRotation(
+        ResourceKey<Level> destinationDimension
+    ) {
+        Pending current = pending;
+        if (current != null
+            && current.interpolationTransform().destinationDimension().equals(destinationDimension)) {
+            return current.interpolationTransform().rotation();
+        }
+        ReadyToApply ready = readyToApply;
+        if (ready != null && ready.destinationDimension().equals(destinationDimension)) {
+            return ready.rotation();
+        }
+        return null;
     }
 
     public static boolean hasServerInitiatedHandoff(UUID portalId) {
@@ -177,6 +205,7 @@ public final class SableServerFirstClientHandoff {
         TransformationManager.setPlayerRawRotation(player, ready.localPitch(), ready.localYaw());
         McHelper.setWorldVelocity(player, oldRealVelocity);
         ScaleUtilsClient.onClientPlayerTeleported(transformSnapshot);
+        guardAgainstImmediatePortalRetrigger();
         readyToApply = null;
         return true;
     }
@@ -195,8 +224,20 @@ public final class SableServerFirstClientHandoff {
         );
         McHelper.setWorldVelocity(player, oldRealVelocity);
         ScaleUtilsClient.onClientPlayerTeleported(transformSnapshot);
+        guardAgainstImmediatePortalRetrigger();
     }
 
+
+    /**
+     * Sable projects a dismounting rider from hidden sublevel-local coordinates back into world
+     * space. Immediately after a dimension-stack handoff that projection can cross the just-used
+     * portal plane in the client interpolation history even though the server rider never crossed
+     * again. Ignore only normal client-predicted portal teleports for two ticks so the position
+     * history can settle; retained Sable riders still use the server-first path before this guard.
+     */
+    private static void guardAgainstImmediatePortalRetrigger() {
+        ClientTeleportationManager.disableTeleportFor(POST_HANDOFF_TELEPORT_GUARD_TICKS);
+    }
     private static Portal createTransformSnapshot(LocalPlayer player, ReadyToApply ready) {
         Portal transformSnapshot = new Portal(Portal.ENTITY_TYPE, player.level());
         transformSnapshot.setDestinationDimension(ready.destinationDimension());
@@ -220,6 +261,7 @@ public final class SableServerFirstClientHandoff {
         UUID handoffId,
         UUID portalId,
         @Nullable PreparedTransform serverTransform,
+        PreparedTransform interpolationTransform,
         TransformationManager.PlayerRotationContext rotationContext,
         float localPitch,
         float localYaw

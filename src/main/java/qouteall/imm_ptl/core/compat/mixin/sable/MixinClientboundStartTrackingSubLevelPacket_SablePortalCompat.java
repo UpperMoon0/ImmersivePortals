@@ -28,6 +28,8 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import qouteall.imm_ptl.core.ClientWorldLoader;
 import qouteall.imm_ptl.core.compat.sable.SableClientPacketContext;
+import qouteall.imm_ptl.core.compat.sable.SableServerFirstClientHandoff;
+import qouteall.q_misc_util.my_util.DQuaternion;
 
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -136,8 +138,16 @@ public abstract class MixinClientboundStartTrackingSubLevelPacket_SablePortalCom
             destinationReference = pose();
         }
 
-        Quaterniond rotationDelta = new Quaterniond(destinationReference.orientation())
-            .mul(new Quaterniond(ip_sourceReference.orientation()).invert());
+        DQuaternion exactPortalRotation = SableServerFirstClientHandoff.getActiveInterpolationRotation(
+            SableClientPacketContext.resolve(context).dimension()
+        );
+        Quaterniond rotationDelta = exactPortalRotation != null
+            ? new Quaterniond(
+                exactPortalRotation.x, exactPortalRotation.y,
+                exactPortalRotation.z, exactPortalRotation.w
+            )
+            : new Quaterniond(destinationReference.orientation())
+                .mul(new Quaterniond(ip_sourceReference.orientation()).invert());
         Vector3d rotatedSourceReference = rotationDelta.transform(
             new Vector3d(ip_sourceReference.position())
         );

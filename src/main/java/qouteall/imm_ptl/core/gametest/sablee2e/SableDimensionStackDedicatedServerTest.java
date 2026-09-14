@@ -51,6 +51,7 @@ public final class SableDimensionStackDedicatedServerTest {
         WAIT_FOR_FIRST_CROSSING,
         HOLD_IN_DESTINATION,
         WAIT_FOR_RETURN,
+        HOLD_IN_RETURN,
         WAIT_FOR_GRAVITY_RECROSS,
         WAIT_FOR_DISMOUNT,
         PREPARE_REMOTE_OBSERVER,
@@ -68,6 +69,8 @@ public final class SableDimensionStackDedicatedServerTest {
     private static ServerLevel overworld;
     private static ServerLevel nether;
     private static Vector3d heldPosition;
+    private static Pose3d returnedPose;
+    private static Vector3d returnedVelocity;
     private static Vector3d remoteHeldPosition;
     private static boolean remoteMotionStarted;
     private static int sourcePlotX;
@@ -91,6 +94,8 @@ public final class SableDimensionStackDedicatedServerTest {
         overworld = null;
         nether = null;
         heldPosition = null;
+        returnedPose = null;
+        returnedVelocity = null;
         remoteHeldPosition = null;
         remoteMotionStarted = false;
         sourcePlotX = -1;
@@ -121,6 +126,7 @@ public final class SableDimensionStackDedicatedServerTest {
                 case WAIT_FOR_FIRST_CROSSING -> verifyFirstCrossingOrWait();
                 case HOLD_IN_DESTINATION -> holdAndStartReturn();
                 case WAIT_FOR_RETURN -> verifyReturnOrWait();
+                case HOLD_IN_RETURN -> holdAndReleaseReturnedBody();
                 case WAIT_FOR_GRAVITY_RECROSS -> verifyGravityRecrossOrWait();
                 case WAIT_FOR_DISMOUNT -> verifyDismountOrWait();
                 case PREPARE_REMOTE_OBSERVER -> prepareRemoteObserver();
@@ -325,6 +331,30 @@ public final class SableDimensionStackDedicatedServerTest {
         require(returnedVehicle.getPassengers().contains(player),
             "returned vehicle does not contain the original rider");
 
+        returnedPose = new Pose3d(returned.logicalPose());
+        RigidBodyHandle handle = requireHandle(returned);
+        returnedVelocity = handle.getLinearVelocity(new Vector3d());
+        setLinearVelocity(handle, new Vector3d());
+        phase = Phase.HOLD_IN_RETURN;
+        phaseTicks = 0;
+    }
+
+    private static void holdAndReleaseReturnedBody() {
+        ServerSubLevel returned = findSubLevel(requireContainer(overworld), subLevelId);
+        require(returned != null, "returned body recrossed before the client observed its return");
+        require(player.serverLevel() == overworld
+                && player.getVehicle() != null && player.getVehicle().getUUID().equals(vehicleId),
+            "rider/seat relation broke while waiting for the client return acknowledgement");
+        RigidBodyHandle handle = requireHandle(returned);
+        // Like the source/destination barriers, keep the fixture observable on a slow TCP client.
+        // Otherwise both dimension packets can be drained in one tick and the client phase never
+        // sees Overworld. Immediate same-tick reversals are covered by the native-body GameTest.
+        handle.teleport(returnedPose.position(), returnedPose.orientation());
+        if (!SableDimensionStackIntegrationMarkers.exists("client-return.txt")) {
+            setLinearVelocity(handle, new Vector3d());
+            return;
+        }
+        setLinearVelocity(handle, returnedVelocity);
         phase = Phase.WAIT_FOR_GRAVITY_RECROSS;
         phaseTicks = 0;
     }

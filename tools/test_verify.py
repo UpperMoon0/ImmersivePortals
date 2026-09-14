@@ -123,6 +123,15 @@ class VerificationHarnessTest(unittest.TestCase):
             tcp.bind(("127.0.0.1", port))
             udp.bind(("127.0.0.1", port))
 
+    def test_ci_transport_matrix_controls_common_and_client_udp_flags(self):
+        workflow = (verify.ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        self.assertIn('transport: [udp, tcp]', workflow)
+        self.assertIn('run-sable-e2e-client/config/sable-client.toml', workflow)
+        self.assertEqual(workflow.count('disable_udp_pipeline = true'), 1)
+        self.assertEqual(workflow.count('disable_udp_pipeline = false'), 1)
+        self.assertGreaterEqual(workflow.count('attempt_udp_networking = false'), 2)
+        self.assertGreaterEqual(workflow.count('attempt_udp_networking = true'), 2)
+
     def test_gametest_log_requires_authoritative_required_pass_marker(self):
         log = self.results / "latest.log"
         log.write_text("Failed to start the minecraft server\n", encoding="utf-8")
