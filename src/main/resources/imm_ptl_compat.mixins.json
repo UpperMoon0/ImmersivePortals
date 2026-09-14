@@ -36,6 +36,7 @@
     "defaultRequire": 1
   },
   "client": [
+    "sable.MixinClientTeleportationManager_SableServerFirstAck",
     "sable.MixinClientboundStartTrackingSubLevelPacket_SablePortalCompat",
     "sable.MixinSableClientPacketContext_SablePortalCompat"
   ]
