@@ -66,9 +66,76 @@ class SableClientHandoffContractTest {
     }
 
     @Test
-    void interpolationMixinIsPackagedAndRegistered() throws Exception {
+    void serverFirstHandshakeCannotStickAndAppliesNormalCameraTransformOnce() throws Exception {
+        ClassNode requestMixin = readClass(
+            "qouteall/imm_ptl/core/compat/mixin/sable/MixinClientTeleportationManager_SableServerFirstAck.class"
+        );
+        MethodNode request = findMethodByName(requestMixin, "ip_useExplicitServerFirstAcknowledgement");
+        assertNotNull(request, "explicit Sable server-first client request hook is missing");
+        assertTrue(invokesNamed(request, "begin"),
+            "client must retain the exact portal until the server acknowledges the deferred handoff");
+        assertTrue(invokesNamed(request, "send"),
+            "deferred Sable handoff must send the explicit server-first request payload");
+        assertTrue(invokesNamed(request, "cancel"),
+            "the ambiguous normal teleport packet must not also be sent for a server-first handoff");
+
+        ClassNode requestPacket = readClass(
+            "qouteall/imm_ptl/core/compat/sable/SableServerFirstTeleportNetworking$Request.class"
+        );
+        MethodNode handle = findMethodByName(requestPacket, "handle");
+        assertNotNull(handle, "server-first request handler is missing");
+        assertTrue(invokesNamed(handle, "onPlayerTeleportedInClient"),
+            "successful requests must still execute Immersive Portals' authoritative server path");
+        assertTrue(invokesNamed(handle, "forceTeleportPlayer"),
+            "rejected or vanished-portal requests must send an authoritative correction");
+        assertTrue(invokesNamed(handle, "sendAck"),
+            "every handled server-first request must terminate with an explicit success/failure acknowledgement");
+
+        ClassNode clientHandoff = readClass(
+            "qouteall/imm_ptl/core/compat/sable/SableServerFirstClientHandoff.class"
+        );
+        MethodNode clientAck = findMethodByName(clientHandoff, "acknowledge");
+        assertNotNull(clientAck, "client acknowledgement handler is missing");
+        assertTrue(invokesNamed(clientAck, "managePlayerRotationAndChangeGravity"),
+            "successful server-first handoff must use the normal IP camera/gravity transformation");
+        assertTrue(invokesNamed(clientAck, "getWorldVelocity"));
+        assertTrue(invokesNamed(clientAck, "setWorldVelocity"),
+            "camera/gravity transformation must preserve the already-authoritative world velocity");
+        assertTrue(invokesNamed(clientAck, "clearClientPendingGate"),
+            "negative acknowledgements must release the client's deferred-teleport gate");
+    }
+
+    @Test
+    void publishedNeoForgeModuleIdsRemainLoadable() throws Exception {
+        try (InputStream stream = getClass().getClassLoader().getResourceAsStream(
+            "META-INF/neoforge.mods.toml"
+        )) {
+            assertNotNull(stream, "NeoForge mod metadata is missing");
+            String toml = new String(stream.readAllBytes(), StandardCharsets.UTF_8);
+            assertTrue(toml.contains("modId=\"immersive_portals_core\""));
+            assertTrue(toml.contains("modId=\"q_misc_util\""),
+                "published q_misc_util identity must remain visible to addon dependency resolution");
+            assertTrue(toml.contains("modId=\"imm_ptl\""),
+                "published imm_ptl identity must remain visible to addon dependency resolution");
+        }
+
+        assertTrue(hasAnnotation(
+            readClass("qouteall/q_misc_util/MiscUtilModEntry.class"),
+            "Lnet/neoforged/fml/common/Mod;"
+        ), "q_misc_util must retain its NeoForge @Mod entry point");
+        assertTrue(hasAnnotation(
+            readClass("qouteall/imm_ptl/peripheral/platform_specific/PeripheralModEntry.class"),
+            "Lnet/neoforged/fml/common/Mod;"
+        ), "imm_ptl must retain its NeoForge @Mod entry point");
+    }
+
+    @Test
+    void interpolationAndServerFirstMixinsArePackagedAndRegistered() throws Exception {
         assertNotNull(getClass().getClassLoader().getResource(
             "qouteall/imm_ptl/core/compat/mixin/sable/MixinClientboundStartTrackingSubLevelPacket_SablePortalCompat.class"
+        ));
+        assertNotNull(getClass().getClassLoader().getResource(
+            "qouteall/imm_ptl/core/compat/mixin/sable/MixinClientTeleportationManager_SableServerFirstAck.class"
         ));
 
         try (InputStream stream = getClass().getClassLoader().getResourceAsStream(
@@ -77,6 +144,7 @@ class SableClientHandoffContractTest {
             assertNotNull(stream, "compat mixin config is missing");
             String json = new String(stream.readAllBytes(), StandardCharsets.UTF_8);
             assertTrue(json.contains("sable.MixinClientboundStartTrackingSubLevelPacket_SablePortalCompat"));
+            assertTrue(json.contains("sable.MixinClientTeleportationManager_SableServerFirstAck"));
         }
     }
 
@@ -99,5 +167,10 @@ class SableClientHandoffContractTest {
             if (instruction instanceof MethodInsnNode call && call.name.equals(name)) return true;
         }
         return false;
+    }
+
+    private static boolean hasAnnotation(ClassNode node, String descriptor) {
+        return node.visibleAnnotations != null
+            && node.visibleAnnotations.stream().anyMatch(annotation -> annotation.desc.equals(descriptor));
     }
 }
