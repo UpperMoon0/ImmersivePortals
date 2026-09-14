@@ -28,6 +28,26 @@ authors="${mod_authors}" #optional
 # The description text for the mod (multi line!) (#mandatory)
 description='''${mod_description}'''
 
+[[mods]]
+modId="q_misc_util"
+version="${mod_version}"
+displayName="${mod_name}"
+displayURL="${display_url}"
+logoFile="icon.png"
+credits="${mod_credits}"
+authors="${mod_authors}"
+description='''${mod_description}'''
+
+[[mods]]
+modId="imm_ptl"
+version="${mod_version}"
+displayName="${mod_name}"
+displayURL="${display_url}"
+logoFile="icon.png"
+credits="${mod_credits}"
+authors="${mod_authors}"
+description='''${mod_description}'''
+
 [[accessTransformers]]
 file="META-INF/accesstransformer.cfg"
 
