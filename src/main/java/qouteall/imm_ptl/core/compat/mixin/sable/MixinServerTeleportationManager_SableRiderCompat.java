@@ -50,7 +50,21 @@ public abstract class MixinServerTeleportationManager_SableRiderCompat {
             return;
         }
 
-        if (SableDimensionStackCompat.beforePlayerPortalTeleport(player, portal)) return;
+        if (SableDimensionStackCompat.beforePlayerPortalTeleport(player, portal)) {
+            // The server-first request can itself be what commits the body+rider handoff. In
+            // that ordering the client deliberately has not changed dimensions yet, so IP's
+            // normal onPlayerTeleportedInClient path cannot be allowed to continue silently: it
+            // assumes the client already performed the local teleport and sends no position
+            // acknowledgement. Re-check after staging and explicitly complete the deferred
+            // client handoff when the rider is now owned by the destination Sable world.
+            if (SableDimensionStackCompat.isRiderAlreadyMigrated(player, portal)) {
+                manager.forceTeleportPlayer(
+                    player, player.serverLevel().dimension(), player.position(), true
+                );
+                ci.cancel();
+            }
+            return;
+        }
 
         manager.forceTeleportPlayer(player, dimensionBefore, player.position(), true);
         ci.cancel();
