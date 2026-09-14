@@ -24,6 +24,13 @@ import java.util.UUID;
 
 /** Explicit request/acknowledgement protocol for server-first Sable rider teleports. */
 public final class SableServerFirstTeleportNetworking {
+    /**
+     * Server networking and Sable physics both run on the server thread. Mark a client-request
+     * scope so a Sable migration triggered from inside onPlayerTeleportedInClient does not send
+     * its transform acknowledgement before that outer IP path emits its final correction packet.
+     */
+    private static final ThreadLocal<Request> ACTIVE_CLIENT_REQUEST = new ThreadLocal<>();
+
     private SableServerFirstTeleportNetworking() {}
 
     public record Request(
@@ -78,9 +85,15 @@ public final class SableServerFirstTeleportNetworking {
             }
 
             ResourceKey<Level> destinationDimension = portal.getDestDim();
-            manager.onPlayerTeleportedInClient(
-                player, sourceDimension, eyePosBeforeTeleportation, portalId
-            );
+            ACTIVE_CLIENT_REQUEST.set(this);
+            try {
+                manager.onPlayerTeleportedInClient(
+                    player, sourceDimension, eyePosBeforeTeleportation, portalId
+                );
+            }
+            finally {
+                ACTIVE_CLIENT_REQUEST.remove();
+            }
 
             boolean success = player.getRemovalReason() == null
                 && player.serverLevel().dimension().equals(destinationDimension)
@@ -94,6 +107,9 @@ public final class SableServerFirstTeleportNetworking {
                 );
             }
 
+            // This is deliberately after the complete IP server path. In request-first ordering,
+            // Sable migration happened inside that call and must not rotate the client before IP's
+            // final authoritative position packet has been emitted.
             sendAck(player, handoffId, portalId, portal, success, false);
         }
 
@@ -183,6 +199,18 @@ public final class SableServerFirstTeleportNetworking {
         public @NotNull Type<? extends CustomPacketPayload> type() {
             return TYPE;
         }
+    }
+
+    /**
+     * @return the active client-request handoff when this exact portal migration was triggered
+     * from inside the request handler, otherwise {@code null}. A non-null result means the outer
+     * request handler owns the terminal transform acknowledgement.
+     */
+    public static @Nullable UUID getActiveClientRequestHandoffId(UUID portalId) {
+        Request request = ACTIVE_CLIENT_REQUEST.get();
+        return request != null && request.portalId().equals(portalId)
+            ? request.handoffId()
+            : null;
     }
 
     /** Send the terminal acknowledgement for a Sable migration that moved the rider itself. */
