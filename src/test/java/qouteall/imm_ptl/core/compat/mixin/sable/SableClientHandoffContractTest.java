@@ -14,6 +14,46 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class SableClientHandoffContractTest {
     @Test
+    void deferredCameraTransformUsesPrePacketStateInBothOrderings() throws Exception {
+        ClassNode handoff = readClass(
+            "qouteall/imm_ptl/core/compat/sable/SableServerFirstClientHandoff.class"
+        );
+        for (String entry : new String[] {"begin", "prepareServerInitiated"}) {
+            MethodNode method = findMethodByName(handoff, entry);
+            assertNotNull(method);
+            assertTrue(invokesNamed(method, "capturePlayerRotationContext"),
+                entry + " must snapshot camera/gravity before authoritative position packets");
+        }
+        MethodNode ack = findMethodByName(handoff, "acknowledge");
+        MethodNode apply = findMethodByName(handoff, "tryApplyReady");
+        MethodNode fallback = findMethodByName(handoff, "applyFallbackTransform");
+        assertNotNull(ack);
+        assertNotNull(apply);
+        assertNotNull(fallback);
+        assertTrue(invokesNamed(ack, "rotationContext"), "Ack must retain the correlated pre-packet snapshot");
+        assertTrue(invokesNamed(ack, "localPitch") && invokesNamed(ack, "localYaw"),
+            "Ack must retain the rider-local look captured before Sable seat packets");
+        assertTrue(invokesNamed(ack, "tryApplyReady"),
+            "Ack must defer final look restoration until the destination rider relation is available");
+        assertTrue(invokesNamed(apply, "isAttachedToCurrentSableSubLevel"),
+            "successful handoff must gate final look restoration on the destination Sable seat relation");
+        assertTrue(invokesNamed(apply, "changePlayerGravity"),
+            "deferred rider completion must still apply IP gravity transformation");
+        assertTrue(invokesNamed(apply, "setPlayerRawRotation"),
+            "destination rider completion must restore the source-local look instead of rotating it twice");
+        assertTrue(invokesNamed(fallback, "managePlayerRotationAndChangeGravity"),
+            "an unexpectedly missing rider relation must retain a bounded normal-IP fallback");
+
+        ClassNode transformation = readClass("qouteall/imm_ptl/core/render/TransformationManager.class");
+        MethodNode capture = findMethodByName(transformation, "capturePlayerRotationContext");
+        assertNotNull(capture);
+        assertTrue(invokesNamed(capture, "getCameraRotationWithGravity"));
+        assertTrue(invokesNamed(capture, "getCurrentAnimationDelta"),
+            "active camera interpolation must be included in the snapshot");
+        assertTrue(invokesNamed(capture, "getBaseGravityDirection"));
+    }
+
+    @Test
     void destinationFullSyncGraftsSourceInterpolationHistory() throws Exception {
         ClassNode mixin = readClass(
             "qouteall/imm_ptl/core/compat/mixin/sable/MixinClientboundStartTrackingSubLevelPacket_SablePortalCompat.class"
@@ -92,6 +132,15 @@ class SableClientHandoffContractTest {
             "rejected or vanished-portal requests must send an authoritative correction");
         assertTrue(invokesNamed(handle, "sendAck"),
             "every handled client request must terminate with an explicit success/failure acknowledgement");
+        MethodNode alreadyMigrated = findMethodByName(requestPacket, "acknowledgeAlreadyMigrated");
+        assertNotNull(alreadyMigrated, "already-migrated request fast path is missing");
+        assertTrue(invokesNamed(alreadyMigrated, "isRiderAlreadyMigrated"));
+        assertTrue(invokesNamed(alreadyMigrated, "sendAck"),
+            "delayed request after physics-first commit still needs its correlated acknowledgement");
+        assertTrue(!invokesNamed(alreadyMigrated, "forceTeleportPlayer"),
+            "already-migrated request must not send a second authoritative position/yaw correction");
+        assertTrue(invocationIndex(handle, "acknowledgeAlreadyMigrated") < invocationIndex(handle, "onPlayerTeleportedInClient"),
+            "already-migrated request must exit before the normal server teleport path can emit another correction");
 
         ClassNode preparePacket = readClass(
             "qouteall/imm_ptl/core/compat/sable/SableServerFirstTeleportNetworking$Prepare.class"
@@ -104,18 +153,26 @@ class SableClientHandoffContractTest {
         ClassNode migrationMixin = readClass(
             "qouteall/imm_ptl/core/compat/mixin/sable/MixinSableDimensionStackCompat_ServerFirstRotation.class"
         );
+        MethodNode prepareBeforeSeatPackets = findMethodByName(migrationMixin, "ip_prepareBeforeSeatPackets");
         MethodNode correlate = findMethodByName(migrationMixin, "ip_correlateRiderBeforeAuthoritativeMove");
+        MethodNode prepareRider = findMethodByName(migrationMixin, "ip_prepareRider");
         MethodNode finish = findMethodByName(migrationMixin, "ip_finishMigrationTransformContext");
+        assertNotNull(prepareBeforeSeatPackets, "pre-seat-packet rider preparation hook is missing");
         assertNotNull(correlate, "physics-first rider correlation hook is missing");
+        assertNotNull(prepareRider, "shared rider preparation helper is missing");
         assertNotNull(finish, "physics-first terminal acknowledgement hook is missing");
-        assertTrue(invokesNamed(correlate, "getActiveClientRequestHandoffId"),
+        assertTrue(invokesNamed(prepareRider, "getActiveClientRequestHandoffId"),
             "request-first migration must defer its transform acknowledgement to the outer request handler");
-        assertTrue(invokesNamed(correlate, "randomUUID"),
+        assertTrue(invokesNamed(prepareRider, "randomUUID"),
             "each pure server-initiated rider migration must use a unique handoff nonce");
-        int prepareIndex = invocationIndex(correlate, "sendServerInitiatedPrepare");
+        assertTrue(invokesNamed(prepareRider, "sendServerInitiatedPrepare"),
+            "pure physics-first migration must send transform context from the shared preparation helper");
+        assertTrue(invokesNamed(prepareBeforeSeatPackets, "ip_prepareRider"),
+            "Prepare must be emitted before Sable seat detach/mount packets can rewrite client facing");
+        int prepareIndex = invocationIndex(correlate, "ip_prepareRider");
         int moveIndex = invocationIndex(correlate, "call");
         assertTrue(prepareIndex >= 0 && moveIndex >= 0 && prepareIndex < moveIndex,
-            "physics-first transform context must be sent before teleportEntityGeneral emits the dimension packet");
+            "fallback rider preparation must still precede teleportEntityGeneral's authoritative dimension packet");
         assertTrue(invokesNamed(finish, "setBaseGravityDirectionServer"),
             "pure physics-first migration must mirror normal IP server gravity transformation after commit");
         assertTrue(invokesNamed(finish, "sendServerInitiatedAck"),
@@ -126,13 +183,17 @@ class SableClientHandoffContractTest {
         );
         MethodNode clientPrepare = findMethodByName(clientHandoff, "prepareServerInitiated");
         MethodNode clientAck = findMethodByName(clientHandoff, "acknowledge");
+        MethodNode clientApply = findMethodByName(clientHandoff, "tryApplyReady");
         assertNotNull(clientPrepare, "client physics-first Prepare handler is missing");
         assertNotNull(clientAck, "client acknowledgement handler is missing");
-        assertTrue(invokesNamed(clientAck, "managePlayerRotationAndChangeGravity"),
-            "successful server-first handoff must use the normal IP camera/gravity transformation");
-        assertTrue(invokesNamed(clientAck, "getWorldVelocity"));
-        assertTrue(invokesNamed(clientAck, "setWorldVelocity"),
-            "camera/gravity transformation must preserve the already-authoritative world velocity");
+        assertNotNull(clientApply, "deferred destination rider completion is missing");
+        assertTrue(invokesNamed(clientAck, "tryApplyReady"),
+            "successful server-first Ack must attempt ordered completion after the dimension switch");
+        assertTrue(invokesNamed(clientApply, "getWorldVelocity"));
+        assertTrue(invokesNamed(clientApply, "setWorldVelocity"),
+            "deferred look/gravity completion must preserve the already-authoritative world velocity");
+        assertTrue(invokesNamed(clientApply, "setPlayerRawRotation"),
+            "retained rider completion must restore source-local facing only after Sable reattachment");
         assertTrue(invokesNamed(clientAck, "clearClientPendingGate"),
             "negative or out-of-order acknowledgements must release a client-deferred teleport gate");
     }

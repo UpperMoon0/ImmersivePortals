@@ -2,6 +2,8 @@ package qouteall.imm_ptl.core.compat.sable;
 
 import com.mojang.logging.LogUtils;
 import de.nick1st.imm_ptl.events.ClientCleanupEvent;
+import dev.ryanhcode.sable.Sable;
+import dev.ryanhcode.sable.sublevel.SubLevel;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.resources.ResourceKey;
@@ -10,6 +12,7 @@ import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.common.NeoForge;
 import org.jetbrains.annotations.Nullable;
 import org.slf4j.Logger;
+import qouteall.imm_ptl.core.IPGlobal;
 import qouteall.imm_ptl.core.McHelper;
 import qouteall.imm_ptl.core.ScaleUtilsClient;
 import qouteall.imm_ptl.core.portal.Portal;
@@ -22,10 +25,13 @@ import java.util.UUID;
 /** Client state for one server-first Sable rider handoff. */
 public final class SableServerFirstClientHandoff {
     private static final Logger LOGGER = LogUtils.getLogger();
+    private static final int RIDER_SYNC_TIMEOUT_TICKS = 100;
     private static Pending pending;
+    private static ReadyToApply readyToApply;
 
     static {
         NeoForge.EVENT_BUS.addListener(ClientCleanupEvent.class, event -> clear());
+        NeoForge.EVENT_BUS.addListener(IPGlobal.PostClientTickEvent.class, event -> tick());
     }
 
     private SableServerFirstClientHandoff() {}
@@ -33,7 +39,9 @@ public final class SableServerFirstClientHandoff {
     /** Begin a client-detected handoff and return the nonce the server must echo. */
     public static UUID begin(Portal portal) {
         UUID handoffId = UUID.randomUUID();
-        pending = new Pending(handoffId, portal.getUUID(), null);
+        LocalPlayer player = Minecraft.getInstance().player;
+        pending = new Pending(handoffId, portal.getUUID(), null,
+            TransformationManager.capturePlayerRotationContext(), player.getXRot(), player.getYRot());
         return handoffId;
     }
 
@@ -49,10 +57,18 @@ public final class SableServerFirstClientHandoff {
         @Nullable DQuaternion rotation,
         boolean teleportChangesGravity
     ) {
+        if (Minecraft.getInstance().player == null) {
+            clear();
+            return;
+        }
+        LocalPlayer player = Minecraft.getInstance().player;
         pending = new Pending(
             handoffId,
             portalId,
-            new PreparedTransform(destinationDimension, rotation, teleportChangesGravity)
+            new PreparedTransform(destinationDimension, rotation, teleportChangesGravity),
+            TransformationManager.capturePlayerRotationContext(),
+            player.getXRot(),
+            player.getYRot()
         );
     }
 
@@ -91,6 +107,7 @@ public final class SableServerFirstClientHandoff {
         if (player == null) return;
 
         if (!success) {
+            readyToApply = null;
             clearClientPendingGate(player);
             return;
         }
@@ -113,22 +130,84 @@ public final class SableServerFirstClientHandoff {
             return;
         }
 
-        // Sable cross-dimension migration rejects scaled portals, so the prepared/server-echoed
-        // transform snapshot is sufficient to run the exact normal IP camera/gravity path without
-        // relying on the source portal entity still existing in the client's source world.
-        Portal transformSnapshot = new Portal(Portal.ENTITY_TYPE, player.level());
-        transformSnapshot.setDestinationDimension(destinationDimension);
-        transformSnapshot.setRotation(rotation);
-        transformSnapshot.setTeleportChangesGravity(teleportChangesGravity);
+        // A retained Sable rider stores yaw/pitch in the sublevel's local frame. The destination
+        // sublevel itself already contains the portal rotation. Applying the normal IP raw-yaw
+        // transform before Sable's delayed passenger attachment therefore rotates the camera twice.
+        // Wait for the destination seat relation, then restore the pre-packet local look exactly.
+        readyToApply = new ReadyToApply(
+            handoffId, destinationDimension, rotation, teleportChangesGravity,
+            expected.rotationContext(), expected.localPitch(), expected.localYaw(), 0
+        );
+        tryApplyReady(player);
+    }
 
+    private static void tick() {
+        ReadyToApply ready = readyToApply;
+        LocalPlayer player = Minecraft.getInstance().player;
+        if (ready == null || player == null) return;
+
+        if (tryApplyReady(player)) return;
+
+        int waitTicks = ready.waitTicks() + 1;
+        if (waitTicks <= RIDER_SYNC_TIMEOUT_TICKS) {
+            readyToApply = ready.withWaitTicks(waitTicks);
+            return;
+        }
+
+        // Do not leave camera/gravity state pending forever if the riding graph failed to arrive.
+        // The E2E rider relation assertion will still fail independently; this fallback only keeps
+        // the client usable and mirrors normal IP behavior for an unexpectedly unmounted player.
+        LOGGER.warn("Timed out waiting for destination Sable rider relation for handoff {}; applying normal portal camera transform",
+            ready.handoffId());
+        applyFallbackTransform(player, ready);
+        readyToApply = null;
+    }
+
+    private static boolean tryApplyReady(LocalPlayer player) {
+        ReadyToApply ready = readyToApply;
+        if (ready == null || !player.level().dimension().equals(ready.destinationDimension())) return false;
+
+        if (!isAttachedToCurrentSableSubLevel(player)) return false;
+
+        Portal transformSnapshot = createTransformSnapshot(player, ready);
         Vec3 oldRealVelocity = McHelper.getWorldVelocity(player);
-        TransformationManager.managePlayerRotationAndChangeGravity(transformSnapshot);
+        TransformationManager.changePlayerGravity(
+            transformSnapshot, ready.rotationContext().baseGravityDirection()
+        );
+        TransformationManager.setPlayerRawRotation(player, ready.localPitch(), ready.localYaw());
+        McHelper.setWorldVelocity(player, oldRealVelocity);
+        ScaleUtilsClient.onClientPlayerTeleported(transformSnapshot);
+        readyToApply = null;
+        return true;
+    }
+
+    private static boolean isAttachedToCurrentSableSubLevel(LocalPlayer player) {
+        if (player.getVehicle() == null) return false;
+        SubLevel subLevel = Sable.HELPER.getContaining(player.getVehicle());
+        return subLevel != null && subLevel.getLevel() == player.level();
+    }
+
+    private static void applyFallbackTransform(LocalPlayer player, ReadyToApply ready) {
+        Portal transformSnapshot = createTransformSnapshot(player, ready);
+        Vec3 oldRealVelocity = McHelper.getWorldVelocity(player);
+        TransformationManager.managePlayerRotationAndChangeGravity(
+            transformSnapshot, ready.rotationContext()
+        );
         McHelper.setWorldVelocity(player, oldRealVelocity);
         ScaleUtilsClient.onClientPlayerTeleported(transformSnapshot);
     }
 
+    private static Portal createTransformSnapshot(LocalPlayer player, ReadyToApply ready) {
+        Portal transformSnapshot = new Portal(Portal.ENTITY_TYPE, player.level());
+        transformSnapshot.setDestinationDimension(ready.destinationDimension());
+        transformSnapshot.setRotation(ready.rotation());
+        transformSnapshot.setTeleportChangesGravity(ready.teleportChangesGravity());
+        return transformSnapshot;
+    }
+
     public static void clear() {
         pending = null;
+        readyToApply = null;
     }
 
     private static void clearClientPendingGate(LocalPlayer player) {
@@ -140,8 +219,29 @@ public final class SableServerFirstClientHandoff {
     private record Pending(
         UUID handoffId,
         UUID portalId,
-        @Nullable PreparedTransform serverTransform
+        @Nullable PreparedTransform serverTransform,
+        TransformationManager.PlayerRotationContext rotationContext,
+        float localPitch,
+        float localYaw
     ) {}
+
+    private record ReadyToApply(
+        UUID handoffId,
+        ResourceKey<Level> destinationDimension,
+        @Nullable DQuaternion rotation,
+        boolean teleportChangesGravity,
+        TransformationManager.PlayerRotationContext rotationContext,
+        float localPitch,
+        float localYaw,
+        int waitTicks
+    ) {
+        ReadyToApply withWaitTicks(int ticks) {
+            return new ReadyToApply(
+                handoffId, destinationDimension, rotation, teleportChangesGravity,
+                rotationContext, localPitch, localYaw, ticks
+            );
+        }
+    }
 
     private record PreparedTransform(
         ResourceKey<Level> destinationDimension,

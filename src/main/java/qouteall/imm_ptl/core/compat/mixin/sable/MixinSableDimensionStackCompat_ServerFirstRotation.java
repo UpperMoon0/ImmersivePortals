@@ -52,6 +52,23 @@ public abstract class MixinSableDimensionStackCompat_ServerFirstRotation {
         ip_playerHandoffs.get().clear();
     }
 
+    @Inject(method = "capturePlotEntities", at = @At("HEAD"))
+    private static void ip_prepareBeforeSeatPackets(
+        ServerLevel sourceWorld, ServerSubLevel sourceSubLevel, Portal portal,
+        CallbackInfoReturnable<?> cir
+    ) {
+        // Removing or mounting a Sable seat converts the client's facing. Prepare must
+        // arrive before those packets as well as before the player's position packet.
+        for (ServerPlayer player : sourceWorld.players()) {
+            for (Entity vehicle = player.getVehicle(); vehicle != null; vehicle = vehicle.getVehicle()) {
+                if (dev.ryanhcode.sable.Sable.HELPER.getContaining(vehicle) == sourceSubLevel) {
+                    ip_prepareRider(player, portal);
+                    break;
+                }
+            }
+        }
+    }
+
     @WrapOperation(
         method = "transferPlotEntities",
         at = @At(
@@ -67,25 +84,30 @@ public abstract class MixinSableDimensionStackCompat_ServerFirstRotation {
     ) {
         Portal portal = ip_currentMigrationPortal.get();
         if (portal != null && entity instanceof ServerPlayer player) {
-            // Request-first ordering is already inside onPlayerTeleportedInClient. Its handler
-            // owns the one correlated Ack after the outer IP path completes.
-            UUID activeClientHandoff =
-                SableServerFirstTeleportNetworking.getActiveClientRequestHandoffId(portal.getUUID());
-            if (activeClientHandoff == null) {
-                Map<UUID, UUID> handoffs = ip_playerHandoffs.get();
-                UUID playerId = player.getUUID();
-                if (!handoffs.containsKey(playerId)) {
-                    UUID handoffId = UUID.randomUUID();
-                    handoffs.put(playerId, handoffId);
-                    // This must precede teleportEntityGeneral. The Prepare, authoritative position
-                    // packet, and terminal Ack then describe one ordered server-first transaction.
-                    SableServerFirstTeleportNetworking.sendServerInitiatedPrepare(
-                        player, handoffId, portal
-                    );
-                }
-            }
+            ip_prepareRider(player, portal);
         }
         return original.call(entity, destinationPosition, destinationWorld);
+    }
+
+    @Unique
+    private static void ip_prepareRider(ServerPlayer player, Portal portal) {
+        // Request-first ordering is already inside onPlayerTeleportedInClient. Its handler
+        // owns the one correlated Ack after the outer IP path completes.
+        UUID activeClientHandoff =
+            SableServerFirstTeleportNetworking.getActiveClientRequestHandoffId(portal.getUUID());
+        if (activeClientHandoff == null) {
+            Map<UUID, UUID> handoffs = ip_playerHandoffs.get();
+            UUID playerId = player.getUUID();
+            if (!handoffs.containsKey(playerId)) {
+                UUID handoffId = UUID.randomUUID();
+                handoffs.put(playerId, handoffId);
+                // This must precede teleportEntityGeneral. The Prepare, authoritative position
+                // packet, and terminal Ack then describe one ordered server-first transaction.
+                SableServerFirstTeleportNetworking.sendServerInitiatedPrepare(
+                    player, handoffId, portal
+                );
+            }
+        }
     }
 
     @Inject(method = "migrateSubLevel", at = @At("RETURN"))

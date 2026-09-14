@@ -84,6 +84,11 @@ public final class SableServerFirstTeleportNetworking {
                 return;
             }
 
+            // Physics already sent Prepare, the authoritative move, and Ack. A client
+            // request that was in flight must not emit another position/yaw correction
+            // after that terminal Ack or overwrite the camera we just transformed.
+            if (acknowledgeAlreadyMigrated(player, portal)) return;
+
             ResourceKey<Level> destinationDimension = portal.getDestDim();
             ACTIVE_CLIENT_REQUEST.set(this);
             try {
@@ -111,6 +116,12 @@ public final class SableServerFirstTeleportNetworking {
             // migration, the migration hook saw ACTIVE_CLIENT_REQUEST and did not create a second
             // server-initiated handoff.
             sendAck(player, handoffId, portalId, portal, success, false);
+        }
+
+        private boolean acknowledgeAlreadyMigrated(ServerPlayer player, Portal portal) {
+            if (!SableDimensionStackCompat.isRiderAlreadyMigrated(player, portal)) return false;
+            sendAck(player, handoffId, portalId, portal, true, false);
+            return true;
         }
 
         @Override

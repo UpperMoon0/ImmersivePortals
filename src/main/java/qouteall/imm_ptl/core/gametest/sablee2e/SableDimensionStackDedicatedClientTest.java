@@ -13,6 +13,7 @@ import net.minecraft.resources.ResourceKey;
 import net.minecraft.util.Mth;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.client.event.ClientTickEvent;
 import org.joml.Vector3dc;
 import qouteall.imm_ptl.core.ClientWorldLoader;
@@ -26,7 +27,8 @@ public final class SableDimensionStackDedicatedClientTest {
     private static final int RIDING_SYNC_GRACE_TICKS = 120;
     private static final int MAX_OVERLAP_TICKS = 20;
     private static final int EXPECTED_SEAM_TRANSITIONS = 3;
-    private static final int MIN_HANDOFF_HISTORY_SNAPSHOTS = 3;
+    private static final int MIN_FULL_SYNC_SNAPSHOTS = 2;
+    private static final int MIN_GRAFTED_HISTORY_SNAPSHOTS = 3;
     private static final double MAX_BODY_RIDER_DISTANCE = 32.0;
     private static final double MIN_REMOTE_OBSERVED_MOVEMENT = 0.30;
     private static final float EXPECTED_PORTAL_YAW_DELTA = 90.0f;
@@ -56,7 +58,7 @@ public final class SableDimensionStackDedicatedClientTest {
     private static int seamTransitions;
     private static ResourceKey<Level> lastObservedDimension;
     private static double remoteSourceX = Double.NaN;
-    private static float sourceYaw;
+    private static float sourceWorldYaw;
 
     private SableDimensionStackDedicatedClientTest() {}
 
@@ -143,7 +145,7 @@ public final class SableDimensionStackDedicatedClientTest {
         SubLevel containing = Sable.HELPER.getContaining(vehicle);
         require(containing != null, "client Create seat is not contained by a Sable sublevel");
         subLevelId = containing.getUniqueId();
-        sourceYaw = minecraft.player.getYRot();
+        sourceWorldYaw = worldYaw(minecraft.player);
         lastObservedDimension = minecraft.level.dimension();
         overlapTicks = 0;
         seamTransitions = 0;
@@ -201,19 +203,30 @@ public final class SableDimensionStackDedicatedClientTest {
             "Sable body pose snapped away from its rider during portal handoff: distance=" + Math.sqrt(distanceSquared));
     }
 
-    private static void verifyInterpolationHistory(ResourceKey<Level> dimension, String phaseName) {
+    private static void verifyInterpolationHistory(
+        ResourceKey<Level> dimension, String phaseName, int minimumSnapshots
+    ) {
         ClientSubLevel subLevel = getClientSubLevel(dimension);
         require(subLevel != null, phaseName + " Sable sublevel is missing");
         int snapshots = subLevel.getInterpolator().buffer.size();
-        require(snapshots >= MIN_HANDOFF_HISTORY_SNAPSHOTS,
-            phaseName + " Sable interpolation history was reset during portal handoff: snapshots=" + snapshots);
+        require(snapshots >= minimumSnapshots,
+            phaseName + " Sable interpolation history was reset during portal handoff: snapshots=" + snapshots
+                + " minimum=" + minimumSnapshots);
+    }
+
+    /** Sable stores mounted yaw locally; the mixed getLookAngle() is the actual world-facing view. */
+    private static float worldYaw(Entity entity) {
+        Vec3 look = entity.getLookAngle();
+        return (float) Math.toDegrees(Math.atan2(-look.x, look.z));
     }
 
     private static void verifyYawDelta(Minecraft minecraft, float expectedAbsDelta, String phaseName) {
-        float actualAbsDelta = Math.abs(Mth.wrapDegrees(minecraft.player.getYRot() - sourceYaw));
+        float currentWorldYaw = worldYaw(minecraft.player);
+        float actualAbsDelta = Math.abs(Mth.wrapDegrees(currentWorldYaw - sourceWorldYaw));
         require(Math.abs(actualAbsDelta - expectedAbsDelta) <= YAW_TOLERANCE_DEGREES,
-            phaseName + " camera/facing yaw was not transformed exactly once: source=" + sourceYaw
-                + " current=" + minecraft.player.getYRot()
+            phaseName + " world-facing camera yaw was not transformed exactly once: source=" + sourceWorldYaw
+                + " current=" + currentWorldYaw
+                + " rawLocalYaw=" + minecraft.player.getYRot()
                 + " expectedAbsDelta=" + expectedAbsDelta
                 + " actualAbsDelta=" + actualAbsDelta);
     }
@@ -246,7 +259,7 @@ public final class SableDimensionStackDedicatedClientTest {
         require(vehicle.getPassengers().contains(minecraft.player),
             "client vehicle passenger graph is inconsistent in Nether");
         require(hasSubLevel(Level.NETHER), "destination Sable sublevel missing in Nether");
-        verifyInterpolationHistory(Level.NETHER, "first destination");
+        verifyInterpolationHistory(Level.NETHER, "first destination", MIN_FULL_SYNC_SNAPSHOTS);
         verifyYawDelta(minecraft, EXPECTED_PORTAL_YAW_DELTA, "first rotated crossing");
         SableDimensionStackIntegrationMarkers.acknowledge("destination");
         ridingSyncTicks = 0;
@@ -269,7 +282,7 @@ public final class SableDimensionStackDedicatedClientTest {
         require(vehicle.getPassengers().contains(minecraft.player),
             "client vehicle passenger graph is inconsistent after round trip");
         require(hasSubLevel(Level.OVERWORLD), "returned Sable sublevel missing in Overworld");
-        verifyInterpolationHistory(Level.OVERWORLD, "return destination");
+        verifyInterpolationHistory(Level.OVERWORLD, "return destination", MIN_GRAFTED_HISTORY_SNAPSHOTS);
         verifyYawDelta(minecraft, 0.0f, "inverse rotated return crossing");
 
         SableDimensionStackIntegrationMarkers.acknowledge("return");
@@ -297,7 +310,7 @@ public final class SableDimensionStackDedicatedClientTest {
         require(vehicle.getPassengers().contains(minecraft.player),
             "client Create seat passenger graph is inconsistent after gravity recross");
         require(hasSubLevel(Level.NETHER), "gravity-recrossed Sable sublevel missing in Nether");
-        verifyInterpolationHistory(Level.NETHER, "gravity recross destination");
+        verifyInterpolationHistory(Level.NETHER, "gravity recross destination", MIN_GRAFTED_HISTORY_SNAPSHOTS);
         verifyYawDelta(minecraft, EXPECTED_PORTAL_YAW_DELTA, "gravity-driven rotated recross");
         require(seamTransitions == EXPECTED_SEAM_TRANSITIONS,
             "unexpected client seam-transition count: " + seamTransitions);
@@ -400,8 +413,9 @@ public final class SableDimensionStackDedicatedClientTest {
             + " expectedVehicle=" + vehicleId
             + " subLevel=" + subLevelId
             + " seamTransitions=" + seamTransitions
-            + " sourceYaw=" + sourceYaw
-            + " currentYaw=" + minecraft.player.getYRot()
+            + " sourceWorldYaw=" + sourceWorldYaw
+            + " currentWorldYaw=" + worldYaw(minecraft.player)
+            + " rawLocalYaw=" + minecraft.player.getYRot()
             + " remoteNether=" + (remote == null ? "missing" : remote.logicalPose().position());
     }
 
