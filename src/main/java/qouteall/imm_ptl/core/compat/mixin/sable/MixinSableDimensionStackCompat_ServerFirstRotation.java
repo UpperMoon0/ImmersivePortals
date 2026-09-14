@@ -66,9 +66,11 @@ public abstract class MixinSableDimensionStackCompat_ServerFirstRotation {
     ) {
         Portal portal = ip_currentMigrationPortal.get();
         if (portal != null && entity instanceof ServerPlayer player) {
-            ip_playerHandoffs.get().computeIfAbsent(
-                player.getUUID(), ignored -> UUID.randomUUID()
-            );
+            Map<UUID, UUID> handoffs = ip_playerHandoffs.get();
+            UUID playerId = player.getUUID();
+            if (!handoffs.containsKey(playerId)) {
+                handoffs.put(playerId, UUID.randomUUID());
+            }
         }
         return original.call(entity, destinationPosition, destinationWorld);
     }
