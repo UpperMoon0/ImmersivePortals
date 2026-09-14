@@ -13,19 +13,21 @@ import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.network.PacketDistributor;
 import net.neoforged.neoforge.network.handling.ServerPayloadContext;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 import qouteall.imm_ptl.core.api.PortalAPI;
 import qouteall.imm_ptl.core.portal.Portal;
 import qouteall.imm_ptl.core.portal.global_portals.GlobalPortalStorage;
 import qouteall.imm_ptl.core.teleportation.ServerTeleportationManager;
+import qouteall.q_misc_util.my_util.DQuaternion;
 
 import java.util.UUID;
 
-/** Explicit request/acknowledgement protocol for client-deferred Sable rider teleports. */
+/** Explicit request/acknowledgement protocol for server-first Sable rider teleports. */
 public final class SableServerFirstTeleportNetworking {
     private SableServerFirstTeleportNetworking() {}
 
     public record Request(
-        int dimensionId, Vec3 eyePosBeforeTeleportation, UUID portalId
+        int dimensionId, Vec3 eyePosBeforeTeleportation, UUID portalId, UUID handoffId
     ) implements CustomPacketPayload {
         public static final Type<Request> TYPE = new Type<>(
             ResourceLocation.parse("imm_ptl:sable_server_first_teleport")
@@ -38,6 +40,7 @@ public final class SableServerFirstTeleportNetworking {
             return new Request(
                 buffer.readVarInt(),
                 new Vec3(buffer.readDouble(), buffer.readDouble(), buffer.readDouble()),
+                buffer.readUUID(),
                 buffer.readUUID()
             );
         }
@@ -48,6 +51,7 @@ public final class SableServerFirstTeleportNetworking {
             buffer.writeDouble(eyePosBeforeTeleportation.y);
             buffer.writeDouble(eyePosBeforeTeleportation.z);
             buffer.writeUUID(portalId);
+            buffer.writeUUID(handoffId);
         }
 
         public void handle(ServerPayloadContext context) {
@@ -58,7 +62,7 @@ public final class SableServerFirstTeleportNetworking {
             );
 
             if (player.getRemovalReason() != null) {
-                sendAck(player, portalId, false);
+                sendAck(player, handoffId, portalId, null, false, false);
                 return;
             }
 
@@ -69,7 +73,7 @@ public final class SableServerFirstTeleportNetworking {
                 manager.forceTeleportPlayer(
                     player, player.serverLevel().dimension(), player.position(), true
                 );
-                sendAck(player, portalId, false);
+                sendAck(player, handoffId, portalId, null, false, false);
                 return;
             }
 
@@ -90,7 +94,7 @@ public final class SableServerFirstTeleportNetworking {
                 );
             }
 
-            sendAck(player, portalId, success);
+            sendAck(player, handoffId, portalId, portal, success, false);
         }
 
         @Override
@@ -99,7 +103,19 @@ public final class SableServerFirstTeleportNetworking {
         }
     }
 
-    public record Ack(UUID portalId, boolean success) implements CustomPacketPayload {
+    public record Ack(
+        UUID handoffId,
+        UUID portalId,
+        boolean serverInitiated,
+        boolean success,
+        int destinationDimensionId,
+        boolean hasRotation,
+        double rotationX,
+        double rotationY,
+        double rotationZ,
+        double rotationW,
+        boolean teleportChangesGravity
+    ) implements CustomPacketPayload {
         public static final Type<Ack> TYPE = new Type<>(
             ResourceLocation.parse("imm_ptl:sable_server_first_ack")
         );
@@ -108,22 +124,72 @@ public final class SableServerFirstTeleportNetworking {
         );
 
         private static Ack read(FriendlyByteBuf buffer) {
-            return new Ack(buffer.readUUID(), buffer.readBoolean());
+            UUID handoffId = buffer.readUUID();
+            UUID portalId = buffer.readUUID();
+            boolean serverInitiated = buffer.readBoolean();
+            boolean success = buffer.readBoolean();
+            int destinationDimensionId = buffer.readVarInt();
+            boolean hasRotation = buffer.readBoolean();
+            double rotationX = 0.0;
+            double rotationY = 0.0;
+            double rotationZ = 0.0;
+            double rotationW = 1.0;
+            if (hasRotation) {
+                rotationX = buffer.readDouble();
+                rotationY = buffer.readDouble();
+                rotationZ = buffer.readDouble();
+                rotationW = buffer.readDouble();
+            }
+            boolean teleportChangesGravity = buffer.readBoolean();
+            return new Ack(
+                handoffId, portalId, serverInitiated, success, destinationDimensionId,
+                hasRotation, rotationX, rotationY, rotationZ, rotationW, teleportChangesGravity
+            );
         }
 
         private void write(FriendlyByteBuf buffer) {
+            buffer.writeUUID(handoffId);
             buffer.writeUUID(portalId);
+            buffer.writeBoolean(serverInitiated);
             buffer.writeBoolean(success);
+            buffer.writeVarInt(destinationDimensionId);
+            buffer.writeBoolean(hasRotation);
+            if (hasRotation) {
+                buffer.writeDouble(rotationX);
+                buffer.writeDouble(rotationY);
+                buffer.writeDouble(rotationZ);
+                buffer.writeDouble(rotationW);
+            }
+            buffer.writeBoolean(teleportChangesGravity);
         }
 
         public void handle() {
-            SableServerFirstClientHandoff.acknowledge(portalId, success);
+            ResourceKey<Level> destinationDimension = PortalAPI.clientIntToDimKey(destinationDimensionId);
+            DQuaternion rotation = hasRotation
+                ? new DQuaternion(rotationX, rotationY, rotationZ, rotationW)
+                : null;
+            SableServerFirstClientHandoff.acknowledge(
+                handoffId,
+                portalId,
+                serverInitiated,
+                success,
+                destinationDimension,
+                rotation,
+                teleportChangesGravity
+            );
         }
 
         @Override
         public @NotNull Type<? extends CustomPacketPayload> type() {
             return TYPE;
         }
+    }
+
+    /** Send the terminal acknowledgement for a Sable migration that moved the rider itself. */
+    public static void sendServerInitiatedAck(
+        ServerPlayer player, UUID handoffId, Portal portal, boolean success
+    ) {
+        sendAck(player, handoffId, portal.getUUID(), portal, success, true);
     }
 
     private static Portal findPortal(
@@ -141,7 +207,31 @@ public final class SableServerFirstTeleportNetworking {
             .orElse(null);
     }
 
-    private static void sendAck(ServerPlayer player, UUID portalId, boolean success) {
-        PacketDistributor.sendToPlayer(player, new Ack(portalId, success));
+    private static void sendAck(
+        ServerPlayer player,
+        UUID handoffId,
+        UUID portalId,
+        @Nullable Portal portal,
+        boolean success,
+        boolean serverInitiated
+    ) {
+        ResourceKey<Level> destinationDimension = portal != null
+            ? portal.getDestDim()
+            : player.serverLevel().dimension();
+        DQuaternion rotation = portal != null ? portal.getRotation() : null;
+
+        PacketDistributor.sendToPlayer(player, new Ack(
+            handoffId,
+            portalId,
+            serverInitiated,
+            success,
+            PortalAPI.serverDimKeyToInt(player.server, destinationDimension),
+            rotation != null,
+            rotation == null ? 0.0 : rotation.x,
+            rotation == null ? 0.0 : rotation.y,
+            rotation == null ? 0.0 : rotation.z,
+            rotation == null ? 1.0 : rotation.w,
+            portal != null && portal.getTeleportChangesGravity()
+        ));
     }
 }
