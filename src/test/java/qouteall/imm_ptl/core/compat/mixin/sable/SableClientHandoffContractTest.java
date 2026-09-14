@@ -41,6 +41,24 @@ class SableClientHandoffContractTest {
     }
 
     @Test
+    void serverFirstRiderHandoffAcknowledgesBothRaceOrderings() throws Exception {
+        ClassNode mixin = readClass(
+            "qouteall/imm_ptl/core/compat/mixin/sable/MixinServerTeleportationManager_SableRiderCompat.class"
+        );
+        MethodNode hook = findMethodByName(mixin, "ip_prepareRiddenSableBeforePlayer");
+        assertNotNull(hook, "server-first Sable rider handoff hook is missing");
+
+        assertTrue(invokesNamed(hook, "beforePlayerPortalTeleport"),
+            "server-first request must be able to commit the Sable body before player teleport");
+        assertTrue(invocationCount(hook, "isRiderAlreadyMigrated") >= 2,
+            "handoff must re-check destination ownership after the request itself migrates the body");
+        assertTrue(invocationCount(hook, "forceTeleportPlayer") >= 3,
+            "both successful race orderings and failed migration must send an authoritative client correction");
+        assertTrue(invokesNamed(hook, "cancel"),
+            "once the server owns the rider in the destination, normal client-first teleport must not run again");
+    }
+
+    @Test
     void interpolationMixinIsPackagedAndRegistered() throws Exception {
         assertNotNull(getClass().getClassLoader().getResource(
             "qouteall/imm_ptl/core/compat/mixin/sable/MixinClientboundStartTrackingSubLevelPacket_SablePortalCompat.class"
@@ -70,9 +88,14 @@ class SableClientHandoffContractTest {
     }
 
     private static boolean invokesNamed(MethodNode method, String name) {
+        return invocationCount(method, name) != 0;
+    }
+
+    private static int invocationCount(MethodNode method, String name) {
+        int count = 0;
         for (var instruction : method.instructions) {
-            if (instruction instanceof MethodInsnNode call && call.name.equals(name)) return true;
+            if (instruction instanceof MethodInsnNode call && call.name.equals(name)) count++;
         }
-        return false;
+        return count;
     }
 }
