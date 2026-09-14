@@ -45,17 +45,24 @@ class SableClientHandoffContractTest {
         ClassNode mixin = readClass(
             "qouteall/imm_ptl/core/compat/mixin/sable/MixinServerTeleportationManager_SableRiderCompat.class"
         );
-        MethodNode hook = findMethodByName(mixin, "ip_prepareRiddenSableBeforePlayer");
-        assertNotNull(hook, "server-first Sable rider handoff hook is missing");
+        MethodNode prepare = findMethodByName(mixin, "ip_prepareRiddenSableBeforePlayer");
+        MethodNode acknowledge = findMethodByName(mixin, "ip_acknowledgePreparedRiderAfterPlayerTeleport");
+        assertNotNull(prepare, "server-first Sable rider preparation hook is missing");
+        assertNotNull(acknowledge, "post-teleport Sable rider acknowledgement hook is missing");
 
-        assertTrue(invokesNamed(hook, "beforePlayerPortalTeleport"),
+        assertTrue(invokesNamed(prepare, "beforePlayerPortalTeleport"),
             "server-first request must be able to commit the Sable body before player teleport");
-        assertTrue(invocationCount(hook, "isRiderAlreadyMigrated") >= 2,
-            "handoff must re-check destination ownership after the request itself migrates the body");
-        assertTrue(invocationCount(hook, "forceTeleportPlayer") >= 3,
-            "both successful race orderings and failed migration must send an authoritative client correction");
-        assertTrue(invokesNamed(hook, "cancel"),
-            "once the server owns the rider in the destination, normal client-first teleport must not run again");
+        assertTrue(invokesNamed(prepare, "isRiderAlreadyMigrated"),
+            "physics-first handoff must avoid transforming the migrated rider twice");
+        assertTrue(invokesNamed(prepare, "forceTeleportPlayer"),
+            "physics-first handoff and failed migration must send authoritative client corrections");
+        assertTrue(invokesNamed(prepare, "cancel"),
+            "already-migrated or failed handoffs must stop the normal client-first continuation");
+
+        assertTrue(invokesNamed(acknowledge, "isRiderAlreadyMigrated"),
+            "request-first handoff must verify that preparation moved the rider to the destination");
+        assertTrue(invokesNamed(acknowledge, "forceTeleportPlayer"),
+            "request-first handoff must send a destination-tagged position acknowledgement after normal portal callbacks");
     }
 
     @Test
@@ -88,14 +95,9 @@ class SableClientHandoffContractTest {
     }
 
     private static boolean invokesNamed(MethodNode method, String name) {
-        return invocationCount(method, name) != 0;
-    }
-
-    private static int invocationCount(MethodNode method, String name) {
-        int count = 0;
         for (var instruction : method.instructions) {
-            if (instruction instanceof MethodInsnNode call && call.name.equals(name)) count++;
+            if (instruction instanceof MethodInsnNode call && call.name.equals(name)) return true;
         }
-        return count;
+        return false;
     }
 }
