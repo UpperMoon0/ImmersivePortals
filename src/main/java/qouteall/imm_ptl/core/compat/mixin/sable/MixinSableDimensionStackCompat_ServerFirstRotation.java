@@ -27,9 +27,9 @@ import java.util.UUID;
 
 /**
  * Correlates rider teleports performed directly by Sable's migration transaction with the
- * portal transform that caused them. Pure physics-first migrations acknowledge after the whole
- * transaction returns. If migration is executing inside a client teleport request, the outer
- * request handler owns the acknowledgement so IP's final correction packet cannot overwrite it.
+ * portal transform that caused them. Pure physics-first migrations prepare the client before
+ * the authoritative entity move and acknowledge only after the whole transaction returns. If
+ * migration runs inside a client teleport request, the outer request handler owns the handoff.
  */
 @Mixin(value = SableDimensionStackCompat.class, remap = false)
 public abstract class MixinSableDimensionStackCompat_ServerFirstRotation {
@@ -68,14 +68,20 @@ public abstract class MixinSableDimensionStackCompat_ServerFirstRotation {
         Portal portal = ip_currentMigrationPortal.get();
         if (portal != null && entity instanceof ServerPlayer player) {
             // Request-first ordering is already inside onPlayerTeleportedInClient. Its handler
-            // sends the terminal ack after the outer IP path completes, which is later and safer.
+            // owns the one correlated Ack after the outer IP path completes.
             UUID activeClientHandoff =
                 SableServerFirstTeleportNetworking.getActiveClientRequestHandoffId(portal.getUUID());
             if (activeClientHandoff == null) {
                 Map<UUID, UUID> handoffs = ip_playerHandoffs.get();
                 UUID playerId = player.getUUID();
                 if (!handoffs.containsKey(playerId)) {
-                    handoffs.put(playerId, UUID.randomUUID());
+                    UUID handoffId = UUID.randomUUID();
+                    handoffs.put(playerId, handoffId);
+                    // This must precede teleportEntityGeneral. The Prepare, authoritative position
+                    // packet, and terminal Ack then describe one ordered server-first transaction.
+                    SableServerFirstTeleportNetworking.sendServerInitiatedPrepare(
+                        player, handoffId, portal
+                    );
                 }
             }
         }

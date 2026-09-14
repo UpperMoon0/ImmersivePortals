@@ -34,6 +34,11 @@ public class Payloads {
                 (request, context) -> request.handle((ServerPayloadContext) context));
 
         registrar.playToClient(
+                SableServerFirstTeleportNetworking.Prepare.TYPE,
+                SableServerFirstTeleportNetworking.Prepare.CODEC,
+                (prepare, context) -> prepare.handle());
+
+        registrar.playToClient(
                 SableServerFirstTeleportNetworking.Ack.TYPE,
                 SableServerFirstTeleportNetworking.Ack.CODEC,
                 (ack, context) -> ack.handle());

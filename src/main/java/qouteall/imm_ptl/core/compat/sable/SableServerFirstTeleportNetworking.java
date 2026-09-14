@@ -22,12 +22,12 @@ import qouteall.q_misc_util.my_util.DQuaternion;
 
 import java.util.UUID;
 
-/** Explicit request/acknowledgement protocol for server-first Sable rider teleports. */
+/** Explicit request/prepare/acknowledgement protocol for server-first Sable rider teleports. */
 public final class SableServerFirstTeleportNetworking {
     /**
      * Server networking and Sable physics both run on the server thread. Mark a client-request
-     * scope so a Sable migration triggered from inside onPlayerTeleportedInClient does not send
-     * its transform acknowledgement before that outer IP path emits its final correction packet.
+     * scope so a Sable migration triggered from inside onPlayerTeleportedInClient does not start
+     * a second server-initiated handoff for the same crossing.
      */
     private static final ThreadLocal<Request> ACTIVE_CLIENT_REQUEST = new ThreadLocal<>();
 
@@ -107,10 +107,85 @@ public final class SableServerFirstTeleportNetworking {
                 );
             }
 
-            // This is deliberately after the complete IP server path. In request-first ordering,
-            // Sable migration happened inside that call and must not rotate the client before IP's
-            // final authoritative position packet has been emitted.
+            // Deliberately after the complete IP server path. If this request caused the Sable
+            // migration, the migration hook saw ACTIVE_CLIENT_REQUEST and did not create a second
+            // server-initiated handoff.
             sendAck(player, handoffId, portalId, portal, success, false);
+        }
+
+        @Override
+        public @NotNull Type<? extends CustomPacketPayload> type() {
+            return TYPE;
+        }
+    }
+
+    /**
+     * Physics-first migrations announce their authoritative transform before moving the player.
+     * The following vanilla/IP cross-dimension position packet and terminal Ack are therefore
+     * ordered around one server-generated handoff id on the same connection.
+     */
+    public record Prepare(
+        UUID handoffId,
+        UUID portalId,
+        int destinationDimensionId,
+        boolean hasRotation,
+        double rotationX,
+        double rotationY,
+        double rotationZ,
+        double rotationW,
+        boolean teleportChangesGravity
+    ) implements CustomPacketPayload {
+        public static final Type<Prepare> TYPE = new Type<>(
+            ResourceLocation.parse("imm_ptl:sable_server_first_prepare")
+        );
+        public static final StreamCodec<FriendlyByteBuf, Prepare> CODEC = StreamCodec.of(
+            (buffer, packet) -> packet.write(buffer), Prepare::read
+        );
+
+        private static Prepare read(FriendlyByteBuf buffer) {
+            UUID handoffId = buffer.readUUID();
+            UUID portalId = buffer.readUUID();
+            int destinationDimensionId = buffer.readVarInt();
+            boolean hasRotation = buffer.readBoolean();
+            double rotationX = 0.0;
+            double rotationY = 0.0;
+            double rotationZ = 0.0;
+            double rotationW = 1.0;
+            if (hasRotation) {
+                rotationX = buffer.readDouble();
+                rotationY = buffer.readDouble();
+                rotationZ = buffer.readDouble();
+                rotationW = buffer.readDouble();
+            }
+            boolean teleportChangesGravity = buffer.readBoolean();
+            return new Prepare(
+                handoffId, portalId, destinationDimensionId,
+                hasRotation, rotationX, rotationY, rotationZ, rotationW, teleportChangesGravity
+            );
+        }
+
+        private void write(FriendlyByteBuf buffer) {
+            buffer.writeUUID(handoffId);
+            buffer.writeUUID(portalId);
+            buffer.writeVarInt(destinationDimensionId);
+            buffer.writeBoolean(hasRotation);
+            if (hasRotation) {
+                buffer.writeDouble(rotationX);
+                buffer.writeDouble(rotationY);
+                buffer.writeDouble(rotationZ);
+                buffer.writeDouble(rotationW);
+            }
+            buffer.writeBoolean(teleportChangesGravity);
+        }
+
+        public void handle() {
+            ResourceKey<Level> destinationDimension = PortalAPI.clientIntToDimKey(destinationDimensionId);
+            DQuaternion rotation = hasRotation
+                ? new DQuaternion(rotationX, rotationY, rotationZ, rotationW)
+                : null;
+            SableServerFirstClientHandoff.prepareServerInitiated(
+                handoffId, portalId, destinationDimension, rotation, teleportChangesGravity
+            );
         }
 
         @Override
@@ -213,7 +288,25 @@ public final class SableServerFirstTeleportNetworking {
             : null;
     }
 
-    /** Send the terminal acknowledgement for a Sable migration that moved the rider itself. */
+    /** Send transform context before a pure physics-first migration moves the player. */
+    public static void sendServerInitiatedPrepare(
+        ServerPlayer player, UUID handoffId, Portal portal
+    ) {
+        DQuaternion rotation = portal.getRotation();
+        PacketDistributor.sendToPlayer(player, new Prepare(
+            handoffId,
+            portal.getUUID(),
+            PortalAPI.serverDimKeyToInt(player.server, portal.getDestDim()),
+            rotation != null,
+            rotation == null ? 0.0 : rotation.x,
+            rotation == null ? 0.0 : rotation.y,
+            rotation == null ? 0.0 : rotation.z,
+            rotation == null ? 1.0 : rotation.w,
+            portal.getTeleportChangesGravity()
+        ));
+    }
+
+    /** Send the terminal acknowledgement for a pure physics-first Sable migration. */
     public static void sendServerInitiatedAck(
         ServerPlayer player, UUID handoffId, Portal portal, boolean success
     ) {

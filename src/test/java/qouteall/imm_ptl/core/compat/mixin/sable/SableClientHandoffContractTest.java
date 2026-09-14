@@ -72,10 +72,12 @@ class SableClientHandoffContractTest {
         );
         MethodNode request = findMethodByName(requestMixin, "ip_useExplicitServerFirstAcknowledgement");
         assertNotNull(request, "explicit Sable server-first client request hook is missing");
+        assertTrue(invokesNamed(request, "hasServerInitiatedHandoff"),
+            "client must not create a competing request after a physics-first Prepare arrives");
         assertTrue(invokesNamed(request, "begin"),
-            "client must create a correlated handoff before sending its deferred request");
+            "client-detected ordering must create a correlated handoff before sending its request");
         assertTrue(invokesNamed(request, "send"),
-            "deferred Sable handoff must send the explicit server-first request payload");
+            "client-detected Sable handoff must send the explicit request payload");
         assertTrue(invokesNamed(request, "cancel"),
             "the ambiguous normal teleport packet must not also be sent for a server-first handoff");
 
@@ -89,7 +91,15 @@ class SableClientHandoffContractTest {
         assertTrue(invokesNamed(handle, "forceTeleportPlayer"),
             "rejected or vanished-portal requests must send an authoritative correction");
         assertTrue(invokesNamed(handle, "sendAck"),
-            "every handled server-first request must terminate with an explicit success/failure acknowledgement");
+            "every handled client request must terminate with an explicit success/failure acknowledgement");
+
+        ClassNode preparePacket = readClass(
+            "qouteall/imm_ptl/core/compat/sable/SableServerFirstTeleportNetworking$Prepare.class"
+        );
+        MethodNode prepareHandle = findMethodByName(preparePacket, "handle");
+        assertNotNull(prepareHandle, "physics-first Prepare payload is missing");
+        assertTrue(invokesNamed(prepareHandle, "prepareServerInitiated"),
+            "Prepare must install server transform context before the authoritative dimension packet");
 
         ClassNode migrationMixin = readClass(
             "qouteall/imm_ptl/core/compat/mixin/sable/MixinSableDimensionStackCompat_ServerFirstRotation.class"
@@ -102,17 +112,21 @@ class SableClientHandoffContractTest {
             "request-first migration must defer its transform acknowledgement to the outer request handler");
         assertTrue(invokesNamed(correlate, "randomUUID"),
             "each pure server-initiated rider migration must use a unique handoff nonce");
-        assertTrue(invokesNamed(correlate, "call"),
-            "the authoritative cross-dimension entity move must still execute");
+        int prepareIndex = invocationIndex(correlate, "sendServerInitiatedPrepare");
+        int moveIndex = invocationIndex(correlate, "call");
+        assertTrue(prepareIndex >= 0 && moveIndex >= 0 && prepareIndex < moveIndex,
+            "physics-first transform context must be sent before teleportEntityGeneral emits the dimension packet");
         assertTrue(invokesNamed(finish, "setBaseGravityDirectionServer"),
             "pure physics-first migration must mirror normal IP server gravity transformation after commit");
         assertTrue(invokesNamed(finish, "sendServerInitiatedAck"),
-            "physics-first migration must send transform context only after the transaction returns");
+            "physics-first migration must send its terminal Ack only after the transaction returns");
 
         ClassNode clientHandoff = readClass(
             "qouteall/imm_ptl/core/compat/sable/SableServerFirstClientHandoff.class"
         );
+        MethodNode clientPrepare = findMethodByName(clientHandoff, "prepareServerInitiated");
         MethodNode clientAck = findMethodByName(clientHandoff, "acknowledge");
+        assertNotNull(clientPrepare, "client physics-first Prepare handler is missing");
         assertNotNull(clientAck, "client acknowledgement handler is missing");
         assertTrue(invokesNamed(clientAck, "managePlayerRotationAndChangeGravity"),
             "successful server-first handoff must use the normal IP camera/gravity transformation");
@@ -120,7 +134,7 @@ class SableClientHandoffContractTest {
         assertTrue(invokesNamed(clientAck, "setWorldVelocity"),
             "camera/gravity transformation must preserve the already-authoritative world velocity");
         assertTrue(invokesNamed(clientAck, "clearClientPendingGate"),
-            "negative acknowledgements must release a client-deferred teleport gate");
+            "negative or out-of-order acknowledgements must release a client-deferred teleport gate");
     }
 
     @Test
@@ -185,10 +199,16 @@ class SableClientHandoffContractTest {
     }
 
     private static boolean invokesNamed(MethodNode method, String name) {
+        return invocationIndex(method, name) >= 0;
+    }
+
+    private static int invocationIndex(MethodNode method, String name) {
+        int index = 0;
         for (var instruction : method.instructions) {
-            if (instruction instanceof MethodInsnNode call && call.name.equals(name)) return true;
+            if (instruction instanceof MethodInsnNode call && call.name.equals(name)) return index;
+            index++;
         }
-        return false;
+        return -1;
     }
 
     private static boolean hasAnnotation(ClassNode node, String descriptor) {

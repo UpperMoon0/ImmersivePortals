@@ -43,11 +43,19 @@ public abstract class MixinClientTeleportationManager_SableServerFirstAck {
         Validate.isTrue(player != null);
 
         Portal portal = teleportation.portal();
-        ResourceKey<Level> sourceDimension = player.level().dimension();
-        Vec3 eyePos = McHelper.getEyePos(player);
-
         pendingServerFirstPortalId = portal.getUUID();
         lastTeleportGameTime = ClientTeleportationManager.tickTimeForTeleportation;
+
+        // A physics-first migration may already have announced its server-generated handoff id.
+        // In that ordering, do not create/send a competing client request. Wait for the ordered
+        // authoritative dimension packet and terminal server Ack instead.
+        if (SableServerFirstClientHandoff.hasServerInitiatedHandoff(portal.getUUID())) {
+            ci.cancel();
+            return;
+        }
+
+        ResourceKey<Level> sourceDimension = player.level().dimension();
+        Vec3 eyePos = McHelper.getEyePos(player);
         UUID handoffId = SableServerFirstClientHandoff.begin(portal);
 
         player.connection.send(new ServerboundCustomPayloadPacket(
