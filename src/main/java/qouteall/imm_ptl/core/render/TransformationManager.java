@@ -131,39 +131,62 @@ public class TransformationManager {
 //        return Math.sqrt(1 - (1 - progress) * (1 - progress));
     }
     
-    // this may change player velocity, must change it back
+    /** Camera including gravity and any active interpolation, sampled before teleport packets. */
+    public record PlayerRotationContext(DQuaternion cameraRotation, Direction baseGravityDirection) {}
+
+    public static PlayerRotationContext capturePlayerRotationContext() {
+        LocalPlayer player = client.player;
+        Direction gravity = GravityChangerInterface.invoker.getGravityDirection(player);
+        DQuaternion cameraRotation = getCameraRotationWithGravity(
+            gravity, player.getViewXRot(RenderStates.getPartialTick()),
+            player.getViewYRot(RenderStates.getPartialTick())
+        );
+        DQuaternion animation = getCurrentAnimationDelta();
+        if (animation != null) cameraRotation = cameraRotation.hamiltonProduct(animation);
+        return new PlayerRotationContext(cameraRotation,
+            GravityChangerInterface.invoker.getBaseGravityDirection(player));
+    }
+
+    public static void changePlayerGravity(Portal portal, Direction oldBaseGravityDir) {
+        LocalPlayer player = client.player;
+        Direction newBaseGravityDir = portal.getTeleportedGravityDirection(oldBaseGravityDir);
+        if (newBaseGravityDir != oldBaseGravityDir) {
+            GravityChangerInterface.invoker.setClientPlayerGravityDirection(player, newBaseGravityDir);
+        }
+    }
+
+    public static void setPlayerRawRotation(LocalPlayer player, float pitch, float yaw) {
+        player.setYRot(yaw);
+        player.setXRot(pitch);
+        player.yRotO = yaw;
+        player.xRotO = pitch;
+        player.yBob = yaw;
+        player.xBob = pitch;
+        player.yBobO = yaw;
+        player.xBobO = pitch;
+        updateCamera(client);
+    }
+
+    public static void managePlayerRotationAndChangeGravity(Portal portal) {
+        if (portal.getRotation() != null) {
+            managePlayerRotationAndChangeGravity(portal, capturePlayerRotationContext());
+        }
+    }
+
+    /** Apply the same transform for immediate and server-first teleports; callers preserve velocity. */
     public static void managePlayerRotationAndChangeGravity(
-        Portal portal
+        Portal portal, PlayerRotationContext context
     ) {
         if (portal.getRotation() != null) {
             LocalPlayer player = client.player;
-            
-            // finalRot = rawCameraRotation * gravity * animationDelta * portalRot
-            
-            Direction oldGravityDir = GravityChangerInterface.invoker.getGravityDirection(player);
-            
-            DQuaternion oldCameraRotation = getCameraRotationWithGravity(
-                oldGravityDir,
-                player.getViewXRot(RenderStates.getPartialTick()), player.getViewYRot(RenderStates.getPartialTick())
-            );
-            DQuaternion currentAnimationDelta = getCurrentAnimationDelta();
-            if (currentAnimationDelta != null) {
-                oldCameraRotation = oldCameraRotation.hamiltonProduct(currentAnimationDelta);
-            }
-            
+            DQuaternion oldCameraRotation = context.cameraRotation();
             DQuaternion immediateFinalRot =
                 oldCameraRotation.hamiltonProduct(
                     portal.getRotation().getConjugated()
                 );
             
-            Direction oldBaseGravityDir = GravityChangerInterface.invoker.getBaseGravityDirection(player);
-            Direction newBaseGravityDir = portal.getTeleportedGravityDirection(oldBaseGravityDir);
-            
-            if (newBaseGravityDir != oldBaseGravityDir) {
-                GravityChangerInterface.invoker.setClientPlayerGravityDirection(
-                    player, newBaseGravityDir
-                );
-            }
+            Direction oldBaseGravityDir = context.baseGravityDirection();
+            changePlayerGravity(portal, oldBaseGravityDir);
             
             // if there is some gravity effect
             // the immediate gravity direction may be different to base gravity direction
@@ -192,15 +215,7 @@ public class TransformationManager {
                 finalPitch = -90 + (-90 - finalPitch);
             }
             
-            player.setYRot(finalYaw);
-            player.setXRot(finalPitch);
-            
-            player.yRotO = finalYaw;
-            player.xRotO = finalPitch;
-            player.yBob = finalYaw;
-            player.xBob = finalPitch;
-            player.yBobO = finalYaw;
-            player.xBobO = finalPitch;
+            setPlayerRawRotation(player, finalPitch, finalYaw);
             
             // now we need to keep immediate final rotation unchanged, to keep teleportation seamless.
             // no need to consider portalRot for now.

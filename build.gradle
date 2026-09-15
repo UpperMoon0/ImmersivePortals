@@ -60,6 +60,17 @@ repositories {
     exclusiveContent {
         forRepository {
             maven {
+                name = "Sinytra"
+                url = "https://maven.sinytra.org"
+            }
+        }
+        filter {
+            includeGroup "org.sinytra.forgified-fabric-api"
+        }
+    }
+    exclusiveContent {
+        forRepository {
+            maven {
                 name = "Sable"
                 url = "https://maven.ryanhcode.dev/releases"
             }
@@ -70,6 +81,10 @@ repositories {
         }
     }
 
+    // Dev runtime dependencies for the local Aeronautics integration stack.
+    maven { url = 'https://maven.createmod.net' }
+    maven { url = 'https://mvn.devos.one/snapshots' }
+    maven { url = 'https://maven.blamejared.com' }
     flatDir {
         dir "deps"
     }
@@ -84,6 +99,8 @@ tasks.named('jar', Jar).configure {
         rename { 'LICENSE-Immersive-Portals' }
     }
     from(rootProject.file('NOTICE'))
+    // Dedicated E2E drivers are compiled into the dev runtime but never shipped in release jars.
+    exclude 'qouteall/imm_ptl/core/gametest/sablee2e/**'
 }
 
 minecraft.accessTransformers.entry 'public net.minecraft.server.MinecraftServer storageSource'
@@ -119,6 +136,25 @@ minecraft.accessTransformers.entry 'public net.minecraft.util.datafix.fixes.Item
     }
 }*/
 
+// Optional sibling integration mods for local manual testing. These are never
+// published or attached to CI/E2E; the normal dev client picks them up only
+// when all three locally-built Aeronautics component jars are present.
+def localAeronauticsJars = [
+        file('../Simulated-Project/simulated/neoforge/build/libs/simulated-neoforge-1.21.1-1.3.1.jar'),
+        file('../Simulated-Project/aeronautics/neoforge/build/libs/aeronautics-neoforge-1.21.1-1.3.1.jar'),
+        file('../Simulated-Project/offroad/neoforge/build/libs/offroad-neoforge-1.21.1-1.3.1.jar')
+]
+def localAeronauticsAvailable = localAeronauticsJars.every { it.exists() }
+def verificationRenderer = providers.gradleProperty('verificationRenderer').getOrElse('sodium')
+def verificationSable = providers.gradleProperty('verificationSable').getOrElse('true').toBoolean()
+def verificationRendererStaged = providers.gradleProperty('verificationRendererStaged').getOrElse('false').toBoolean()
+if (!(verificationRenderer in ['vanilla', 'sodium', 'iris', 'veil'])) {
+    throw new GradleException('Unknown verificationRenderer: ' + verificationRenderer)
+}
+
+// Runtime verification uses the standalone NeoForge Sodium release. The
+// net.caffeinemc sodium-neoforge is the complete installable artifact;
+// sodium-neoforge-mod is only the split platform overlay.
 runs {
     configureEach {
         systemProperty 'forge.logging.markers', 'REGISTRIES'
@@ -129,15 +165,76 @@ runs {
     }
 
     client {
-        systemProperty 'forge.enabledGameTestNamespaces', project.mod_id
+        systemProperty 'neoforge.enabledGameTestNamespaces', project.mod_id
+        dependencies {
+            runtime("net.caffeinemc:sodium-neoforge:0.8.12+mc1.21.1") { transitive = false }
+            // Local Aeronautics component jars are staged into runs/client/mods
+            // below. Raw file dependencies land on the Java classpath but are
+            // not discovered as NeoForge mods in this UserDev setup.
+            // Sable remains the single Veil provider when it is enabled.
+            if (localAeronauticsAvailable && !verificationSable) {
+                runtime("foundry.veil:veil-neoforge-1.21.1:4.3.2") {
+                    exclude group: 'maven.modrinth'
+                }
+            }
+        }
     }
 
     server {
-        systemProperty 'forge.enabledGameTestNamespaces', project.mod_id
+        systemProperty 'neoforge.enabledGameTestNamespaces', project.mod_id
     }
 
     gameTestServer {
-        systemProperty 'forge.enabledGameTestNamespaces', project.mod_id
+        systemProperty 'neoforge.enabledGameTestNamespaces', 'sable'
+    }
+
+    sableE2EServer {
+        runType 'server'
+        workingDirectory project.file('run-sable-e2e-server')
+        arguments '--nogui'
+        systemProperty 'ip.sable.e2e', 'true'
+        systemProperty 'ip.sable.e2e.resultDir', project.file('build/sable-dimension-stack-e2e').absolutePath
+    }
+
+    sableE2EClient {
+        runType 'client'
+        workingDirectory project.file('run-sable-e2e-client')
+        systemProperty 'ip.sable.e2e', 'true'
+        systemProperty 'ip.sable.e2e.resultDir', project.file('build/sable-dimension-stack-e2e').absolutePath
+        dependencies {
+            runtime("net.caffeinemc:sodium-neoforge:0.8.12+mc1.21.1") { transitive = false }
+        }
+    }
+
+    portalSmokeServer {
+        runType 'server'
+        workingDirectory project.file('run-sable-e2e-server')
+        arguments '--nogui'
+    }
+
+    portalSmokeClient {
+        runType 'client'
+        workingDirectory project.file('run-sable-e2e-client')
+        dependencies {
+            // The verification harness first resolves these artifacts from the
+            // generated classpath, then stages them in the client mods folder.
+            // Suppress the UserDev runtime copy for the actual staged launch so
+            // Java does not see the same mod on both the module path and mod path.
+            if (!verificationRendererStaged) {
+                if (verificationRenderer == 'sodium' || verificationRenderer == 'veil') {
+                    runtime("net.caffeinemc:sodium-neoforge:0.8.12+mc1.21.1") { transitive = false }
+                }
+                if (verificationRenderer == 'iris') {
+                    runtime "maven.modrinth:iris:1.8.14-beta.1+1.21.1-neoforge"
+                    runtime("net.caffeinemc:sodium-neoforge:0.8.12+mc1.21.1") { transitive = false }
+                }
+                if (verificationRenderer == 'veil') {
+                    runtime("foundry.veil:veil-neoforge-1.21.1:4.3.2") {
+                        exclude group: 'maven.modrinth'
+                    }
+                }
+            }
+        }
     }
 
     data {
@@ -145,6 +242,32 @@ runs {
     }
 }
 
+// Runtime-only sibling mods must be actual NeoForge mod files, not merely raw
+// classpath entries. Stage only our known integration jars into the normal
+// client mods directory and leave unrelated user-added dev mods untouched.
+def prepareLocalAeronauticsClientMods = tasks.register('prepareLocalAeronauticsClientMods') {
+    inputs.files(localAeronauticsJars)
+    doLast {
+        def modsDir = file('runs/client/mods')
+        modsDir.mkdirs()
+
+        // Remove stale copies of these exact integration artifacts first.
+        localAeronauticsJars.each { jarFile ->
+            delete file("${modsDir}/${jarFile.name}")
+        }
+
+        if (localAeronauticsAvailable) {
+            copy {
+                from localAeronauticsJars
+                into modsDir
+            }
+        }
+    }
+}
+
+tasks.matching { it.name == 'runClient' }.configureEach {
+    dependsOn prepareLocalAeronauticsClientMods
+}
 // Include resources generated by data generators.
 sourceSets.main.resources { srcDir 'src/generated/resources' }
 
@@ -163,15 +286,22 @@ dependencies {
 
     compileOnly "net.caffeinemc:sodium-neoforge-mod:0.8.12+mc1.21.1"
     compileOnly("dev.ryanhcode.sable:sable-neoforge-${minecraft_version}:${sable_version}") { transitive = false }
-    runtimeOnly("dev.ryanhcode.sable:sable-neoforge-${minecraft_version}:${sable_version}") { transitive = false }
+    if (verificationSable) {
+        runtimeOnly("dev.ryanhcode.sable:sable-neoforge-${minecraft_version}:${sable_version}") { transitive = false }
+    }
     compileOnly("dev.ryanhcode.sable-companion:sable-companion-common-${minecraft_version}:${sable_companion_version}") { transitive = false }
-    runtimeOnly("dev.ryanhcode.sable-companion:sable-companion-common-${minecraft_version}:${sable_companion_version}") { transitive = false }
+    if (verificationSable) {
+        runtimeOnly("dev.ryanhcode.sable-companion:sable-companion-common-${minecraft_version}:${sable_companion_version}") { transitive = false }
+    }
+
     testImplementation("dev.ryanhcode.sable:sable-neoforge-${minecraft_version}:${sable_version}") { transitive = false }
     testImplementation("dev.ryanhcode.sable-companion:sable-companion-common-${minecraft_version}:${sable_companion_version}") { transitive = false }
     testImplementation platform("org.junit:junit-bom:5.11.4")
     testImplementation "org.junit.jupiter:junit-jupiter"
     testImplementation "org.ow2.asm:asm-tree:9.7.1"
-    implementation "maven.modrinth:iris:1.8.12+1.21.1-neoforge"
+    compileOnly "maven.modrinth:iris:1.8.14-beta.1+1.21.1-neoforge"
+    // Optional compile-time API for Veil shader recompilation compatibility.
+    compileOnly "foundry.veil:veil-neoforge-${minecraft_version}:4.3.2"
 
     implementation "maven.modrinth:cloth-config:15.0.140+neoforge"
     implementation "maven.modrinth:pehkui:3.8.3+1.21-neoforge"
@@ -186,8 +316,10 @@ dependencies {
     implementation "maven.modrinth:architectury-api:13.0.8+neoforge"
     implementation "maven.modrinth:geckolib:DTo3uxPN"
 
-    // Create
-    compileOnly "maven.modrinth:create:1.21.1-6.0.6"
+    // Create: compile against and load the same version in dev/test runs. runtimeOnly
+    // keeps it out of the published mod while allowing the E2E to use a real SeatEntity.
+    compileOnly("com.simibubi.create:create-1.21.1:6.0.10-280") { transitive = false }
+    runtimeOnly("com.simibubi.create:create-1.21.1:6.0.10-280") { transitive = false }
 
     // Mekanism
     implementation "maven.modrinth:mekanism:10.7.14.79"
@@ -196,10 +328,16 @@ dependencies {
 tasks.named('test').configure {
     useJUnitPlatform()
 }
+
+tasks.register('coreCheck') {
+    group = 'verification'
+    description = 'Runs the build, JUnit suite, and NeoForge GameTests without the graphical E2E.'
+    dependsOn tasks.named('build'), tasks.named('runGameTestServer')
+}
 // This block of code expands all declared replace properties in the specified resource targets.
 // A missing property will result in an error. Properties are expanded using ${} Groovy notation.
 // When "copyIdeResources" is enabled, this will also run before the game launches in IDE environments.
-// See https://docs.gradle.org/current/dsl/org.gradle.language.jvm.tasks.ProcessResources.html
+// See https://docs.gradle.org/current/dsl/org.gradle.language.jvm.tasks/ProcessResources.html
 tasks.withType(ProcessResources).configureEach {
     var replaceProperties = [
             minecraft_version   : minecraft_version, minecraft_version_range: minecraft_version_range,
@@ -210,6 +348,12 @@ tasks.withType(ProcessResources).configureEach {
             mod_authors         : mod_authors, mod_description: mod_description, pack_format_number: pack_format_number,
     ]
     inputs.properties replaceProperties
+
+    // Keep one source-of-truth icon for both the welcome screen and NeoForge mod metadata.
+    from('src/main/resources/assets/immersive_portals/icon.png') {
+        into ''
+        rename { 'icon.png' }
+    }
 
     filesMatching(['META-INF/neoforge.mods.toml', 'pack.mcmeta']) {
         expand replaceProperties + [project: project]

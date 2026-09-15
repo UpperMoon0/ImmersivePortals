@@ -5,6 +5,7 @@ import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.neoforge.network.event.RegisterPayloadHandlersEvent;
 import net.neoforged.neoforge.network.handling.ServerPayloadContext;
 import net.neoforged.neoforge.network.registration.PayloadRegistrar;
+import qouteall.imm_ptl.core.compat.sable.SableServerFirstTeleportNetworking;
 import qouteall.imm_ptl.core.network.ImmPtlNetworkConfig;
 import qouteall.imm_ptl.core.network.ImmPtlNetworking;
 import qouteall.imm_ptl.core.network.PacketRedirection;
@@ -26,6 +27,21 @@ public class Payloads {
 
         // Play
         registrar.playToServer(ImmPtlNetworking.TeleportPacket.TYPE, ImmPtlNetworking.TeleportPacket.CODEC, ((teleportPacket, iPayloadContext) -> teleportPacket.handle((ServerPayloadContext) iPayloadContext)));
+
+        registrar.playToServer(
+                SableServerFirstTeleportNetworking.Request.TYPE,
+                SableServerFirstTeleportNetworking.Request.CODEC,
+                (request, context) -> request.handle((ServerPayloadContext) context));
+
+        registrar.playToClient(
+                SableServerFirstTeleportNetworking.Prepare.TYPE,
+                SableServerFirstTeleportNetworking.Prepare.CODEC,
+                (prepare, context) -> prepare.handle());
+
+        registrar.playToClient(
+                SableServerFirstTeleportNetworking.Ack.TYPE,
+                SableServerFirstTeleportNetworking.Ack.CODEC,
+                (ack, context) -> ack.handle());
 
         registrar.playToClient(ImmPtlNetworking.GlobalPortalSyncPacket.TYPE, ImmPtlNetworking.GlobalPortalSyncPacket.CODEC, (globalPortalSyncPacket, iPayloadContext) -> globalPortalSyncPacket.handle());
 

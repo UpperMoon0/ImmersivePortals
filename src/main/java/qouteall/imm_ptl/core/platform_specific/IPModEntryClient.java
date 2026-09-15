@@ -11,6 +11,7 @@ import qouteall.imm_ptl.core.IPGlobal;
 import qouteall.imm_ptl.core.IPMcHelper;
 import qouteall.imm_ptl.core.IPModMainClient;
 import qouteall.imm_ptl.core.compat.IPModInfoChecking;
+import qouteall.imm_ptl.core.compat.veil.VeilCompat;
 import qouteall.imm_ptl.core.compat.iris_compatibility.ExperimentalIrisPortalRenderer;
 import qouteall.imm_ptl.core.compat.iris_compatibility.IrisInterface;
 import qouteall.imm_ptl.core.compat.sodium_compatibility.SodiumInterface;
@@ -64,6 +65,11 @@ public class IPModEntryClient {
 
     public void onInitializeClient(IEventBus modEventBus) {
         IPModMainClient.init();
+
+        if (ModList.get().isLoaded("veil")) {
+            Helper.log("Veil is present; enabling shader clipping compatibility");
+            VeilCompat.init(modEventBus);
+        }
 
         modEventBus.addListener(EntityRenderersEvent.RegisterRenderers.class, IPModEntryClient::initPortalRenderers);
         

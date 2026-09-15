@@ -14,8 +14,14 @@
     "iris.MixinIrisShadowRenderTargets",
     "iris.MixinIrisSodiumShader",
     "iris.MixinIrisTransformPatcher",
+    "sable.AccessorSubLevel_SablePortalCompat",
+    "sable.InvokerSubLevelTrackingSystem_SablePortalCompat",
     "sable.MixinEntity_SableCollisionCompat",
-    "sable.MixinClientboundStartTrackingSubLevelPacket_SablePortalCompat",
+    "sable.MixinSableDimensionStackCompat_ServerFirstRotation",
+    "sable.MixinServerSubLevel_SablePortalCompat",
+    "sable.MixinServerTeleportationManager_SableRiderCompat",
+    "sable.MixinSubLevelContainer_SableGlobalPlotAllocator",
+    "sable.MixinSubLevelPhysicsSystem_SableDimensionStackCompat",
     "sable.MixinSubLevelTrackingSystem_SablePortalCompat",
     "sodium.IESodiumWorldRenderer",
     "sodium.MixinSodiumDefaultShaderInterface",
@@ -29,5 +35,10 @@
   ],
   "injectors": {
     "defaultRequire": 1
-  }
+  },
+  "client": [
+    "sable.MixinClientTeleportationManager_SableServerFirstAck",
+    "sable.MixinClientboundStartTrackingSubLevelPacket_SablePortalCompat",
+    "sable.MixinSableClientPacketContext_SablePortalCompat"
+  ]
 }

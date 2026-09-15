@@ -6,13 +6,44 @@ and this project tries to adhere to [Semantic Versioning](https://semver.org/spe
 
 ## [Unreleased Changes]
 
+## [6.0.9] - 2026-09-15
+
+### Added
+
+- Seamless Sable 2.0.5 cross-dimension sublevel and rider handoff with automated UDP/TCP graphical E2E coverage.
+- Portal clipping and renderer-matrix visual regression coverage, including Veil compatibility.
+- Canonical verification, nightly checks, and hardened tag/release automation.
+
 ### Fixed
 
-- Unified Immersive Portals and Sable entity tracking so sublevel entities use
-  their logical world position and are no longer repeatedly removed and
-  respawned for nearby players.
-- Send movement updates for Sable sublevel entities according to their logical
-  ticking chunk instead of their hidden storage plot.
+- Sable sublevels disappearing, flickering, sticking at dimension-stack boundaries, or leaving duplicate client copies during migration.
+- Sable rider camera/gravity transform and server-first acknowledgement ordering across rotated portals.
+- Portal geometry rendering behind the active clipping plane.
+- Published NeoForge module identities and packaged mod icon metadata.
+
+### Changed
+
+- Sable migration is transactional and explicitly orders destination pre-sync before source retirement.
+- Sable tracking and packet redirection now preserve the logical remote world through handoff.
+
+See [`changelog/6.0.9.md`](changelog/6.0.9.md) for the complete release notes.
+
+## [6.0.8] - 2026-08-29
+
+### Added
+
+- Real NeoForge GameTest coverage for the Sable 2.0.5 portal collision integration.
+- Deterministic collision-wrapper contract tests.
+- Automated GitHub and CurseForge release publishing workflows.
+
+### Changed
+
+- Updated the NeoForge development baseline to 21.1.228 for Sable 2.0.5.
+- Isolated clean-runner dependency resolution for Sable's embedded libraries.
+
+### Fixed
+
+- Prevented duplicate portal collision processing when Sable is installed while preserving normal behavior without Sable.
 
 ## [6.0.7] - 2025-06-18
 
@@ -44,8 +75,9 @@ and this project tries to adhere to [Semantic Versioning](https://semver.org/spe
 - Iris compatibility is not fully functional
 - Crash with SecurityCraft
 
-[Unreleased Changes]: https://github.com/iPortalTeam/ImmersivePortalsModForNeo/compare/v6.0.7...HEAD
-[6.0.7]: https://github.com/iPortalTeam/ImmersivePortalsModForNeo/releases/tag/v6.0.7
-[6.0.6]: https://github.com/iPortalTeam/ImmersivePortalsModForNeo/releases/tag/v6.0.6
-[6.0.3]: https://github.com/iPortalTeam/ImmersivePortalsModForNeo/releases/tag/v6.0.3
-
+[Unreleased Changes]: https://github.com/UpperMoon0/ImmersivePortals/compare/v6.0.9...HEAD
+[6.0.9]: https://github.com/UpperMoon0/ImmersivePortals/compare/v6.0.8...v6.0.9
+[6.0.8]: https://github.com/UpperMoon0/ImmersivePortals/compare/v6.0.7...v6.0.8
+[6.0.7]: https://github.com/UpperMoon0/ImmersivePortals/compare/v6.0.6...v6.0.7
+[6.0.6]: https://github.com/UpperMoon0/ImmersivePortals/compare/v6.0.3...v6.0.6
+[6.0.3]: https://github.com/UpperMoon0/ImmersivePortals/releases/tag/v6.0.3

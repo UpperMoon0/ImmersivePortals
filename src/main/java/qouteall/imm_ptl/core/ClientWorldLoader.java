@@ -26,6 +26,7 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import qouteall.imm_ptl.core.compat.sable.SableInterface;
 import qouteall.imm_ptl.core.ducks.IECamera;
 import qouteall.imm_ptl.core.ducks.IEClientPlayNetworkHandler;
 import qouteall.imm_ptl.core.ducks.IEClientWorld;
@@ -150,6 +151,10 @@ public class ClientWorldLoader {
                 newWorld.tick(() -> true);
                 
                 if (!CLIENT.isPaused()) {
+                    // Sable normally advances only Minecraft.level from its Minecraft.tick hook.
+                    // IP's remote worlds are real ClientLevels too, so advance their Sable
+                    // containers exactly once here while they are being remotely ticked.
+                    SableInterface.invoker.tickClientRemoteWorld(newWorld);
                     tickRemoteWorldRandomTicksClient(newWorld, nearbyPortals);
                 }
                 

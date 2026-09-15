@@ -1,0 +1,30 @@
+name: Extended compatibility and performance
+
+on:
+  schedule:
+    - cron: '0 18 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: extended-compatibility-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compatibility:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { renderer: vanilla, sable: true }
+          - { renderer: sodium, sable: true }
+          - { renderer: iris, sable: true }
+          - { renderer: veil, sable: false }
+          - { renderer: vanilla, sable: false }
+    uses: ./.github/workflows/visual.yml
+    with:
+      renderer: ${{ matrix.renderer }}
+      sable: ${{ matrix.sable }}
+      samples: 1200
