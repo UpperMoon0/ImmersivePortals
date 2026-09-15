@@ -2,7 +2,9 @@ package qouteall.imm_ptl.core.compat.mixin.sable;
 
 import org.junit.jupiter.api.Test;
 import org.objectweb.asm.ClassReader;
+import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.tree.ClassNode;
+import org.objectweb.asm.tree.FieldInsnNode;
 import org.objectweb.asm.tree.MethodInsnNode;
 import org.objectweb.asm.tree.MethodNode;
 
@@ -113,9 +115,18 @@ class SableClientHandoffContractTest {
             "qouteall/imm_ptl/core/compat/mixin/sable/MixinClientTeleportationManager_SableServerFirstAck.class"
         );
         MethodNode request = findMethodByName(requestMixin, "ip_useExplicitServerFirstAcknowledgement");
+        MethodNode prediction = findMethodByName(requestMixin, "ip_waitForAuthoritativeRiderAttachment");
+        assertNotNull(prediction, "temporary seat detachment must not enable on-foot portal prediction");
+        assertTrue(invokesNamed(prediction, "hasActiveServerInitiatedHandoff"));
+        assertTrue(invokesNamed(prediction, "setReturnValue"),
+            "pending handoff must reject the entire prediction, including checkpoint updates");
         assertNotNull(request, "explicit Sable server-first client request hook is missing");
-        assertTrue(invokesNamed(request, "hasServerInitiatedHandoff"),
-            "client must not create a competing request after a physics-first Prepare arrives");
+        assertTrue(invokesNamed(request, "hasActiveServerInitiatedHandoff"),
+            "client must not create a competing request while a physics-first handoff is active");
+        int activeGuard = invocationIndex(request, "hasActiveServerInitiatedHandoff");
+        int pendingPortalWrite = fieldWriteIndex(request, "pendingServerFirstPortalId");
+        assertTrue(activeGuard >= 0 && pendingPortalWrite >= 0 && activeGuard < pendingPortalWrite,
+            "physics-first suppression must run before writing the normal pending portal gate");
         assertTrue(invokesNamed(request, "begin"),
             "client-detected ordering must create a correlated handoff before sending its request");
         assertTrue(invokesNamed(request, "send"),
@@ -203,6 +214,21 @@ class SableClientHandoffContractTest {
     }
 
     @Test
+    void redirectedSablePacketContextSurvivesQueuedClientWork() throws Exception {
+        ClassNode context = readClass(
+            "qouteall/imm_ptl/core/compat/sable/SableClientPacketContext.class"
+        );
+        MethodNode resolve = findMethodByName(context, "resolve");
+        assertNotNull(resolve, "Sable packet context resolver is missing");
+        assertTrue(invokesNamed(resolve, "getIsWorldSwitched"),
+            "queued redirected Sable payloads must use IP's actively switched client world");
+        assertTrue(invokesNamed(resolve, "getInstance"),
+            "queued redirected Sable payloads must resolve Minecraft.level rather than player.level");
+        assertTrue(invocationIndex(resolve, "getOptionalWorld") < invocationIndex(resolve, "getIsWorldSwitched"),
+            "the explicit packet redirection dimension must remain the first-choice context");
+    }
+
+    @Test
     void publishedNeoForgeModuleIdsRemainLoadable() throws Exception {
         try (InputStream stream = getClass().getClassLoader().getResourceAsStream(
             "META-INF/neoforge.mods.toml"
@@ -276,6 +302,16 @@ class SableClientHandoffContractTest {
         return -1;
     }
 
+    private static int fieldWriteIndex(MethodNode method, String name) {
+        int index = 0;
+        for (var instruction : method.instructions) {
+            if (instruction instanceof FieldInsnNode field
+                && field.getOpcode() == Opcodes.PUTSTATIC
+                && field.name.equals(name)) return index;
+            index++;
+        }
+        return -1;
+    }
     private static boolean hasAnnotation(ClassNode node, String descriptor) {
         return node.visibleAnnotations != null
             && node.visibleAnnotations.stream().anyMatch(annotation -> annotation.desc.equals(descriptor));

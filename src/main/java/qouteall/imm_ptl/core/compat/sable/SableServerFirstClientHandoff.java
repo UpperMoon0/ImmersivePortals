@@ -108,6 +108,16 @@ public final class SableServerFirstClientHandoff {
     }
 
     /**
+     * While a physics-first rider handoff is still pending or waiting for the destination rider
+     * relation, the authoritative server crossing owns portal selection. Client interpolation can
+     * briefly sweep across the reverse portal plane after the dimension packet, especially under
+     * UDP timing; starting another request in that window would ping-pong the body back.
+     */
+    public static boolean hasActiveServerInitiatedHandoff() {
+        Pending current = pending;
+        return (current != null && current.serverTransform() != null) || readyToApply != null;
+    }
+    /**
      * Apply the normal IP camera/gravity transform only for the one handoff id currently pending.
      * Server-initiated Acks are accepted only if their Prepare packet established the same id
      * before the dimension switch; delayed client-request Acks and duplicate Acks are ignored.

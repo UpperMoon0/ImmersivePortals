@@ -11,6 +11,7 @@ import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 import qouteall.imm_ptl.core.McHelper;
 import qouteall.imm_ptl.core.api.PortalAPI;
 import qouteall.imm_ptl.core.compat.sable.SableServerFirstClientHandoff;
@@ -30,6 +31,18 @@ public abstract class MixinClientTeleportationManager_SableServerFirstAck {
     @Shadow
     private static long lastTeleportGameTime;
 
+    @Inject(method = "tryTeleport", at = @At("HEAD"), cancellable = true)
+    private static void ip_waitForAuthoritativeRiderAttachment(
+        float partialTick, CallbackInfoReturnable<TeleportationUtil.Teleportation> cir
+    ) {
+        // Seat removal and destination attachment are separate packets. In between, getVehicle()
+        // is null and IP would choose its ordinary on-foot path, bypassing the rider request guard.
+        // Reject the prediction itself so no portal checkpoint or camera state is advanced either.
+        if (SableServerFirstClientHandoff.hasActiveServerInitiatedHandoff()) {
+            cir.setReturnValue(null);
+        }
+    }
+
     @Inject(
         method = "requestServerFirstTeleport",
         at = @At("HEAD"),
@@ -43,16 +56,18 @@ public abstract class MixinClientTeleportationManager_SableServerFirstAck {
         Validate.isTrue(player != null);
 
         Portal portal = teleportation.portal();
-        pendingServerFirstPortalId = portal.getUUID();
-        lastTeleportGameTime = ClientTeleportationManager.tickTimeForTeleportation;
 
-        // A physics-first migration may already have announced its server-generated handoff id.
-        // In that ordering, do not create/send a competing client request. Wait for the ordered
-        // authoritative dimension packet and terminal server Ack instead.
-        if (SableServerFirstClientHandoff.hasServerInitiatedHandoff(portal.getUUID())) {
+        // A physics-first migration owns portal selection until its terminal Ack and rider
+        // reattachment finish. Client interpolation can cross the reverse portal plane after the
+        // authoritative dimension packet; suppress that stale prediction before touching IP's
+        // pending portal gate, otherwise the cancelled request itself can leave the gate sticky.
+        if (SableServerFirstClientHandoff.hasActiveServerInitiatedHandoff()) {
             ci.cancel();
             return;
         }
+
+        pendingServerFirstPortalId = portal.getUUID();
+        lastTeleportGameTime = ClientTeleportationManager.tickTimeForTeleportation;
 
         ResourceKey<Level> sourceDimension = player.level().dimension();
         Vec3 eyePos = McHelper.getEyePos(player);
