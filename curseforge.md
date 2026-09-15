@@ -16,7 +16,9 @@ See through portals and travel between dimensions seamlessly—without a loading
 
 ## Compatibility improvements in this build
 
-This Minecraft 1.21.1 NeoForge Community Edition distribution includes optimized entity collision handling and a tested integration with Sable 2.0.5. With Sable installed, portal collision processing runs once per movement while Sable's collision state remains active. Sable is optional; ordinary Immersive Portals behavior works without it.
+This Minecraft 1.21.1 NeoForge Community Edition distribution includes tested Sable 2.0.5 integration for moving sublevels crossing portals and dimension stacks. Sable bodies keep their global identity, velocity and interpolation state across dimensions; riders remain attached; rotated portal camera/gravity transforms are preserved; and remote tracking continues across the portal boundary. The collision integration also avoids duplicate portal collision processing. Sable is optional; ordinary Immersive Portals behavior works without it.
+
+The compatibility path is exercised by automated dedicated-server plus real-client tests over both Sable UDP networking and TCP fallback, including gravity-driven recrossing and rider dismount.
 
 ## Requirements
 

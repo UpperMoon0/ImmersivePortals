@@ -14,7 +14,7 @@ This repository maintains the Minecraft 1.21.1 NeoForge build derived from [qout
 - Build mirrors, wrapping worlds, dimension stacks, and custom portal networks.
 - Transform player scale and gravity direction through compatible portals.
 - Use commands, datapacks, and APIs to create custom portal behavior.
-- Run alongside Sable 2.0.5 with a verified single-pass collision integration.
+- Run alongside Sable 2.0.5 with seamless, verified portal handoff for moving sublevels, riders, gravity, and remote tracking.
 
 ## Minecraft and loader support
 
@@ -26,7 +26,9 @@ The Fabric project is maintained separately by the original Immersive Portals te
 
 ## Sable compatibility
 
-Sable is optional. When Sable 2.0.5 is installed, the portal collision wrapper and Sable's entity-collision redirect compose without executing the portal collision hook twice. A dedicated NeoForge GameTest launches the transformed game, moves a real entity, and verifies both systems execute exactly once as intended.
+Sable is optional. With Sable 2.0.5 installed, this build integrates moving sublevels with Immersive Portals rather than treating them as ordinary hidden-world entities. Sublevels keep one global plot identity while crossing dimensions, retain velocity and interpolation history, preserve rider/passenger relationships, and continue remote entity tracking on the opposite side of a portal. Vertical dimension stacks, rotated portals, gravity-driven recrossing, server-first rider teleports, and client camera/gravity transforms are covered by automated tests.
+
+The collision wrapper also composes with Sable's entity-collision redirect without executing the portal collision hook twice. The dedicated graphical E2E runs the same crossing scenario over both Sable UDP networking and the TCP fallback and rejects duplicate source/destination client copies that overlap beyond the handoff budget.
 
 Without Sable, normal Immersive Portals collision behavior is unchanged.
 
