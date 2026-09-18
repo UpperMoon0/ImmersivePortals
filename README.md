@@ -2,6 +2,8 @@
 
 > **Notice:** **Immersive Portals - CE** is an independently community-maintained distribution of Immersive Portals for NeoForge. It is not the official Immersive Portals release.
 
+> **Upstream status:** The original Fabric repository was archived on April 21, 2026 and is no longer maintained. Immersive Portals - CE continues independently for NeoForge 1.21.1.
+
 Immersive Portals adds see-through portals and seamless travel between dimensions. Portals can be nested, transformed, scaled, and used to build non-Euclidean spaces without loading screens.
 
 This repository maintains the Minecraft 1.21.1 NeoForge build derived from [qouteall's Immersive Portals](https://github.com/iPortalTeam/ImmersivePortalsModForNeo). The original project and its contributors remain the foundation of this distribution.
