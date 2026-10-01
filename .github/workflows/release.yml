@@ -70,10 +70,11 @@ jobs:
           java-version: '21'
       - uses: gradle/actions/setup-gradle@v6
       - name: Ensure headless graphics runtime
+        timeout-minutes: 5
         run: |
           if ! command -v xvfb-run >/dev/null 2>&1 || ! ldconfig -p | grep -F 'libGL.so.1' >/dev/null; then
-            sudo apt-get update
-            sudo apt-get install -y xvfb libgl1-mesa-dri
+            sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=2 update
+            sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=2 install -y xvfb libgl1-mesa-dri
           fi
       - run: chmod +x ./gradlew
       - name: Dedicated server and automated client
