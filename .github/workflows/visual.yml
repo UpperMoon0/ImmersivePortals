@@ -32,10 +32,13 @@ jobs:
           distribution: temurin
           java-version: '21'
       - uses: gradle/actions/setup-gradle@v6
-      - name: Install headless graphics runtime
+      - name: Ensure headless graphics runtime
+        timeout-minutes: 5
         run: |
-          sudo apt-get update
-          sudo apt-get install -y xvfb libgl1-mesa-dri
+          if ! command -v xvfb-run >/dev/null 2>&1 || ! ldconfig -p | grep -F 'libGL.so.1' >/dev/null; then
+            sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=2 update
+            sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=2 install -y xvfb libgl1-mesa-dri
+          fi
           chmod +x ./gradlew
       - name: Verify portal pixels, shader reload and live timing budgets
         env:
