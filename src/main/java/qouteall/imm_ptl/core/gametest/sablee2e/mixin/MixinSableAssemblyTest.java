@@ -1,11 +1,14 @@
 package qouteall.imm_ptl.core.gametest.sablee2e.mixin;
 
 import com.llamalad7.mixinextras.sugar.Local;
+import com.llamalad7.mixinextras.sugar.Share;
+import com.llamalad7.mixinextras.sugar.ref.LocalRef;
 import dev.ryanhcode.sable.neoforge.gametest.AssemblyTest;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.core.NonNullList;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.world.item.ItemStack;
 import net.neoforged.neoforge.capabilities.Capabilities;
 import net.neoforged.neoforge.items.IItemHandlerModifiable;
@@ -14,10 +17,30 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.Redirect;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+import qouteall.imm_ptl.core.gametest.sablee2e.AssemblyFixtureSequence;
 
 /** Snapshot all sided views at the assembly boundary, after the intervening block tick. */
 @Mixin(value = AssemblyTest.class, remap = false)
 public abstract class MixinSableAssemblyTest {
+    @Inject(method = "testAllBlocks", at = @At("HEAD"))
+    private static void ip_createFixtureSequence(GameTestHelper helper, CallbackInfo ci,
+        @Share("fixtureSequence") LocalRef<AssemblyFixtureSequence> sequence) {
+        sequence.set(new AssemblyFixtureSequence(helper));
+    }
+
+    @Redirect(method = "testAllBlocks", at = @At(value = "INVOKE",
+        target = "Lnet/minecraft/gametest/framework/GameTestHelper;runAtTickTime(JLjava/lang/Runnable;)V"))
+    private static void ip_scheduleFixture(GameTestHelper helper, long tick, Runnable task,
+        @Share("fixtureSequence") LocalRef<AssemblyFixtureSequence> sequence) {
+        sequence.get().schedule(tick, task);
+    }
+
+    @Redirect(method = "lambda$testAllBlocks$2", at = @At(value = "INVOKE",
+        target = "Lnet/minecraft/gametest/framework/GameTestHelper;runAfterDelay(JLjava/lang/Runnable;)V"))
+    private static void ip_delayedAssembly(GameTestHelper helper, long delay, Runnable task) {
+        AssemblyFixtureSequence.scheduleAssembly(helper, delay, task);
+    }
+
     @Redirect(method = "lambda$testAllBlocks$2", at = @At(value = "INVOKE",
         target = "Lnet/neoforged/neoforge/items/IItemHandlerModifiable;setStackInSlot(ILnet/minecraft/world/item/ItemStack;)V"))
     private static void ip_insertThroughPublicInventory(IItemHandlerModifiable inventory,
