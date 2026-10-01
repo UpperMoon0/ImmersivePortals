@@ -6,6 +6,21 @@ and this project tries to adhere to [Semantic Versioning](https://semver.org/spe
 
 ## [Unreleased Changes]
 
+## [6.0.10] - 2026-10-01
+
+### Fixed
+
+- Cached OpenGL buffers and vertex arrays now initialize objects on drivers supporting direct state access, fixing Veil's unknown-object debug labels and failed particle buffer uploads. Older OpenGL contexts retain the existing allocation path.
+- Sable verification now runs physics fixtures near the origin, measures gravity and drag over a complete simulation interval, inserts items through the public inventory API, and snapshots sided inventories immediately before assembly.
+- Prevented Create 6.0.10 item drains from duplicating their held item into a dropped entity during Sable assembly.
+
+### Changed
+
+- Core verification rejects optional GameTest failures instead of reporting a successful run with failed Sable checks.
+- Added a graphical regression covering cached object initialization, cache refill, immediate debug labels, and direct-state-access uploads.
+
+See [`changelog/6.0.10.md`](changelog/6.0.10.md) for the release notes.
+
 ## [6.0.9] - 2026-09-15
 
 ### Added

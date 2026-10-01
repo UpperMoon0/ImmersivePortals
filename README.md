@@ -44,6 +44,8 @@ python tools/verify.py full   # all layers
 
 `core` runs the Python harness/policy regression tests, Java build and JUnit tests, and NeoForge GameTests. `full` runs `core`, Sable dedicated E2E, then the default Sodium visual test. Plain Gradle `build` only includes JUnit; `coreCheck` adds GameTests but not Python or graphical tests.
 
+Core verification rejects optional GameTest failures too. The development GameTest server loads fixture corrections for Sable 2.0.5: tests run near the origin, gravity expectations include the configured drag and physics steps, and sided inventories are snapshotted immediately before assembly. These corrections and their mixin configuration are excluded from the release JAR.
+
 The Sable E2E drives a tall physics body and a real Create seat through Overworld -> Nether -> Overworld, allows a gravity-driven recross, and exercises client dismount. Server and client independently verify the entity/passenger graph. All five client phase markers, both pass markers, zero client exit status, and clean critical-runtime checks are required.
 
 The visual test creates a red source wall and green destination wall connected by a portal. A second red destination wall lies in front of the destination clipping plane and must not appear. It requires actual portal rendering and matching green framebuffer pixels over multiple frames, both before and after resource/shader reload. Screenshots are retained. This is a targeted clipping regression, not exhaustive visual coverage or an Iris shaderpack test.

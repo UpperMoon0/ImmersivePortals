@@ -25,6 +25,7 @@ public final class PortalSmokeClient {
     private static int frames;
     private static int greenFrames;
     private static boolean reloaded;
+    private static boolean checkedGlResources;
     private static CompletableFuture<Void> reload;
     private static long frameStart;
     private static final List<Double> timings = new ArrayList<>();
@@ -51,6 +52,10 @@ public final class PortalSmokeClient {
         Minecraft mc = Minecraft.getInstance();
         if (mc.level == null || mc.player == null || mc.screen != null || mc.getOverlay() != null) return;
         try {
+            if (!checkedGlResources) {
+                GLResourceCacheRegression.verify();
+                checkedGlResources = true;
+            }
             mc.options.hideGui = true;
             if (++frames < 120) return; // Let initial chunks, lighting and shaders settle.
             String renderer = System.getenv().getOrDefault("IP_SMOKE_RENDERER", "sodium");

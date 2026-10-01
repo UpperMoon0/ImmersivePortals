@@ -101,6 +101,7 @@ tasks.named('jar', Jar).configure {
     from(rootProject.file('NOTICE'))
     // Dedicated E2E drivers are compiled into the dev runtime but never shipped in release jars.
     exclude 'qouteall/imm_ptl/core/gametest/sablee2e/**'
+    exclude 'imm_ptl_gametest.mixins.json'
 }
 
 minecraft.accessTransformers.entry 'public net.minecraft.server.MinecraftServer storageSource'
@@ -186,6 +187,9 @@ runs {
 
     gameTestServer {
         systemProperty 'neoforge.enabledGameTestNamespaces', 'sable'
+        // Repairs Sable's verification fixtures only; never enabled or shipped
+        // in a release/client runtime.
+        arguments '--mixin', 'imm_ptl_gametest.mixins.json'
     }
 
     sableE2EServer {
