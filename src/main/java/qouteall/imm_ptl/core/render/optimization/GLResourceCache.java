@@ -3,6 +3,8 @@ package qouteall.imm_ptl.core.render.optimization;
 import it.unimi.dsi.fastutil.ints.IntArrayList;
 import it.unimi.dsi.fastutil.ints.IntList;
 import net.minecraft.client.Minecraft;
+import org.lwjgl.opengl.ARBDirectStateAccess;
+import org.lwjgl.opengl.GL;
 import org.lwjgl.opengl.GL15;
 import org.lwjgl.opengl.GL30;
 
@@ -14,8 +16,33 @@ public class GLResourceCache {
     private final Consumer<int[]> generator;
     private final IntList bufferIds = new IntArrayList();
     
-    public static GLResourceCache bufferCache = new GLResourceCache(GL15::glGenBuffers);
-    public static GLResourceCache vertexArrayCache = new GLResourceCache(GL30::glGenVertexArrays);
+    public static GLResourceCache bufferCache = new GLResourceCache(GLResourceCache::createBuffers);
+    public static GLResourceCache vertexArrayCache = new GLResourceCache(GLResourceCache::createVertexArrays);
+
+    private static void createBuffers(int[] ids) {
+        // glGen only reserves names. Our HEAD injection bypasses Veil's
+        // glCreate replacement, so cached names must already denote objects
+        // before Veil labels them or uploads with glNamedBufferData.
+        if (supportsDirectStateAccess()) {
+            ARBDirectStateAccess.glCreateBuffers(ids);
+        } else {
+            GL15.glGenBuffers(ids);
+        }
+    }
+
+    private static void createVertexArrays(int[] ids) {
+        if (supportsDirectStateAccess()) {
+            ARBDirectStateAccess.glCreateVertexArrays(ids);
+        } else {
+            GL30.glGenVertexArrays(ids);
+        }
+    }
+
+    private static boolean supportsDirectStateAccess() {
+        // Query only when reserving, with the caller's OpenGL context current.
+        var capabilities = GL.getCapabilities();
+        return capabilities.OpenGL45 || capabilities.GL_ARB_direct_state_access;
+    }
     
     public GLResourceCache(Consumer<int[]> generator) {
         this.generator = generator;

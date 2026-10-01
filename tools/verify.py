@@ -264,6 +264,8 @@ def validate_gametest_log(path: Path = GAMETEST_LOG) -> None:
     content = path.read_text(encoding="utf-8", errors="replace")
     if not re.search(r"All \d+ required tests passed", content):
         raise RuntimeError("NeoForge GameTest server did not report that all required tests passed")
+    if re.search(r"\b[1-9]\d* optional tests failed\b", content):
+        raise RuntimeError("NeoForge GameTest server reported optional test failures")
 
 
 def invalidate_generated_run_classpath(run_name: str) -> None:
