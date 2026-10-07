@@ -1,19 +1,18 @@
 package qouteall.imm_ptl.core.gametest.sablee2e;
 
 import net.minecraft.core.BlockPos;
-import net.minecraft.core.particles.DustParticleOptions;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
-import net.minecraft.world.entity.Mob;
+import net.minecraft.world.entity.Display;
+import net.minecraft.nbt.TagParser;
 import net.minecraft.world.level.GameType;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.Vec3;
 import net.minecraft.world.phys.AABB;
-import net.minecraft.network.protocol.game.ClientboundLevelParticlesPacket;
 import net.minecraft.network.protocol.game.ClientboundBlockDestructionPacket;
 import qouteall.imm_ptl.core.network.PacketRedirection;
 import net.neoforged.bus.api.SubscribeEvent;
@@ -21,7 +20,6 @@ import net.neoforged.fml.ModList;
 import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.neoforge.event.entity.player.PlayerEvent;
 import net.neoforged.neoforge.event.tick.ServerTickEvent;
-import org.joml.Vector3f;
 import qouteall.imm_ptl.core.portal.Mirror;
 import qouteall.imm_ptl.core.portal.Portal;
 import java.util.ArrayList;
@@ -38,7 +36,6 @@ public final class PortalSmokeServer {
     private static ServerPlayer player;
     private static String request = "";
     private static String scene = "";
-    private static int particleZ;
 
     @SubscribeEvent
     public static void login(PlayerEvent.PlayerLoggedInEvent event) {
@@ -53,7 +50,7 @@ public final class PortalSmokeServer {
         }
     }
 
-    private static void setup(String token) throws ReflectiveOperationException {
+    private static void setup(String token) throws Exception {
         String previousScene = scene;
         scene = token.substring(token.indexOf(':') + 1);
         fixtures.forEach(Entity::discard);
@@ -79,7 +76,16 @@ public final class PortalSmokeServer {
                     ? Blocks.RED_CONCRETE.defaultBlockState() : Blocks.AIR.defaultBlockState());
             }
         }
-        player.teleportTo(source, 0, 80.38, 4, 180, 0);
+        boolean straddling = scene.startsWith("entity-") || scene.startsWith("particle-");
+        if (straddling) {
+            // An oblique view separates excluded and retained fragments on screen. Keep
+            // a broad green backdrop behind rays on both sides of the clipping boundary.
+            for (int x = -32; x <= 32; x++) for (int y = 76; y <= 88; y++) for (int z = -12; z <= 8; z++) {
+                target.setBlockAndUpdate(new BlockPos(x, y, z), z == -10
+                    ? Blocks.LIME_CONCRETE.defaultBlockState() : Blocks.AIR.defaultBlockState());
+            }
+        }
+        player.teleportTo(source, straddling ? 4 : 0, 80.38, 4, straddling ? 135 : 180, 0);
         boolean visible = scene.endsWith("-visible");
         int z = visible ? -1 : 1;
         if (scene.equals("mirror")) {
@@ -91,6 +97,7 @@ public final class PortalSmokeServer {
         } else {
             Portal portal = Portal.ENTITY_TYPE.create(source);
             configure(portal, Level.NETHER, new Vec3(0, 82, 0), new Vec3(0, 82, 0));
+            if (straddling) portal.setOrientationAndSize(new Vec3(1, 0, 0), new Vec3(0, 1, 0), 12, 10);
             add(source, portal);
             if (scene.equals("nested") || scene.equals("create-nested")) {
                 wall(target, -4, Blocks.RED_CONCRETE.defaultBlockState());
@@ -113,16 +120,21 @@ public final class PortalSmokeServer {
             } else if (scene.startsWith("block-entity-")) {
                 wall(target, z, Blocks.RED_SHULKER_BOX.defaultBlockState());
             } else if (scene.startsWith("entity-")) {
-                for (int x = -3; x <= 3; x++) for (int y = 80; y <= 84; y++) {
-                    Mob mob = EntityType.PIG.create(target);
-                    mob.setPos(x, y, z);
-                    mob.setNoAi(true);
-                    mob.setNoGravity(true);
-                    mob.setInvulnerable(true);
-                    add(target, mob);
-                }
+                // A camera-facing thin panel avoids a closed cube's retained back faces
+                // masking the excluded-side oracle. Its CPU-culling origin is retained,
+                // while its geometry spans both sides of z=0 in the clipped case.
+                Display.BlockDisplay display = EntityType.BLOCK_DISPLAY.create(target);
+                display.load(TagParser.parseTag("{block_state:{Name:\"minecraft:red_concrete\"},"
+                    + "transformation:{translation:[-2.846105f,-3.0f,2.810749f],scale:[8.0f,6.0f,0.05f],"
+                    + "left_rotation:[0.0f,0.38268343f,0.0f,0.9238795f],right_rotation:[0.0f,0.0f,0.0f,1.0f]},"
+                    + "brightness:{block:15,sky:15},width:12.0f,height:12.0f,view_range:4.0f}"));
+                display.setPos(0, 82, visible ? -6 : -0.25);
+                display.setNoGravity(true);
+                PortalSmokeSupport.write("entity-panel-id.txt", display.getUUID().toString());
+                add(target, display);
             } else if (scene.startsWith("particle-")) {
-                particleZ = z;
+                // Client creates stationary, oversized real dust billboards in this
+                // remote world. Their centers remain on the CPU-accepted side.
             } else if (scene.startsWith("create-")) {
                 // The optional helper is kept separate from this no-Sable discovery boundary.
                 Class<?> helper = Class.forName("qouteall.imm_ptl.core.gametest.sablee2e.PortalSmokeCreateScene");
@@ -170,12 +182,6 @@ public final class PortalSmokeServer {
         try {
             String next = PortalSmokeSupport.read("scene-request.txt");
             if (!next.isEmpty() && !next.equals(request)) setup(next);
-            if (scene.startsWith("particle-")) {
-                ServerLevel target = player.server.getLevel(Level.NETHER);
-                PacketRedirection.sendRedirectedMessage(player, Level.NETHER,
-                    new ClientboundLevelParticlesPacket(new DustParticleOptions(new Vector3f(1, 0, 0), 3),
-                        true, 0, 82, particleZ, 2, 2, 0.02f, 0, 250));
-            }
             if (scene.startsWith("create-")) {
                 ServerLevel target = player.server.getLevel(Level.NETHER);
                 ServerLevel source = player.server.getLevel(Level.OVERWORLD);

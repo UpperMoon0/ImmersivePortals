@@ -23,11 +23,17 @@ public class FramebufferCopyEglCheck {
   PointerBuffer configs=BufferUtils.createPointerBuffer(1);int[] count=new int[1];
   if(!EGL10.eglChooseConfig(display,new int[]{0x3033,1,0x3040,8,0x3024,8,0x3023,8,0x3022,8,0x3038},configs,count)) throw new AssertionError("eglChooseConfig");
   long surface=EGL10.eglCreatePbufferSurface(display,configs.get(0),new int[]{0x3057,1,0x3056,1,0x3038});
-  long context=EGL10.eglCreateContext(display,configs.get(0),0,new int[]{0x3098,4,0x30FB,5,0x30FD,1,0x3038});
+  String[] version=System.getProperty("ip.test.glVersion","4.5").split("\\.");
+  long context=EGL10.eglCreateContext(display,configs.get(0),0,new int[]{0x3098,Integer.parseInt(version[0]),0x30FB,Integer.parseInt(version[1]),0x30FD,1,0x3038});
   if(!EGL10.eglMakeCurrent(display,surface,surface,context)) throw new AssertionError("eglMakeCurrent "+EGL10.eglGetError());
   GL.createCapabilities();
   System.out.println(GL11.glGetString(GL11.GL_VERSION));
   System.out.println(GL11.glGetString(GL11.GL_RENDERER));
+  System.out.println("Capabilities: "+IPIrisHelper.describeCopyCapabilities());
+  if(Boolean.getBoolean("ip.test.requireNativeBlit")) {
+   check(!GL.getCapabilities().OpenGL43&&!GL.getCapabilities().GL_ARB_copy_image,"copy-image capability really absent");
+   check(!IPIrisHelper.isCopyImageSubDataSupported(),"native fallback selected without force flag");
+  }
   int cases=0;
   for(int format:new int[]{GL_DEPTH24_STENCIL8,GL_DEPTH32F_STENCIL8}) {
    for(int size:new int[]{8,13}) {
@@ -55,7 +61,7 @@ public class FramebufferCopyEglCheck {
      seed(to,.875f,23); glEnable(GL_SCISSOR_TEST);
      IPIrisHelper.copyDepthStencil(from,to,false,true); sample(to,.875f,77);
      check(glGetError()==GL_NO_ERROR,"GL error format="+format+" blit="+blit);
-     System.out.println("PASS format="+format+" size="+size+" forcedBlit="+blit+" full+partial copies/state");
+     System.out.println("PASS format="+format+" size="+size+" forcedBlit="+blit+" path="+(IPIrisHelper.isCopyImageSubDataSupported()?"copy-image":"framebuffer-blit")+" full+partial copies/state");
      cases++;
     }
     destroy(from); destroy(to);

@@ -102,6 +102,7 @@ tasks.named('jar', Jar).configure {
     // Dedicated E2E drivers are compiled into the dev runtime but never shipped in release jars.
     exclude 'qouteall/imm_ptl/core/gametest/sablee2e/**'
     exclude 'imm_ptl_gametest.mixins.json'
+    exclude 'imm_ptl_portal_clipping_test.mixins.json'
 }
 
 minecraft.accessTransformers.entry 'public net.minecraft.server.MinecraftServer storageSource'
@@ -220,6 +221,10 @@ runs {
         runType 'client'
         systemProperty 'mixin.debug.verbose', 'true'
         systemProperty 'mixin.debug.export', 'true'
+        systemProperty 'mixin.debug.export.filter', 'net.minecraft.client.renderer.LevelRenderer'
+        if (verificationRenderer.startsWith('iris') || verificationRenderer.startsWith('neoculus')) {
+            arguments '--mixin', 'imm_ptl_portal_clipping_test.mixins.json'
+        }
         workingDirectory project.file('run-sable-e2e-client')
         dependencies {
             // The verification harness first resolves these artifacts from the

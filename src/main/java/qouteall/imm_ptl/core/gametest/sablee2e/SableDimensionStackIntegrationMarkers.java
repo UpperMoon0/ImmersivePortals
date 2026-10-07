@@ -44,6 +44,10 @@ final class SableDimensionStackIntegrationMarkers {
         write("client-fail.txt", detail, error);
     }
 
+    static void handoffGrace(String detail) {
+        write("client-handoff-grace.txt", detail, null);
+    }
+
     static void acknowledge(String phase) {
         write("client-" + phase + ".txt", phase, null);
     }

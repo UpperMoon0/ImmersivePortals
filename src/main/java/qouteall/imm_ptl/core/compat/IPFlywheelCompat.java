@@ -2,6 +2,9 @@ package qouteall.imm_ptl.core.compat;
 
 import com.mojang.blaze3d.systems.RenderSystem;
 import net.neoforged.fml.ModList;
+import net.minecraft.world.level.Level;
+import qouteall.imm_ptl.core.compat.flywheel.FlywheelRenderScope;
+import qouteall.imm_ptl.core.render.CrossPortalEntityRenderer;
 import qouteall.imm_ptl.core.render.FrontClipping;
 import qouteall.imm_ptl.core.render.context_management.PortalRendering;
 import qouteall.imm_ptl.core.render.context_management.WorldRenderInfo;
@@ -36,9 +39,20 @@ public final class IPFlywheelCompat {
      * observe a transient render-thread scope when registering visuals.
      */
     public static boolean useVanillaRenderer() {
-        return RenderSystem.isOnRenderThread() && needsVanillaRenderer(
+        return RenderSystem.isOnRenderThread() && (FlywheelRenderScope.isFallbackActive() || needsVanillaRenderer(
             WorldRenderInfo.isRendering(), PortalRendering.isRendering(), FrontClipping.isClippingEnabled
-        );
+        ));
+    }
+
+    public static FlywheelRenderScope enterWorldRender(Level level) {
+        // A visualized contraption colliding with a portal is clipped only during
+        // its vanilla entity draw. Flywheel draws later, after that clip flag is
+        // disabled. Keep the entire view on vanilla so its whole GPU visual
+        // cannot reappear unclipped or duplicate the already-clipped entity.
+        boolean fallback = needsVanillaRenderer(
+            WorldRenderInfo.isRendering(), PortalRendering.isRendering(), FrontClipping.isClippingEnabled
+        ) || CrossPortalEntityRenderer.hasClippedEntitiesInLevel(level);
+        return FlywheelRenderScope.enter(fallback);
     }
 
     static boolean needsVanillaRenderer(boolean alternateView, boolean portalView, boolean clippedView) {

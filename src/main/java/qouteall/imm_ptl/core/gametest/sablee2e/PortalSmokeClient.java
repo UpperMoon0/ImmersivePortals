@@ -3,6 +3,15 @@ package qouteall.imm_ptl.core.gametest.sablee2e;
 import com.google.gson.Gson;
 import com.mojang.blaze3d.platform.NativeImage;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.particle.Particle;
+import net.minecraft.core.particles.DustParticleOptions;
+import org.joml.Vector3f;
+import qouteall.imm_ptl.core.ClientWorldLoader;
+import qouteall.imm_ptl.core.portal.Portal;
+import qouteall.imm_ptl.core.render.CrossPortalEntityRenderer;
+import qouteall.imm_ptl.core.mixin.client.particle.IEParticle;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.phys.Vec3;
 import net.minecraft.client.Screenshot;
 import net.minecraft.client.gui.screens.ConnectScreen;
 import net.minecraft.client.multiplayer.ServerData;
@@ -31,9 +40,11 @@ import java.util.concurrent.CompletableFuture;
 /** Actual framebuffer and live shader pipeline assertions; never packaged in releases. */
 @EventBusSubscriber(modid = qouteall.imm_ptl.core.platform_specific.IPModEntry.MODID, value = Dist.CLIENT)
 public final class PortalSmokeClient {
+    private static boolean testControlInstalled;
     private static boolean connecting, done, initialized, toggleDisabled, waitingToggle, crossing, crossed;
     private static int frames, stableFrames, epoch, sceneIndex;
     private static String request = "";
+    private static String observingRequest = "";
     private static CompletableFuture<Void> reload;
     private static long frameStart;
     private static long nestedContextBaseline;
@@ -46,6 +57,8 @@ public final class PortalSmokeClient {
     private static boolean createServerMotion;
     private static Map<String, Object> createServerEvidence = Map.of();
     private static Object framebufferCopyEvidence = Map.of();
+    private static final List<Particle> smokeParticles = new ArrayList<>();
+    private static int particleTicks;
     private static final List<Double> timings = new ArrayList<>();
     private static final List<Map<String, Object>> checks = new ArrayList<>();
     private static final String[] PHASES = {"before-reload", "after-reload", "after-toggle"};
@@ -54,9 +67,24 @@ public final class PortalSmokeClient {
     public static void tick(ClientTickEvent.Post event) {
         if (!PortalSmokeSupport.enabled() || done) return;
         Minecraft mc = Minecraft.getInstance();
+        if (!testControlInstalled) {
+            PortalClippingTestControl.install(System.getenv().getOrDefault("IP_SMOKE_NEGATIVE_CONTROL", "none"));
+            testControlInstalled = true;
+        }
         if (crossing && !crossed && mc.player != null && mc.level != null) {
             // Real client input exercises the portal handoff rather than a server teleport command.
             mc.options.keyUp.setDown(mc.level.dimension().equals(Level.OVERWORLD));
+        }
+        if (initialized && mc.level != null && request.contains(":particle-")
+            && request.equals(PortalSmokeSupport.read("scene-ready.txt"))) {
+            try {
+                tickParticleWitness(mc);
+            } catch (Throwable error) {
+                done = true;
+                PortalSmokeSupport.write("client-fail.txt", "Particle witness setup failed: " + error);
+                mc.stop();
+                return;
+            }
         }
         if (connecting || mc.screen == null) return;
         connecting = true;
@@ -120,6 +148,16 @@ public final class PortalSmokeClient {
                 return;
             }
             if (!request.equals(PortalSmokeSupport.read("scene-ready.txt"))) return;
+            if (!observingRequest.equals(request)) {
+                PortalClippingTestControl.beginObservation(request);
+                observingRequest = request;
+                frames = stableFrames = 0;
+                if (request.endsWith(":create-nested")) {
+                    Map<?, ?> flywheel = (Map<?, ?>) runtimeState().get("flywheel");
+                    nestedContextBaseline = ((Number) flywheel.get("nestedContextsRestored")).longValue();
+                }
+                return;
+            }
             if (++frames < 120 || frames % 10 != 0) return;
             verifyPipeline(); // Checked after every rebuild and scene, not just mod presence at startup.
             if (crossing) {
@@ -171,6 +209,9 @@ public final class PortalSmokeClient {
 
     private static void requestScene() throws ReflectiveOperationException {
         frames = stableFrames = 0;
+        smokeParticles.forEach(Particle::remove);
+        smokeParticles.clear();
+        particleTicks = 0;
         previousCreatePixels = null;
         previousSourcePixels = null;
         createMotionPixels = sourceMotionPixels = crumblingChangedPixels = 0;
@@ -179,11 +220,8 @@ public final class PortalSmokeClient {
         previousCreateAngle = Double.NaN;
         createServerMotion = false;
         createServerEvidence = Map.of();
-        if (PortalSmokeSupport.scenes().get(sceneIndex).equals("create-nested")) {
-            Map<?, ?> flywheel = (Map<?, ?>) runtimeState().get("flywheel");
-            nestedContextBaseline = ((Number) flywheel.get("nestedContextsRestored")).longValue();
-        }
         request = PHASES[epoch] + ":" + PortalSmokeSupport.scenes().get(sceneIndex);
+        observingRequest = "";
         PortalSmokeSupport.write("scene-request.txt", request);
     }
 
@@ -220,6 +258,30 @@ public final class PortalSmokeClient {
             // Create uses its own textures; shader fixture programs for other paths output diagnostic red.
             boolean colors = positive ? (scene.startsWith("create-") ? green < total * 0.97 : red > total * 0.02)
                 : green > total * 0.80 && red < total * 0.01;
+            Map<String, Object> fragmentWitness = Map.of();
+            if (scene.startsWith("entity-") || scene.startsWith("particle-")) {
+                boolean clipped = scene.endsWith("-clipped");
+                double[] excluded = scene.startsWith("particle-") && !clipped
+                    ? new double[]{0.65, 0.45, 0.70, 0.55} : new double[]{0.39, 0.45, 0.45, 0.55};
+                double[] retained = {0.56, 0.45, 0.62, 0.55};
+                Map<String, Object> excludedSample = sampleColors(pixels, excluded);
+                Map<String, Object> retainedSample = sampleColors(pixels, retained);
+                colors = clipped ? ((double) excludedSample.get("green_fraction") > 0.80
+                    && (double) excludedSample.get("red_fraction") < 0.01
+                    && (double) retainedSample.get("red_fraction") > 0.10)
+                    : (double) excludedSample.get("red_fraction") > 0.10;
+                String targetPath = scene.startsWith("entity-") ? "entity" : "particle";
+                boolean expectClipping = !(targetPath + "-clipping-disabled").equals(System.getenv("IP_SMOKE_NEGATIVE_CONTROL"));
+                // Require a completed portal draw of the resolved shader before accepting
+                // either the positive pixels or the expected targeted-negative failure.
+                PortalClippingTestControl.assertTargetDrawn(targetPath, expectClipping);
+                Map<String, Object> cpuWitness = verifyCpuWitness(scene);
+                fragmentWitness = Map.of("camera", List.of(4, 82, 4), "yaw", 135,
+                    "origin_z", clipped ? (scene.startsWith("particle-") ? -0.75 : -0.25) : -6.0,
+                    "cpu_origin_retained", cpuWitness.get("accepted"), "cpu", cpuWitness,
+                    "excluded", excludedSample, "retained", retainedSample,
+                    "active_particles", smokeParticles.stream().filter(Particle::isAlive).count());
+            }
             int layers = RenderStates.portalRenderInfos.stream().mapToInt(List::size).max().orElse(0);
             boolean geometry = (!requirePortal || RenderStates.portalsRenderedThisFrame > 0)
                 && (!(scene.equals("nested") || scene.equals("create-nested")) || layers >= 2)
@@ -232,7 +294,8 @@ public final class PortalSmokeClient {
             if (frames > 720) throw new IllegalStateException("PORTAL_PIXELS_MISMATCH: " + phase + "/" + scene
                 + " green=" + green + "/" + total + " red=" + red + " layers=" + layers
                 + " targetMotion=" + createMotionPixels + " sourceMotion=" + sourceMotionPixels
-                + " crumblingChanges=" + crumblingChangedPixels + " darkening=" + crumblingDarkening);
+                + " crumblingChanges=" + crumblingChangedPixels + " darkening=" + crumblingDarkening
+                + " straddling=" + fragmentWitness);
             if (stableFrames < 3 && requirePortal) return false;
             if (!colors) throw new IllegalStateException("PORTAL_PIXELS_MISMATCH after crossing");
             int glError = GL11.glGetError();
@@ -241,6 +304,8 @@ public final class PortalSmokeClient {
             check.putAll(Map.of("phase", phase, "scene", scene, "screenshot", screenshot,
                 "green_pixels", green, "red_pixels", red, "sampled_pixels", total,
                 "portal_layers", layers, "width", pixels.getWidth(), "height", pixels.getHeight()));
+            check.put("straddling_witness", fragmentWitness);
+            check.put("shader_path", PortalClippingTestControl.evidence());
             check.put("create_motion_changed_pixels", createMotionPixels);
             check.put("source_motion_changed_pixels", sourceMotionPixels);
             check.put("source_visible_required", requiresSourcePixels());
@@ -263,6 +328,72 @@ public final class PortalSmokeClient {
             saveEvidence();
             return true;
         }
+    }
+
+    private static Map<String, Object> verifyCpuWitness(String scene) {
+        Portal portal = null;
+        for (Entity entity : Minecraft.getInstance().level.entitiesForRendering()) {
+            if (entity instanceof Portal candidate && candidate.getDestDim().equals(Level.NETHER)) {
+                portal = candidate;
+                break;
+            }
+        }
+        require(portal != null, "No portal found for CPU-culling witness");
+        List<List<Double>> centers = new ArrayList<>();
+        boolean accepted = true;
+        if (scene.startsWith("entity-")) {
+            for (Entity entity : ClientWorldLoader.getWorld(Level.NETHER).entitiesForRendering()) {
+                if (!entity.getUUID().toString().equals(PortalSmokeSupport.read("entity-panel-id.txt"))) continue;
+                Vec3 center = CrossPortalEntityRenderer.getRenderingCameraPos(entity);
+                centers.add(List.of(center.x, center.y, center.z));
+                accepted &= portal.isOnDestinationSide(center, -0.01);
+            }
+        } else {
+            for (Particle particle : smokeParticles) {
+                if (!particle.isAlive()) continue;
+                Vec3 center = particle.getBoundingBox().getCenter();
+                centers.add(List.of(center.x, center.y, center.z));
+                accepted &= portal.isOnDestinationSide(center, 0.5)
+                    && ((IEParticle) particle).portal_getWorld().dimension().equals(Level.NETHER);
+            }
+        }
+        require(!centers.isEmpty() && accepted, "CPU gate rejected the shader clipping witness: " + centers);
+        return Map.of("accepted", accepted, "centers", centers,
+            "plane_tolerance", scene.startsWith("entity-") ? -0.01 : 0.5);
+    }
+
+    private static void tickParticleWitness(Minecraft mc) {
+        double z = request.endsWith("-visible") ? -6.0 : -0.75;
+        smokeParticles.removeIf(particle -> !particle.isAlive());
+        for (Particle particle : smokeParticles) {
+            particle.setParticleSpeed(0, 0, 0);
+            particle.setPos(0, 82, z);
+        }
+        if (particleTicks++ % 20 != 0) return;
+        ClientWorldLoader.withSwitchedWorld(ClientWorldLoader.getWorld(Level.NETHER), () -> {
+            for (int i = 0; i < 16; i++) {
+                Particle particle = mc.particleEngine.createParticle(new DustParticleOptions(new Vector3f(1, 0, 0), 4),
+                    0, 82, z, 0, 0, 0);
+                require(particle != null, "Dust particle factory returned no witness");
+                particle.scale(10);
+                particle.setParticleSpeed(0, 0, 0);
+                particle.setLifetime(60);
+                smokeParticles.add(particle);
+            }
+        });
+    }
+
+    private static Map<String, Object> sampleColors(NativeImage image, double[] bounds) {
+        int[] pixels = region(image, bounds[0], bounds[1], bounds[2], bounds[3]);
+        int green = 0, red = 0;
+        for (int color : pixels) {
+            int r = color & 255, g = (color >>> 8) & 255, b = (color >>> 16) & 255;
+            if (g >= 20 && g >= r + 4 && g >= b * 2) green++;
+            if (r >= 30 && r > g * 1.3 && r > b * 1.3) red++;
+        }
+        return Map.of("region", List.of(bounds[0], bounds[1], bounds[2], bounds[3]),
+            "green_fraction", green / (double) pixels.length, "red_fraction", red / (double) pixels.length,
+            "sampled_pixels", pixels.length);
     }
 
     private static boolean requiresSourcePixels() {
@@ -309,6 +440,12 @@ public final class PortalSmokeClient {
 
     private static void verifyPipeline() throws ReflectiveOperationException {
         Map<String, Object> actual = runtimeState();
+        if (System.getenv().getOrDefault("IP_SMOKE_GL_CONTEXT", "default").equals("no-copy-image")) {
+            require(Boolean.FALSE.equals(actual.get("copy_image_available"))
+                && actual.get("gl_version").toString().startsWith("3.3")
+                && !Boolean.TRUE.equals(actual.get("forced_framebuffer_blit")),
+                "GL3.3_CAPABILITY_OVERRIDE_NOT_APPLIED: " + actual);
+        }
         if (PortalSmokeSupport.activeShaders()) {
             String expected = System.getenv().getOrDefault("IP_SMOKE_RENDER_MODE", "normal").equals("normal")
                 ? "IrisPortalRenderer" : "IrisCompatibilityPortalRenderer";
@@ -352,6 +489,7 @@ public final class PortalSmokeClient {
         }
         state.put("pipeline", pipeline);
         state.put("shader_options", shaderOptions);
+        state.put("requested_gl_context", System.getenv().getOrDefault("IP_SMOKE_GL_CONTEXT", "default"));
         state.put("gl_version", GL11.glGetString(GL11.GL_VERSION));
         state.put("gl_vendor", GL11.glGetString(GL11.GL_VENDOR));
         state.put("gl_renderer", GL11.glGetString(GL11.GL_RENDERER));
@@ -411,6 +549,7 @@ public final class PortalSmokeClient {
     private static void saveEvidence() {
         Map<String, Object> evidence = new LinkedHashMap<>();
         evidence.put("checks", checks);
+        evidence.put("shader_control", PortalClippingTestControl.evidence());
         evidence.put("framebuffer_copy", framebufferCopyEvidence);
         evidence.put("render_mode", System.getenv().getOrDefault("IP_SMOKE_RENDER_MODE", "normal"));
         evidence.put("required_scenes", PortalSmokeSupport.scenes());

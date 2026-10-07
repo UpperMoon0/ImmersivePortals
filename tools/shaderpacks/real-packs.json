@@ -1,0 +1,20 @@
+{
+  "makeup": {
+    "name": "MakeUp Ultra Fast",
+    "version": "9.4a",
+    "modrinth_version": "KkGY3RTO",
+    "url": "https://cdn.modrinth.com/data/izsIPI7a/versions/KkGY3RTO/MakeUp-UltraFast-9.4a.zip",
+    "filename": "MakeUp-UltraFast-9.4a.zip",
+    "sha256": "84cca2673de0d751e015aab57aaa5b8d07bb4c30833a1372489867301c5e1019",
+    "profile": "no_effects"
+  },
+  "complementary": {
+    "name": "Complementary Reimagined",
+    "version": "r5.5.1",
+    "modrinth_version": "sAAjYvFB",
+    "url": "https://cdn.modrinth.com/data/HVnmMxH1/versions/sAAjYvFB/ComplementaryReimagined_r5.5.1.zip",
+    "filename": "ComplementaryReimagined_r5.5.1.zip",
+    "sha256": "20897248a5fe91b33bf7fd4b75959c30aa2003df195297979a410ee37d3bb62f",
+    "profile": "POTATO"
+  }
+}

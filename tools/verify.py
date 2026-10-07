@@ -180,7 +180,7 @@ def launch_windows_interactive(
     inherited = ("IP_SABLE_E2E", "IP_SABLE_E2E_PORT", "IP_SABLE_E2E_RESULT_DIR", "GRADLE_USER_HOME",
                  "IP_PORTAL_SMOKE", "IP_SMOKE_SAMPLES", "IP_SMOKE_RENDERER", "IP_SMOKE_SABLE",
                  "IP_SMOKE_NEGATIVE_CONTROL", "IP_SMOKE_FLYWHEEL_BACKEND", "IP_SMOKE_RENDER_MODE",
-                 "IP_SMOKE_DISABLE_COPY_IMAGE", "IP_SMOKE_SHADERPACK_NAME", "IP_SMOKE_DIAGNOSTIC_FIXTURE")
+                 "IP_SMOKE_DISABLE_COPY_IMAGE", "IP_SMOKE_GL_CONTEXT", "MESA_GL_VERSION_OVERRIDE", "MESA_EXTENSION_OVERRIDE", "IP_SMOKE_SHADERPACK_NAME", "IP_SMOKE_DIAGNOSTIC_FIXTURE")
     lines = ["@echo off", f'cd /d "{ROOT}"']
     for key in inherited:
         value = env.get(key)
@@ -473,7 +473,21 @@ def stage_shader_fixture(renderer: str, negative_control: str = "none", shaderpa
     return evidence
 
 
-def validate_shader_evidence(renderer: str, render_mode: str = "normal") -> None:
+def validate_target_shader_path(evidence: dict, target: str, expect_clipping: bool) -> None:
+    """Compilation alone is not proof that the intended drawing path ran in a portal."""
+    sources = evidence.get("sourceByDrawName", {})
+    selected = evidence.get("selectedProgramCounts", {})
+    bypassed = evidence.get("bypassedProgramCounts", {})
+    count_key = "portalWithUniform" if expect_clipping else "portalWithoutUniform"
+    for name, counts in evidence.get("completedDrawCounts", {}).items():
+        matches = name.startswith("entities_") if target == "entity" else name in ("particles", "particles_trans")
+        if matches and name in sources and selected.get("VANILLA:" + name, 0) > 0 and counts.get(count_key, 0) > 0:
+            if expect_clipping or bypassed.get("VANILLA:" + name, 0) > 0:
+                return
+    raise RuntimeError(f"no completed portal {target} draw with clipping={expect_clipping}")
+
+
+def validate_shader_evidence(renderer: str, render_mode: str = "normal", gl_context: str = "default") -> None:
     """A green screenshot alone cannot establish active-shader compatibility."""
     fixture_path = RESULT_DIR / "fixture.json"
     fixture = json.loads(fixture_path.read_text()) if fixture_path.is_file() else {"name": FIXTURE_NAME, "diagnostic_fixture": True}
@@ -492,6 +506,11 @@ def validate_shader_evidence(renderer: str, render_mode: str = "normal") -> None
     if ("after-crossing", "crossing") not in observed or not (RESULT_DIR / "crossing-server-pass.txt").is_file():
         raise RuntimeError("cross-dimension player crossing was not verified")
     for check in phases:
+        if gl_context == "no-copy-image":
+            if check.get("copy_image_available") is not False or not check.get("gl_version", "").startswith("3.3"):
+                raise RuntimeError("requested GL3.3 context still advertised copy-image or had wrong version")
+            if check.get("forced_framebuffer_blit"):
+                raise RuntimeError("capability-absent lane must not rely on the forced-blit override")
         if renderer in ACTIVE_RENDERERS:
             if not check.get("shaders_active") or check.get("pack") != fixture["name"]:
                 raise RuntimeError("shader fixture was not active in runtime evidence")
@@ -525,6 +544,19 @@ def validate_shader_evidence(renderer: str, render_mode: str = "normal") -> None
         raise RuntimeError("framebuffer resize was not observed after reload")
     for check in phases:
         scene = check.get("scene", "")
+        if scene.startswith(("entity-", "particle-")):
+            validate_target_shader_path(check.get("shader_path", {}), "entity" if scene.startswith("entity-") else "particle", True)
+            witness = check.get("straddling_witness", {})
+            excluded, retained = witness.get("excluded", {}), witness.get("retained", {})
+            if not witness.get("cpu_origin_retained") or not witness.get("cpu", {}).get("centers"):
+                raise RuntimeError("shader geometry witness was not accepted by the actual CPU gate")
+            if scene.endswith("-clipped"):
+                if excluded.get("green_fraction", 0) <= 0.80 or excluded.get("red_fraction", 1) >= 0.01 or retained.get("red_fraction", 0) <= 0.10:
+                    raise RuntimeError("straddling geometry did not prove both clipped and retained fragments")
+            elif excluded.get("red_fraction", 0) <= 0.10:
+                raise RuntimeError("straddling geometry positive control was not visible")
+            if scene.startswith("particle-") and witness.get("active_particles", 0) <= 0:
+                raise RuntimeError("particle clipping witness had no live particles")
         if scene.startswith("create-") and render_mode != "debug" and check.get("source_motion_changed_pixels", 0) <= 20:
             raise RuntimeError("visible source Create motion was not observed in its isolated region")
         if scene.startswith("create-"):
@@ -551,7 +583,7 @@ def validate_release_jar() -> None:
     with zipfile.ZipFile(jar) as archive:
         forbidden = [name for name in archive.namelist()
                      if name.startswith("qouteall/imm_ptl/core/gametest/sablee2e/")
-                     or name == "imm_ptl_gametest.mixins.json"]
+                     or name in {"imm_ptl_gametest.mixins.json", "imm_ptl_portal_clipping_test.mixins.json"}]
     if forbidden:
         raise RuntimeError("development test classes leaked into release jar: " + ", ".join(forbidden))
 
@@ -765,14 +797,17 @@ def validate_metrics(samples: int) -> None:
 
 def run_e2e(smoke: bool = False, renderer: str = "sodium", sable: bool = True, samples: int = 200,
             negative_control: str = "none", flywheel_backend: str = "default", render_mode: str = "normal",
-            disable_copy_image: bool = False, shaderpack_file: Path | None = None, shaderpack_profile: str | None = None) -> None:
+            disable_copy_image: bool = False, shaderpack_file: Path | None = None, shaderpack_profile: str | None = None,
+            gl_context: str = "default") -> None:
     print(f"[verify] {'visual ' + renderer if smoke else 'e2e'}: dedicated server + automated graphical client", flush=True)
     env = prepare_e2e()
     if smoke:
         env.update(IP_SABLE_E2E="false", IP_PORTAL_SMOKE="true", IP_SMOKE_RENDERER=renderer,
                    IP_SMOKE_SABLE=str(sable).lower(), IP_SMOKE_SAMPLES=str(samples),
                    IP_SMOKE_NEGATIVE_CONTROL=negative_control, IP_SMOKE_FLYWHEEL_BACKEND=flywheel_backend,
-                   IP_SMOKE_RENDER_MODE=render_mode, IP_SMOKE_DISABLE_COPY_IMAGE=str(disable_copy_image).lower())
+                   IP_SMOKE_RENDER_MODE=render_mode, IP_SMOKE_DISABLE_COPY_IMAGE=str(disable_copy_image).lower(), IP_SMOKE_GL_CONTEXT=gl_context)
+        if gl_context == "no-copy-image":
+            env.update(MESA_GL_VERSION_OVERRIDE="3.3", MESA_EXTENSION_OVERRIDE="-GL_ARB_copy_image")
         fixture = stage_shader_fixture(renderer, negative_control, shaderpack_file, shaderpack_profile)
         env.update(IP_SMOKE_SHADERPACK_NAME=fixture["name"],
                    IP_SMOKE_DIAGNOSTIC_FIXTURE=str(fixture["diagnostic_fixture"]).lower())
@@ -830,7 +865,7 @@ def run_e2e(smoke: bool = False, renderer: str = "sodium", sable: bool = True, s
 
         validate_log_health()
         if smoke:
-            validate_shader_evidence(renderer, render_mode)
+            validate_shader_evidence(renderer, render_mode, gl_context)
             validate_metrics(samples)
         print("[verify] " + (RESULT_DIR / "server-pass.txt").read_text(encoding="utf-8").strip(), flush=True)
         print("[verify] " + (RESULT_DIR / "client-pass.txt").read_text(encoding="utf-8").strip(), flush=True)
@@ -854,12 +889,14 @@ def run_e2e(smoke: bool = False, renderer: str = "sodium", sable: bool = True, s
 
 def run_visual(renderer: str, sable: bool, samples: int, negative_control: str = "none",
                flywheel_backend: str = "default", render_mode: str = "normal", disable_copy_image: bool = False,
-               shaderpack_file: Path | None = None, shaderpack_profile: str | None = None) -> None:
+               shaderpack_file: Path | None = None, shaderpack_profile: str | None = None, gl_context: str = "default") -> None:
     # Keep each matrix member's evidence, including failed runs.
     global RESULT_DIR, SERVER_LOG, CLIENT_LOG
     previous = RESULT_DIR, SERVER_LOG, CLIENT_LOG
     RESULT_DIR = ROOT / "build" / f"portal-visual-{renderer}-{'sable' if sable else 'no-sable'}"
     suffix = f"-{render_mode}-{flywheel_backend}"
+    if gl_context != "default":
+        suffix += "-gl33-no-copy-image"
     if disable_copy_image:
         suffix += "-no-copy-image"
     if negative_control != "none":
@@ -872,12 +909,21 @@ def run_visual(renderer: str, sable: bool, samples: int, negative_control: str =
         try:
             run_e2e(smoke=True, renderer=renderer, sable=sable, samples=samples,
                     negative_control=negative_control, flywheel_backend=flywheel_backend,
-                    render_mode=render_mode, disable_copy_image=disable_copy_image, shaderpack_file=shaderpack_file, shaderpack_profile=shaderpack_profile)
+                    render_mode=render_mode, disable_copy_image=disable_copy_image, shaderpack_file=shaderpack_file, shaderpack_profile=shaderpack_profile, gl_context=gl_context)
         except RuntimeError:
             failure = RESULT_DIR / "client-fail.txt"
-            expected = {"pack-disabled": "SHADER_FIXTURE_NOT_ACTIVE", "clipping-disabled": "PORTAL_PIXELS_MISMATCH: before-reload/solid-clipped"}
+            expected = {"pack-disabled": "SHADER_FIXTURE_NOT_ACTIVE", "clipping-disabled": "PORTAL_PIXELS_MISMATCH: before-reload/solid-clipped",
+                        "entity-clipping-disabled": "PORTAL_PIXELS_MISMATCH: before-reload/entity-clipped",
+                        "particle-clipping-disabled": "PORTAL_PIXELS_MISMATCH: before-reload/particle-clipped"}
             if negative_control == "none" or not failure.is_file() or expected[negative_control] not in failure.read_text():
                 raise
+            if negative_control in ("entity-clipping-disabled", "particle-clipping-disabled"):
+                target = negative_control.split("-", 1)[0]
+                report = json.loads((RESULT_DIR / "runtime-evidence.json").read_text())
+                control = report.get("shader_control", {})
+                if control.get("observation") != f"before-reload:{target}-clipped":
+                    raise RuntimeError("targeted negative control did not observe its exact clipping scene")
+                validate_target_shader_path(control, target, False)
             (RESULT_DIR / "negative-control-pass.txt").write_text(
                 f"Expected {negative_control} regression was detected: {failure.read_text()}\n", encoding="utf-8")
         else:
@@ -891,9 +937,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Run the canonical Immersive Portals verification suite")
     parser.add_argument("mode", choices=("core", "e2e", "visual", "full", "matrix", "staff"), nargs="?", default="full")
     parser.add_argument("--renderer", choices=RENDERERS, default="sodium")
-    parser.add_argument("--negative-control", choices=("none", "pack-disabled", "clipping-disabled"), default="none")
+    parser.add_argument("--negative-control", choices=("none", "pack-disabled", "clipping-disabled", "entity-clipping-disabled", "particle-clipping-disabled"), default="none")
     parser.add_argument("--flywheel-backend", choices=("default", "off", "instancing", "indirect"), default="default")
     parser.add_argument("--render-mode", choices=("normal", "compatibility", "debug"), default="normal")
+    parser.add_argument("--gl-context", choices=("default", "no-copy-image"), default="default")
     parser.add_argument("--disable-copy-image", action="store_true")
     parser.add_argument("--shaderpack-profile", help="Exact pack profile; otherwise auto-select the lowest known pack-provided preset")
     parser.add_argument("--shaderpack-file", type=Path, help="Additionally run a user-supplied real-pack ZIP through active shader smoke checks")
@@ -906,6 +953,8 @@ def main() -> int:
         parser.error("--shaderpack-file requires visual with an active renderer and no negative control")
     if args.shaderpack_profile is not None and args.shaderpack_file is None:
         parser.error("--shaderpack-profile requires --shaderpack-file")
+    if args.gl_context == "no-copy-image" and (args.renderer not in ACTIVE_RENDERERS or args.disable_copy_image):
+        parser.error("GL3.3 no-copy-image context requires an active shader renderer without --disable-copy-image")
     if args.disable_copy_image and args.renderer not in ACTIVE_RENDERERS:
         parser.error("--disable-copy-image requires an active shader renderer")
     if not 200 <= args.samples <= 12000:
@@ -918,7 +967,7 @@ def main() -> int:
             try:
                 actions = [("core", run_core), ("e2e", run_e2e),
                            ("visual", lambda: run_visual(args.renderer, not args.no_sable, args.samples, args.negative_control,
-                                                         args.flywheel_backend, args.render_mode, args.disable_copy_image, args.shaderpack_file, args.shaderpack_profile))]
+                                                         args.flywheel_backend, args.render_mode, args.disable_copy_image, args.shaderpack_file, args.shaderpack_profile, args.gl_context))]
                 if args.mode == "matrix":
                     actions = [(f"visual-{renderer}-{'sable' if sable else 'no-sable'}",
                                 lambda r=renderer, s=sable: run_visual(r, s, args.samples))

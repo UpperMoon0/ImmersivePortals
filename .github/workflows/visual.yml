@@ -12,6 +12,9 @@ on:
       sable:
         type: boolean
         default: true
+      real_pack:
+        type: string
+        default: none
       negative_control:
         type: string
         default: none
@@ -21,6 +24,9 @@ on:
       render_mode:
         type: string
         default: normal
+      gl_context:
+        type: string
+        default: default
       disable_copy_image:
         type: boolean
         default: false
@@ -52,27 +58,38 @@ jobs:
             sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=2 install -y xvfb libgl1-mesa-dri
           fi
           chmod +x ./gradlew
+      - name: Fetch exact official real-pack release
+        if: inputs.real_pack != 'none'
+        id: pack
+        env:
+          REAL_PACK: ${{ inputs.real_pack }}
+        run: python3 tools/fetch_shaderpack.py "$REAL_PACK" --github-output "$GITHUB_OUTPUT"
       - name: Verify portal pixels, shader reload and live timing budgets
         env:
           RENDERER: ${{ inputs.renderer }}
           SABLE: ${{ inputs.sable }}
           SAMPLES: ${{ inputs.samples }}
+          PACK_FILE: ${{ steps.pack.outputs.file }}
+          PACK_PROFILE: ${{ steps.pack.outputs.profile }}
           NEGATIVE: ${{ inputs.negative_control }}
           FLYWHEEL: ${{ inputs.flywheel_backend }}
           RENDER_MODE: ${{ inputs.render_mode }}
           DISABLE_COPY_IMAGE: ${{ inputs.disable_copy_image }}
+          GL_CONTEXT: ${{ inputs.gl_context }}
         run: |
           extra=()
           if [[ "$SABLE" == false ]]; then extra+=(--no-sable); fi
+          if [[ -n "$PACK_FILE" ]]; then extra+=(--shaderpack-file "$PACK_FILE" --shaderpack-profile "$PACK_PROFILE"); fi
           if [[ "$DISABLE_COPY_IMAGE" == true ]]; then extra+=(--disable-copy-image); fi
           python3 tools/verify.py visual --renderer "$RENDERER" --samples "$SAMPLES" \
-            --negative-control "$NEGATIVE" --flywheel-backend "$FLYWHEEL" --render-mode "$RENDER_MODE" "${extra[@]}"
+            --gl-context "$GL_CONTEXT" --negative-control "$NEGATIVE" --flywheel-backend "$FLYWHEEL" --render-mode "$RENDER_MODE" "${extra[@]}"
       - name: Preserve images, timings and runtime diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: portal-visual-${{ inputs.renderer }}-sable-${{ inputs.sable }}-${{ inputs.render_mode }}-${{ inputs.flywheel_backend }}-blit-${{ inputs.disable_copy_image }}-${{ inputs.negative_control }}
+          name: portal-visual-${{ inputs.renderer }}-sable-${{ inputs.sable }}-${{ inputs.render_mode }}-${{ inputs.flywheel_backend }}-blit-${{ inputs.disable_copy_image }}-${{ inputs.negative_control }}-${{ inputs.real_pack }}-${{ inputs.gl_context }}
           if-no-files-found: warn
+          include-hidden-files: true
           path: |
             build/verification-visual.json
             build/portal-visual-*/**

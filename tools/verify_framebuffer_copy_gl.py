@@ -22,6 +22,9 @@ def main():
     parser.add_argument("--repo", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument("--report", type=Path, help="Save the driver and per-case results")
     parser.add_argument("--clipping-classpath", help="Optional built main classes plus runtime dependencies; also check real FrontClipping state")
+    parser.add_argument("--gl-version", default="4.5", choices=["3.3", "4.5"])
+    parser.add_argument("--require-native-blit", action="store_true",
+                        help="Require a context advertising neither GL 4.3 nor ARB_copy_image")
     args = parser.parse_args()
     java = str(Path(os.environ["JAVA_HOME"]) / "bin/java") if "JAVA_HOME" in os.environ else shutil.which("java")
     if not java:
@@ -47,7 +50,8 @@ def main():
         if args.clipping_classpath:
             runtime_classpath += os.pathsep + args.clipping_classpath
             probe_arguments.append("--clipping-state")
-        result = subprocess.run([java, "-cp", runtime_classpath,
+        result = subprocess.run([java, f"-Dip.test.glVersion={args.gl_version}",
+                                 f"-Dip.test.requireNativeBlit={str(args.require_native_blit).lower()}", "-cp", runtime_classpath,
                                  "FramebufferCopyEglCheck", *probe_arguments], env=env, text=True,
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         print(result.stdout, end="")

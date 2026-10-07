@@ -4,6 +4,12 @@ package qouteall.imm_ptl.core.compat.iris_compatibility;
 final class FramebufferCopyPlan {
     private FramebufferCopyPlan() {}
 
+    static boolean supportsCopyImage(boolean openGL43, boolean arbCopyImage,
+        boolean entryPointAvailable, boolean forcedBlit) {
+        // Some GL loaders expose addresses for commands unsupported by the current context.
+        return (openGL43 || arbCopyImage) && entryPointAvailable && !forcedBlit;
+    }
+
     static boolean useCopyImage(boolean available, boolean wholeTexture) {
         return available && wholeTexture;
     }

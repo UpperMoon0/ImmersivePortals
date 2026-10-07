@@ -1,0 +1,13 @@
+{
+  "required": true,
+  "package": "qouteall.imm_ptl.core.gametest.sablee2e.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "client": [
+    "MixinPortalClipSelectionTest",
+    "MixinPortalClipDrawTest",
+    "MixinIrisProgramSourceTest"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

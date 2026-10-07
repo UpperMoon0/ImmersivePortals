@@ -54,6 +54,27 @@ class FlywheelPortalFallbackTest {
         assertEquals(1, reads);
         assertEquals(2, writes, "Context must restore on both normal and exceptional paths");
         assertTrue(invokes(method, "call"));
+        assertTrue(invokes(method, "enterWorldRender"), "The stable fallback decision must precede Flywheel's frame dispatch");
+        assertTrue(invokes(method, "close"), "View fallback scope must restore on recursive return");
+        int enter = -1, render = -1, index = 0;
+        for (var instruction : method.instructions) {
+            if (instruction instanceof MethodInsnNode call) {
+                if (call.name.equals("enterWorldRender")) enter = index;
+                if (call.name.equals("call")) render = index;
+            }
+            index++;
+        }
+        assertTrue(enter >= 0 && enter < render);
+    }
+
+    @Test
+    void workerRegistrationOnlyRedirectsTheTransientViewIdentity() throws Exception {
+        var method = method("MixinFlywheelVisualizationManager", "ip_stableLevelForWorkerRegistration");
+        assertTrue(invokes(method, "isOnRenderThread"));
+        assertTrue(invokes(method, "level"));
+        assertTrue(invokes(method, "visualizationLevel"));
+        assertFalse(invokes(method, "queueAdd"), "Do not alter Flywheel's registration scheduler");
+        assertFalse(invokes(method, "getStorage"), "Do not read unsynchronized visual storage");
     }
 
     @Test

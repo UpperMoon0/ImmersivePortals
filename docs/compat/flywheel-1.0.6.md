@@ -32,6 +32,14 @@ cross-portal entity views. Both Flywheel and Create query
 `VisualizationManager.supportsVisualization`, so one scoped decision enables
 vanilla drawing while preventing Flywheel engine dispatch for that view.
 
+A main-world view containing a portal-colliding entity also uses vanilla for
+its entire duration. This decision is captured before Flywheel starts the view,
+using the same enablement and current-level collision data as IP's entity
+clipping. Otherwise an entity's temporary clip flag could enable its vanilla
+draw, then disappear before Flywheel's later `afterEntities` draw, showing a
+second, whole, unclipped visual. Immutable thread-local view scopes restore
+parent decisions even on exceptions and do not affect chunk workers.
+
 Outside those render-thread scopes, Flywheel's original result is preserved:
 the selected instancing, indirect or off backend is not changed, and existing
 managers/visuals are not reset. The predicate has no mutable backend toggle or
@@ -78,3 +86,8 @@ be reported separately from passing rendered checks.
 
 The Flywheel binary's SHA-256 is
 `31dda15c205eb596d3b3449ef03f6af7363a6cd35b3da4bfe916b304f9e5337e`.
+
+Worker-thread visual registration uses the physical player's level instead of
+IP's temporarily swapped `Minecraft.level`. Render-thread checks retain the
+actual view level; with no player the original identity is preserved. Flywheel's
+backend/special-level checks and transaction queues remain unchanged.

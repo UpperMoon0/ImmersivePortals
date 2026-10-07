@@ -16,8 +16,9 @@ import static org.lwjgl.opengl.GL30C.*;
 /** Copies only like-for-like attachments. CopyImageSubData is not a format converter. */
 public class IPIrisHelper {
     public static boolean isCopyImageSubDataSupported() {
-        return !Boolean.getBoolean("ip.iris.forceFramebufferBlit")
-            && GL.getCapabilities().glCopyImageSubData != 0;
+        var capabilities = GL.getCapabilities();
+        return FramebufferCopyPlan.supportsCopyImage(capabilities.OpenGL43, capabilities.GL_ARB_copy_image,
+            capabilities.glCopyImageSubData != 0, Boolean.getBoolean("ip.iris.forceFramebufferBlit"));
     }
 
     public static boolean hasFloatingPointDepth(RenderTarget target) {
@@ -36,7 +37,12 @@ public class IPIrisHelper {
         result.put("version", glGetString(GL_VERSION));
         result.put("vendor", glGetString(GL_VENDOR));
         result.put("renderer", glGetString(GL_RENDERER));
-        result.put("copyImageAvailable", GL.getCapabilities().glCopyImageSubData != 0);
+        var capabilities = GL.getCapabilities();
+        result.put("openGL43", capabilities.OpenGL43);
+        result.put("arbCopyImage", capabilities.GL_ARB_copy_image);
+        result.put("copyImageEntryPoint", capabilities.glCopyImageSubData != 0);
+        result.put("copyImageAvailable", FramebufferCopyPlan.supportsCopyImage(capabilities.OpenGL43,
+            capabilities.GL_ARB_copy_image, capabilities.glCopyImageSubData != 0, false));
         result.put("forcedBlit", Boolean.getBoolean("ip.iris.forceFramebufferBlit"));
         result.put("copyPath", isCopyImageSubDataSupported() ? "copy-image" : "framebuffer-blit");
         return result;

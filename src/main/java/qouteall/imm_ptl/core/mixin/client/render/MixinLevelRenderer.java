@@ -442,7 +442,10 @@ public abstract class MixinLevelRenderer implements IEWorldRenderer {
     // sometimes we change renderDistance but we don't want to reload it
     @Inject(method = "allChanged", at = @At("HEAD"), cancellable = true)
     private void onReloadStarted(CallbackInfo ci) {
-        if (WorldRenderInfo.isRendering()) {
+        // A dimension may be discovered for the first time through a nested
+        // portal. Its first setLevel/allChanged creates the section dispatcher;
+        // suppress only incidental reloads of already-created renderers.
+        if (WorldRenderInfo.isRendering() && !ClientWorldLoader.getIsCreatingClientWorld()) {
             Helper.log("world renderer reloading cancelled during portal rendering");
             ci.cancel();
         }

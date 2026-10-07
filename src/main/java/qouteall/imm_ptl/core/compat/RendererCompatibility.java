@@ -8,7 +8,7 @@ public record RendererCompatibility(Renderer renderer, Shaders shaders) {
         "MixinIrisClearPass", "MixinIrisFinalPassRenderer", "MixinIrisIris",
         "MixinIrisRenderingPipeline", "MixinIrisShadowRenderTargets", "MixinIrisTransformPatcher",
         "MixinIrisWorldShader", "MixinIrisShaderCreator", "MixinIrisVertexBuffer",
-        "MixinIrisShadowRenderer", "MixinIrisFullScreenQuadRenderer"
+        "MixinIrisShadowRenderer", "MixinIrisFullScreenQuadRenderer", "MixinIrisGLDebug"
     );
     public enum Renderer { VANILLA, SODIUM, EMBEDDIUM }
     public enum Shaders { NONE, IRIS, NEOCULUS }

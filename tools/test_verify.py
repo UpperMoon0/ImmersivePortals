@@ -224,6 +224,13 @@ class VerificationHarnessTest(unittest.TestCase):
                    "width": 854 if phase == "before-reload" else 960, "height": 480 if phase == "before-reload" else 640,
                    "flywheel": {"nestedContextsRestored": 1, "contextAccessorsInstalled": True, "contextClearedAfterFrame": True}, "source_motion_changed_pixels": 100, "create_motion_changed_pixels": 100,
                    "create_server_motion": True, "nested_contexts_restored_this_scene": 1, "crumbling_changed_pixels": 100, "crumbling_darkening": 10,
+                   "shader_path": {"sourceByDrawName": {"entities_cutout_diffuse": "gbuffers_entities", "particles": "gbuffers_particles"},
+                                   "selectedProgramCounts": {"VANILLA:entities_cutout_diffuse": 1, "VANILLA:particles": 1},
+                                   "completedDrawCounts": {"entities_cutout_diffuse": {"portalWithUniform": 1}, "particles": {"portalWithUniform": 1}}},
+                   "straddling_witness": {"cpu_origin_retained": True, "cpu": {"centers": [[0, 82, -0.75]]},
+                       "excluded": {"green_fraction": 1.0 if scene.endswith("-clipped") else 0.0,
+                                    "red_fraction": 0.0 if scene.endswith("-clipped") else 1.0},
+                       "retained": {"red_fraction": 1.0}, "active_particles": 16},
                    "pipeline": "net.irisshaders.iris.pipeline.IrisRenderingPipeline" if active else "VanillaRenderingPipeline",
                    "renderer": "IrisPortalRenderer" if active else "RendererUsingStencil"}
                   for phase, scene in [(p, s) for p in phases for s in scenes] + [("after-crossing", "crossing")]]
@@ -291,9 +298,15 @@ class VerificationHarnessTest(unittest.TestCase):
                 self.assertIn(f"renderer: {renderer},", workflow)
             self.assertIn("negative_control: pack-disabled", workflow)
             self.assertIn("negative_control: clipping-disabled", workflow)
+            self.assertIn("negative_control: entity-clipping-disabled", workflow)
+            self.assertIn("negative_control: particle-clipping-disabled", workflow)
+            for renderer in ("iris-active", "neoculus-active"):
+                for real_pack in ("makeup", "complementary"):
+                    self.assertRegex(workflow, rf"renderer: {renderer}, sable: (true|false), real_pack: {real_pack}")
         for name in ("ci", "nightly", "release"):
             workflow = (verify.ROOT / f".github/workflows/{name}.yml").read_text()
             self.assertIn("disable_copy_image: true", workflow)
+            self.assertIn("gl_context: no-copy-image", workflow)
             for backend in ("off", "instancing", "indirect"):
                 self.assertIn(f"flywheel_backend: {backend}", workflow)
 
@@ -311,6 +324,45 @@ class VerificationHarnessTest(unittest.TestCase):
                 archive.writestr("qouteall/imm_ptl/core/gametest/sablee2e/PortalSmokeClient.class", b"class")
             with self.assertRaisesRegex(RuntimeError, "development test classes leaked"):
                 verify.validate_release_jar()
+
+    def test_capability_absent_lane_requires_actual_gl33_without_override(self):
+        report = self.shader_evidence()
+        for check in report["checks"]:
+            check.update(gl_version="3.3 Core Mesa", copy_image_available=False, forced_framebuffer_blit=False)
+        self.write_shader_evidence(report)
+        verify.validate_shader_evidence("iris-active", gl_context="no-copy-image")
+        for key, value in (("gl_version", "4.5 Core Mesa"), ("copy_image_available", True), ("forced_framebuffer_blit", True)):
+            old = report["checks"][0][key]
+            report["checks"][0][key] = value
+            self.write_shader_evidence(report)
+            with self.assertRaises(RuntimeError):
+                verify.validate_shader_evidence("iris-active", gl_context="no-copy-image")
+            report["checks"][0][key] = old
+
+    def test_targeted_shader_control_requires_completed_draw_of_the_selected_path(self):
+        good = {"sourceByDrawName": {"entities_cutout_diffuse": "gbuffers_entities"},
+                "selectedProgramCounts": {"VANILLA:entities_cutout_diffuse": 1},
+                "bypassedProgramCounts": {"VANILLA:entities_cutout_diffuse": 1},
+                "completedDrawCounts": {"entities_cutout_diffuse": {"portalWithoutUniform": 1}}}
+        verify.validate_target_shader_path(good, "entity", False)
+        with self.assertRaises(RuntimeError):
+            verify.validate_target_shader_path(good, "particle", False)
+        with self.assertRaises(RuntimeError):
+            verify.validate_target_shader_path(good, "entity", True)
+        for field in ("sourceByDrawName", "selectedProgramCounts", "bypassedProgramCounts", "completedDrawCounts"):
+            with self.subTest(field=field):
+                with self.assertRaises(RuntimeError):
+                    verify.validate_target_shader_path(good | {field: {}}, "entity", False)
+
+    def test_entity_and_particle_checks_cannot_pass_from_cpu_culling(self):
+        for scene in ("entity-clipped", "particle-clipped"):
+            for field in ("cpu", "retained", "excluded"):
+                report = self.shader_evidence()
+                witness = next(check for check in report["checks"] if check["scene"] == scene)["straddling_witness"]
+                witness[field] = {}
+                self.write_shader_evidence(report)
+                with self.assertRaises(RuntimeError):
+                    verify.validate_shader_evidence("iris-active")
 
     def test_pack_profiles_use_declared_values_and_reject_unknown_or_cyclic_presets(self):
         properties = "profile.low = !SHADOWS QUALITY=0 DEPTH:0.5\nprofile.high = profile.low SHADOWS QUALITY=2\n"

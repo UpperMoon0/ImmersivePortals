@@ -6,6 +6,19 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class FramebufferCopyPlanTest {
     @Test
+    void copyImageRequiresAdvertisedSupportAndEntryPointUnlessBlitIsForced() {
+        for (int mask = 0; mask < 16; mask++) {
+            boolean core = (mask & 1) != 0, extension = (mask & 2) != 0;
+            boolean pointer = (mask & 4) != 0, forced = (mask & 8) != 0;
+            boolean expected = (core || extension) && pointer && !forced;
+            assertEquals(expected, FramebufferCopyPlan.supportsCopyImage(core, extension, pointer, forced),
+                "core=" + core + ", extension=" + extension + ", pointer=" + pointer + ", forced=" + forced);
+        }
+        assertFalse(FramebufferCopyPlan.supportsCopyImage(false, false, true, false),
+            "A nonzero function address alone does not establish context support");
+    }
+
+    @Test
     void unavailableEntryPointAndPartialDepthStencilCopiesAlwaysUseBlit() {
         assertFalse(FramebufferCopyPlan.useCopyImage(false, true));
         assertFalse(FramebufferCopyPlan.useCopyImage(false, false));

@@ -45,6 +45,11 @@ NeOculus uses `compat.embeddium.impl.oculus.EmbeddiumShader`, with an Embeddium 
 and uploads it after `setupState`. Shadow rendering and disabled clipping upload the neutral plane.
 The superclass's null terrain-pass sentinel prevents double initialization of ordinary Embeddium uniforms.
 
+NeOculus 1.8.7 initializes its remembered dimension only during the first vanilla title-screen initialization.
+A NeOculus-only static initializer supplies that same Overworld default before early quick-connect/disconnect
+flows can dereference it. It does not create a shader pipeline before GL initialization, override an existing
+dimension, or replace NeOculus's normal login, disconnect, dimension-change or resource-reload handlers.
+
 The shared pipeline adapter was checked against the pinned NeOculus source and installable jar:
 
 - `Iris.getCurrentPack`, `getCurrentPackName`, `getPipelineManager`
@@ -85,3 +90,18 @@ Passing this focused GL test does not establish that a Minecraft mixin applies o
 With `--clipping-classpath` set to the built main classes and their runtime dependencies (a platform-separated
 classpath), it also checks the actual `FrontClipping` class: all four logical/GL enable combinations,
 nested suspension, and exact restoration of both clip equations. No Minecraft class is stubbed.
+
+To test a context which genuinely advertises no copy-image capability rather than merely forcing the
+fallback on a capable context, use Mesa's normal test overrides:
+
+```sh
+MESA_GL_VERSION_OVERRIDE=3.3 MESA_EXTENSION_OVERRIDE=-GL_ARB_copy_image \
+  python tools/verify_framebuffer_copy_gl.py --gl-version 3.3 --require-native-blit \
+  --minecraft-jar /path/to/built/neoforge-21.1.228.jar \
+  --egl-jar /path/to/lwjgl-egl-3.3.3.jar --gradle-home "$GRADLE_USER_HOME" \
+  --report framebuffer-copy-gl33.txt
+```
+
+The probe verifies the advertised GL 4.3/ARB capability flags are both absent and checks automatic blit
+selection before setting any force flag. Copy-image support requires the advertised capability and a
+valid entry point; the capability truth table also covers loaders returning an address without support.

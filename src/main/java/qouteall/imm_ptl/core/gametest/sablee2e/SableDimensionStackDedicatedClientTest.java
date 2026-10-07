@@ -17,6 +17,7 @@ import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.client.event.ClientTickEvent;
 import org.joml.Vector3dc;
 import qouteall.imm_ptl.core.ClientWorldLoader;
+import qouteall.imm_ptl.core.compat.sable.SableServerFirstClientHandoff;
 
 import java.util.UUID;
 
@@ -286,6 +287,7 @@ public final class SableDimensionStackDedicatedClientTest {
         verifyYawDelta(minecraft, 0.0f, "inverse rotated return crossing");
 
         SableDimensionStackIntegrationMarkers.acknowledge("return");
+        ridingSyncTicks = 0;
         phase = Phase.WAIT_FOR_GRAVITY_RECROSS;
         phaseTicks = 0;
     }
@@ -293,8 +295,20 @@ public final class SableDimensionStackDedicatedClientTest {
     private static void waitForGravityRecross(Minecraft minecraft) {
         if (minecraft.level.dimension().equals(Level.OVERWORLD)) {
             Entity vehicle = minecraft.player.getVehicle();
-            require(vehicle != null && vehicle.getUUID().equals(vehicleId),
-                "client lost Create seat while gravity was reversing returned body");
+            ridingSyncTicks = vehicle == null ? ridingSyncTicks + 1 : 0;
+            // The server deliberately detaches the graph before transferring it.
+            // TCP may deliver that packet and destination full-sync in one client
+            // tick, then dimension/remount in the next. Accept only the already
+            // announced, staged handoff, never a general missing or changed seat.
+            boolean waiting = SableRiderHandoffGrace.verifySourceSeat(
+                vehicleId, vehicle == null ? null : vehicle.getUUID(),
+                SableServerFirstClientHandoff.hasActiveServerInitiatedHandoff(),
+                hasSubLevel(Level.NETHER), ridingSyncTicks, RIDING_SYNC_GRACE_TICKS
+            );
+            if (waiting && (ridingSyncTicks == 1 || ridingSyncTicks % 20 == 0)) {
+                SableDimensionStackIntegrationMarkers.handoffGrace(diagnosticState()
+                    + " detachedTicks=" + ridingSyncTicks + "/" + RIDING_SYNC_GRACE_TICKS);
+            }
             return;
         }
         if (!minecraft.level.dimension().equals(Level.NETHER)) return;
@@ -411,6 +425,9 @@ public final class SableDimensionStackDedicatedClientTest {
         return " clientDim=" + minecraft.level.dimension().location()
             + " riding=" + (vehicle == null ? "none" : vehicle.getUUID())
             + " expectedVehicle=" + vehicleId
+            + " activeServerHandoff=" + SableServerFirstClientHandoff.hasActiveServerInitiatedHandoff()
+            + " destinationStaged=" + (remote != null)
+            + " detachedTicks=" + ridingSyncTicks
             + " subLevel=" + subLevelId
             + " seamTransitions=" + seamTransitions
             + " sourceWorldYaw=" + sourceWorldYaw

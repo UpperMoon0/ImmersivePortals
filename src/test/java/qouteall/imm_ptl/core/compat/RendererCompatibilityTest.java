@@ -39,6 +39,7 @@ class RendererCompatibilityTest {
         assertTrue(backend.appliesTo(PREFIX + "iris.MixinIrisVertexBuffer"));
         assertTrue(backend.appliesTo(PREFIX + "iris.MixinIrisShadowRenderer"));
         assertTrue(backend.appliesTo(PREFIX + "iris.MixinIrisFullScreenQuadRenderer"));
+        assertTrue(backend.appliesTo(PREFIX + "iris.MixinIrisGLDebug"));
         assertFalse(backend.appliesTo(PREFIX + "iris.MixinIrisParticleEngine"));
     }
 
