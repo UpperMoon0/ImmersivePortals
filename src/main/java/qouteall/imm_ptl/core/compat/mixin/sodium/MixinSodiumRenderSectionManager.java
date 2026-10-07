@@ -1,6 +1,7 @@
 package qouteall.imm_ptl.core.compat.mixin.sodium;
 
 import net.caffeinemc.mods.sodium.client.render.chunk.RenderSectionManager;
+import net.caffeinemc.mods.sodium.client.render.chunk.RenderSection;
 import net.caffeinemc.mods.sodium.client.render.chunk.lists.SortedRenderLists;
 import org.apache.commons.lang3.Validate;
 import org.jetbrains.annotations.NotNull;
@@ -10,6 +11,7 @@ import org.spongepowered.asm.mixin.Mutable;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.Redirect;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 import qouteall.imm_ptl.core.compat.sodium_compatibility.IESodiumRenderSectionManager;
 import qouteall.imm_ptl.core.compat.sodium_compatibility.SodiumRenderingContext;
@@ -17,6 +19,18 @@ import qouteall.imm_ptl.core.render.context_management.RenderStates;
 
 @Mixin(value = RenderSectionManager.class, remap = false)
 public class MixinSodiumRenderSectionManager implements IESodiumRenderSectionManager {
+    @Redirect(method = "scheduleRebuild", at = @At(value = "INVOKE",
+        target = "Lnet/caffeinemc/mods/sodium/client/render/chunk/RenderSection;isBuilt()Z"))
+    private static boolean ip_hasCapturedMesh(RenderSection section) {
+        // Reload replaces the manager and starts asynchronous initial meshes. A
+        // redirected block update can arrive after a task captured its snapshot
+        // but before upload marks the section built. Sodium's built-only gate
+        // drops that update, leaving the old geometry indefinitely. Keep the
+        // normal rebuild/priority path for submitted sections too; sections that
+        // have not captured a snapshot still need only their initial build.
+        return section.isBuilt() || section.getLastSubmittedFrame() >= 0;
+    }
+
     @Shadow
     @Final
     @Mutable

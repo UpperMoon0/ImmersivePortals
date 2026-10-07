@@ -11,9 +11,12 @@ import qouteall.imm_ptl.core.IPGlobal;
 import qouteall.imm_ptl.core.IPMcHelper;
 import qouteall.imm_ptl.core.IPModMainClient;
 import qouteall.imm_ptl.core.compat.IPModInfoChecking;
+import qouteall.imm_ptl.core.compat.RendererCompatibility;
+import qouteall.imm_ptl.core.compat.embeddium_compatibility.EmbeddiumInterface;
 import qouteall.imm_ptl.core.compat.veil.VeilCompat;
 import qouteall.imm_ptl.core.compat.iris_compatibility.ExperimentalIrisPortalRenderer;
 import qouteall.imm_ptl.core.compat.iris_compatibility.IrisInterface;
+import qouteall.imm_ptl.core.compat.iris_compatibility.IrisDeferredRendererReloads;
 import qouteall.imm_ptl.core.compat.sodium_compatibility.SodiumInterface;
 import qouteall.imm_ptl.core.portal.BreakableMirror;
 import qouteall.imm_ptl.core.portal.EndPortalEntity;
@@ -73,9 +76,15 @@ public class IPModEntryClient {
 
         modEventBus.addListener(EntityRenderersEvent.RegisterRenderers.class, IPModEntryClient::initPortalRenderers);
         
-        boolean isSodiumPresent =
-            ModList.get().isLoaded("embeddium") || ModList.get().isLoaded("sodium");
-        if (isSodiumPresent) {
+        RendererCompatibility compatibility = RendererCompatibility.select(
+            ModList.get().isLoaded("sodium"), ModList.get().isLoaded("embeddium"),
+            ModList.get().isLoaded("iris"), ModList.get().isLoaded("oculus")
+        );
+        if (compatibility.renderer() == RendererCompatibility.Renderer.EMBEDDIUM) {
+            Helper.log("Embeddium is present; enabling the Embeddium adapter");
+            SodiumInterface.invoker = new EmbeddiumInterface();
+        }
+        else if (compatibility.renderer() == RendererCompatibility.Renderer.SODIUM) {
             Helper.log("Sodium is present");
             
             SodiumInterface.invoker = new SodiumInterface.OnSodiumPresent();
@@ -94,9 +103,10 @@ public class IPModEntryClient {
             Helper.log("Sodium is not present");
         }
         
-        if (ModList.get().isLoaded("iris")) {
-            Helper.log("Iris is present");
+        if (compatibility.shaders() != RendererCompatibility.Shaders.NONE) {
+            Helper.log(compatibility.shaders() + " is present; enabling the audited shared pipeline adapter");
             IrisInterface.invoker = new IrisInterface.OnIrisPresent();
+            IrisDeferredRendererReloads.init();
             ExperimentalIrisPortalRenderer.init();
             
             IPGlobal.CLIENT_TASK_LIST.addTask(MyTaskList.oneShotTask(() -> {

@@ -136,12 +136,71 @@ jobs:
   portal-visual:
     needs: changes
     if: needs.changes.outputs.e2e == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { renderer: vanilla, sable: true }
+          - { renderer: sodium, sable: true }
+          - { renderer: iris, sable: true }
+          - { renderer: iris-active, sable: true }
+          - { renderer: embeddium, sable: false }
+          - { renderer: neoculus, sable: false }
+          - { renderer: neoculus-active, sable: false }
+          - { renderer: veil, sable: false }
+          - { renderer: vanilla, sable: false }
+          - { renderer: iris-active, sable: true, shadow_fixture: true }
+          - { renderer: neoculus-active, sable: false, shadow_fixture: true }
+          - { renderer: iris-active, sable: true, shadow_fixture: true, negative_control: shadow-clipping-enabled }
+          - { renderer: neoculus-active, sable: false, shadow_fixture: true, negative_control: shadow-clipping-enabled }
+          - { renderer: iris-active, sable: true, negative_control: pack-disabled }
+          - { renderer: iris-active, sable: true, negative_control: clipping-disabled }
+          - { renderer: iris-active, sable: true, negative_control: entity-clipping-disabled }
+          - { renderer: iris-active, sable: true, negative_control: particle-clipping-disabled }
+          - { renderer: neoculus-active, sable: false, negative_control: entity-clipping-disabled }
+          - { renderer: neoculus-active, sable: false, negative_control: particle-clipping-disabled }
+          - { renderer: iris-active, sable: true, render_mode: compatibility }
+          - { renderer: iris-active, sable: true, render_mode: compatibility, disable_copy_image: true }
+          - { renderer: iris-active, sable: true, render_mode: compatibility, gl_context: no-copy-image }
+          - { renderer: iris-active, sable: true, render_mode: debug, disable_copy_image: true }
+          - { renderer: vanilla, sable: false, flywheel_backend: off }
+          - { renderer: vanilla, sable: false, flywheel_backend: instancing }
+          - { renderer: vanilla, sable: false, flywheel_backend: indirect }
     uses: ./.github/workflows/visual.yml
+    with:
+      renderer: ${{ matrix.renderer }}
+      sable: ${{ matrix.sable }}
+      shadow_fixture: ${{ matrix.shadow_fixture || false }}
+      real_pack: ${{ matrix.real_pack || 'none' }}
+      negative_control: ${{ matrix.negative_control || 'none' }}
+      flywheel_backend: ${{ matrix.flywheel_backend || 'default' }}
+      render_mode: ${{ matrix.render_mode || 'normal' }}
+      disable_copy_image: ${{ matrix.disable_copy_image || false }}
+      gl_context: ${{ matrix.gl_context || 'default' }}
+
+  # Real packs take substantially longer on software graphics. Preserve their
+  # required gate, but do not repeat them while an earlier regression is failing.
+  real-pack-visual:
+    needs: [changes, core, graphical-e2e, portal-visual]
+    if: needs.changes.outputs.e2e == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { renderer: iris-active, sable: true, real_pack: makeup }
+          - { renderer: iris-active, sable: true, real_pack: complementary }
+          - { renderer: neoculus-active, sable: false, real_pack: makeup }
+          - { renderer: neoculus-active, sable: false, real_pack: complementary }
+    uses: ./.github/workflows/visual.yml
+    with:
+      renderer: ${{ matrix.renderer }}
+      sable: ${{ matrix.sable }}
+      real_pack: ${{ matrix.real_pack }}
 
   required:
     name: Required verification
     if: always()
-    needs: [changes, core, graphical-e2e, portal-visual]
+    needs: [changes, core, graphical-e2e, portal-visual, real-pack-visual]
     runs-on: ubuntu-latest
     steps:
       - name: Enforce all selected checks
@@ -150,11 +209,13 @@ jobs:
           CORE: ${{ needs.core.result }}
           HEAVY: ${{ needs.graphical-e2e.result }}
           VISUAL: ${{ needs.portal-visual.result }}
+          REAL_PACKS: ${{ needs.real-pack-visual.result }}
           REQUIRED: ${{ needs.changes.outputs.e2e }}
         run: |
           [[ "$SELECT" == success && "$CORE" == success ]]
+          [[ "$REQUIRED" == true || "$REQUIRED" == false ]]
           if [[ "$REQUIRED" == true ]]; then
-            [[ "$HEAVY" == success && "$VISUAL" == success ]]
+            [[ "$HEAVY" == success && "$VISUAL" == success && "$REAL_PACKS" == success ]]
           else
-            [[ "$HEAVY" == skipped && "$VISUAL" == skipped ]]
+            [[ "$HEAVY" == skipped && "$VISUAL" == skipped && "$REAL_PACKS" == skipped ]]
           fi

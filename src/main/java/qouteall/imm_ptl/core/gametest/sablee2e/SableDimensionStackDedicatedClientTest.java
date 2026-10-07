@@ -17,6 +17,7 @@ import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.client.event.ClientTickEvent;
 import org.joml.Vector3dc;
 import qouteall.imm_ptl.core.ClientWorldLoader;
+import qouteall.imm_ptl.core.compat.sable.SableServerFirstClientHandoff;
 
 import java.util.UUID;
 
@@ -54,6 +55,9 @@ public final class SableDimensionStackDedicatedClientTest {
     private static UUID vehicleId;
     private static UUID subLevelId;
     private static int ridingSyncTicks;
+    private static int detachedHandoffTicks;
+    private static UUID detachedHandoffId;
+    private static boolean waitingForCorrelatedHandoff;
     private static int overlapTicks;
     private static int seamTransitions;
     private static ResourceKey<Level> lastObservedDimension;
@@ -160,8 +164,9 @@ public final class SableDimensionStackDedicatedClientTest {
     /**
      * Strong continuity invariant: once the client has observed the logical Sable UUID, at
      * least one copy must exist every client tick and the player's current dimension must
-     * already contain it. A short source+destination overlap is valid during atomic handoff;
-     * a long overlap is a leaked stale copy.
+     * already contain it outside the correlated detach window. A staged destination may
+     * overlap the source while the bounded handoff awaits its authoritative Ack. After that
+     * Ack, or without a correlated handoff, prolonged overlap is a leaked stale copy.
      */
     private static void verifyContinuousClientOwnership(Minecraft minecraft) {
         boolean inOverworld = hasSubLevel(Level.OVERWORLD);
@@ -170,20 +175,21 @@ public final class SableDimensionStackDedicatedClientTest {
             "Sable sublevel disappeared from every client world during portal handoff");
 
         ResourceKey<Level> currentDimension = minecraft.level.dimension();
-        if (currentDimension.equals(Level.OVERWORLD) || currentDimension.equals(Level.NETHER)) {
+        waitingForCorrelatedHandoff = verifyDetachedHandoffWindow(minecraft);
+        if (!waitingForCorrelatedHandoff
+            && (currentDimension.equals(Level.OVERWORLD) || currentDimension.equals(Level.NETHER))) {
             ClientSubLevel current = getClientSubLevel(currentDimension);
             require(current != null,
                 "current client dimension changed before destination Sable sublevel was synchronized");
             verifyBodyRemainsSpatiallyContinuous(minecraft, current);
         }
 
-        if (inOverworld && inNether) {
-            require(++overlapTicks <= MAX_OVERLAP_TICKS,
-                "source and destination Sable client copies overlapped too long");
-        }
-        else {
-            overlapTicks = 0;
-        }
+        var handoff = SableServerFirstClientHandoff.getActiveHandoffSnapshot();
+        overlapTicks = SableRiderHandoffGrace.verifyOverlap(
+            inOverworld && inNether, waitingForCorrelatedHandoff,
+            handoff == null ? null : handoff.phase(),
+            detachedHandoffTicks, RIDING_SYNC_GRACE_TICKS, overlapTicks, MAX_OVERLAP_TICKS
+        );
 
         if (lastObservedDimension != null && !lastObservedDimension.equals(currentDimension)) {
             seamTransitions++;
@@ -193,14 +199,70 @@ public final class SableDimensionStackDedicatedClientTest {
         lastObservedDimension = currentDimension;
     }
 
+    /**
+     * Detach, destination sync, authoritative dimension and reattachment arrive as
+     * separate packets in either supported initiation order. Until attachment,
+     * raw rider coordinates may belong to the next frame while level() is still
+     * the source. Compare spatial continuity again immediately after that exact,
+     * correlated packet window; never compare coordinates from different frames.
+     */
+    private static boolean verifyDetachedHandoffWindow(Minecraft minecraft) {
+        ResourceKey<Level> expectedSource = switch (phase) {
+            case WAIT_FOR_DESTINATION_RIDE, WAIT_FOR_GRAVITY_RECROSS -> Level.OVERWORLD;
+            case WAIT_FOR_RETURN_RIDE -> Level.NETHER;
+            default -> null;
+        };
+        if (expectedSource == null) return false;
+        ResourceKey<Level> expectedDestination = expectedSource == Level.OVERWORLD ? Level.NETHER : Level.OVERWORLD;
+        Entity vehicle = minecraft.player.getVehicle();
+        if (vehicle != null) {
+            require(vehicle.getUUID().equals(vehicleId), "client mounted a different seat during handoff");
+            detachedHandoffTicks = 0;
+            detachedHandoffId = null;
+            return false;
+        }
+        var handoff = SableServerFirstClientHandoff.getActiveHandoffSnapshot();
+        boolean correlated = handoff != null && SableRiderHandoffGrace.matchesHandoff(
+            vehicleId, handoff.vehicleId(), expectedSource, handoff.sourceDimension(),
+            expectedDestination, handoff.destinationDimension()
+        );
+        boolean staged = hasSubLevel(expectedDestination);
+        int elapsed = ++detachedHandoffTicks;
+        boolean waiting = SableRiderHandoffGrace.verifySourceSeat(
+            vehicleId, null, correlated, staged, elapsed, RIDING_SYNC_GRACE_TICKS
+        );
+        if (detachedHandoffId == null) detachedHandoffId = handoff.handoffId();
+        require(detachedHandoffId.equals(handoff.handoffId()), "handoff nonce changed while the rider remained detached");
+        // A detached rider must still be near one of the two correlated bodies.
+        // Accepting either coordinate frame is not permission for an arbitrary
+        // pose jump, even while the dimension packet is in flight.
+        SableRiderHandoffGrace.verifySpatialDistance(
+            bodyRiderDistance(minecraft, getClientSubLevel(expectedSource)),
+            bodyRiderDistance(minecraft, getClientSubLevel(expectedDestination)),
+            true, MAX_BODY_RIDER_DISTANCE
+        );
+        if (elapsed == 1 || elapsed % 20 == 0) {
+            SableDimensionStackIntegrationMarkers.handoffGrace(diagnosticState()
+                + " expectedSource=" + expectedSource.location()
+                + " expectedDestination=" + expectedDestination.location()
+                + " detachedHandoffTicks=" + elapsed + "/" + RIDING_SYNC_GRACE_TICKS);
+        }
+        return waiting;
+    }
+
     private static void verifyBodyRemainsSpatiallyContinuous(Minecraft minecraft, ClientSubLevel subLevel) {
+        SableRiderHandoffGrace.verifySpatialDistance(
+            bodyRiderDistance(minecraft, subLevel), Double.POSITIVE_INFINITY, false, MAX_BODY_RIDER_DISTANCE
+        );
+    }
+
+    private static double bodyRiderDistance(Minecraft minecraft, ClientSubLevel subLevel) {
+        if (subLevel == null) return Double.POSITIVE_INFINITY;
         Vector3dc bodyPosition = subLevel.logicalPose().position();
         double dx = bodyPosition.x() - minecraft.player.getX();
         double dy = bodyPosition.y() - minecraft.player.getY();
         double dz = bodyPosition.z() - minecraft.player.getZ();
-        double distanceSquared = dx * dx + dy * dy + dz * dz;
-        require(distanceSquared <= MAX_BODY_RIDER_DISTANCE * MAX_BODY_RIDER_DISTANCE,
-            "Sable body pose snapped away from its rider during portal handoff: distance=" + Math.sqrt(distanceSquared));
+        return Math.sqrt(dx * dx + dy * dy + dz * dz);
     }
 
     private static void verifyInterpolationHistory(
@@ -286,6 +348,7 @@ public final class SableDimensionStackDedicatedClientTest {
         verifyYawDelta(minecraft, 0.0f, "inverse rotated return crossing");
 
         SableDimensionStackIntegrationMarkers.acknowledge("return");
+        ridingSyncTicks = 0;
         phase = Phase.WAIT_FOR_GRAVITY_RECROSS;
         phaseTicks = 0;
     }
@@ -293,8 +356,8 @@ public final class SableDimensionStackDedicatedClientTest {
     private static void waitForGravityRecross(Minecraft minecraft) {
         if (minecraft.level.dimension().equals(Level.OVERWORLD)) {
             Entity vehicle = minecraft.player.getVehicle();
-            require(vehicle != null && vehicle.getUUID().equals(vehicleId),
-                "client lost Create seat while gravity was reversing returned body");
+            require(vehicle != null && vehicle.getUUID().equals(vehicleId) || waitingForCorrelatedHandoff,
+                "client lost Create seat outside a correlated gravity-recross handoff");
             return;
         }
         if (!minecraft.level.dimension().equals(Level.NETHER)) return;
@@ -391,6 +454,8 @@ public final class SableDimensionStackDedicatedClientTest {
         ClientSubLevel remote = getClientSubLevel(Level.NETHER);
         require(remote != null,
             "remote Nether Sable sublevel vanished before final client confirmation");
+        require(!hasSubLevel(Level.OVERWORLD),
+            "stale source Sable copy survived after the completed handoffs");
         require(Math.abs(remote.logicalPose().position().x() - remoteSourceX) >= MIN_REMOTE_OBSERVED_MOVEMENT,
             "remote Nether Sable pose regressed before final client confirmation");
 
@@ -408,14 +473,23 @@ public final class SableDimensionStackDedicatedClientTest {
         }
         Entity vehicle = minecraft.player.getVehicle();
         ClientSubLevel remote = getClientSubLevel(Level.NETHER);
+        ClientSubLevel source = getClientSubLevel(Level.OVERWORLD);
         return " clientDim=" + minecraft.level.dimension().location()
             + " riding=" + (vehicle == null ? "none" : vehicle.getUUID())
             + " expectedVehicle=" + vehicleId
+            + " activeServerHandoff=" + SableServerFirstClientHandoff.hasActiveServerInitiatedHandoff()
+            + " handoff=" + SableServerFirstClientHandoff.getActiveHandoffSnapshot()
+            + " detachedHandoffTicks=" + detachedHandoffTicks
+            + " staleOverlapTicks=" + overlapTicks + "/" + MAX_OVERLAP_TICKS
+            + " destinationStaged=" + (remote != null)
+            + " detachedTicks=" + ridingSyncTicks
             + " subLevel=" + subLevelId
             + " seamTransitions=" + seamTransitions
             + " sourceWorldYaw=" + sourceWorldYaw
             + " currentWorldYaw=" + worldYaw(minecraft.player)
             + " rawLocalYaw=" + minecraft.player.getYRot()
+            + " rawRiderPosition=" + minecraft.player.position()
+            + " sourceOverworld=" + (source == null ? "missing" : source.logicalPose().position())
             + " remoteNether=" + (remote == null ? "missing" : remote.logicalPose().position());
     }
 

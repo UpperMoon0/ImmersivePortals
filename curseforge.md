@@ -20,12 +20,20 @@ This Minecraft 1.21.1 NeoForge Community Edition distribution includes tested Sa
 
 The compatibility path is exercised by automated dedicated-server plus real-client tests over both Sable UDP networking and TCP fallback, including gravity-driven recrossing and rider dismount.
 
+## Optional renderers and shaders
+
+Choose only one terrain renderer. The pinned combinations are vanilla without shaders, Sodium 0.8.12+mc1.21.1 with optional official Iris 1.8.14-beta.1+1.21.1-neoforge, or Embeddium 1.0.15+mc1.21.1 with optional NeOculus 1.8.7. NeOculus requires Embeddium; official Iris requires Sodium. Classic Oculus is not the pinned NeOculus implementation.
+
+Shaderpack regression inputs include MakeUp Ultra Fast 9.4a (`shadowless_high`) and Complementary Reimagined r5.5.1 (`POTATO`). Other packs, presets and pack-specific shadows need separate validation. Normal rendering supports nested portals; compatibility/debug renderers retain a one-layer limit.
+
+Create 6.0.10-280 / Flywheel 1.0.6 renders portal and clipped views through a scoped vanilla block-entity fallback and restores the selected backend for the main view. See the [renderer compatibility contract](https://github.com/UpperMoon0/ImmersivePortals/blob/main/docs/renderer-backends.md) and [6.0.11 release notes](https://github.com/UpperMoon0/ImmersivePortals/blob/main/changelog/6.0.11.md) for scope and verification limits.
+
 ## Requirements
 
 - Minecraft 1.21.1
 - NeoForge 21.1.228+
 - Java 21
-- Cloth Config API
+- Cloth Config API 15.0+ for NeoForge
 
 ## Attribution & Credits
 

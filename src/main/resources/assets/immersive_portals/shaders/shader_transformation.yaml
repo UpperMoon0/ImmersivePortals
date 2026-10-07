@@ -28,11 +28,13 @@ configs:
       - rendertype_entity_translucent_cull
       - rendertype_entity_translucent
       - rendertype_entity_smooth_cutout
-      - rendertype_beacon_beam",
+      - rendertype_beacon_beam
       - rendertype_entity_translucent_emissive
       - rendertype_entity_translucent_cull
       - portal_area
       - particle
+      # Damage-overlay vertices are already camera-relative, like entity vertices.
+      - rendertype_crumbling
     transformations:
       - pattern: |-
           void ( )*main( )*\(( )*( )*\)( )*(
@@ -43,30 +45,11 @@ configs:
               gl_ClipDistance[0] = dot(Position.xyz, iportal_ClippingEquation.xyz) + 
                   iportal_ClippingEquation.w;
     debugOutput: false
-  - comment: For iris+sodium
-    type: vs
-    affectedShaders:
-      - iris_gbuffers_terrain
-      - iris_gbuffers_water
-    transformations:
-      - pattern: |-
-          void ( )*main( )*\(( )*( )*\)( )*(
-          )*\{
-        replacement: |-
-          uniform vec4 iportal_ClippingEquation;
-          void main() {
-      - pattern: "\\}(?![\\S\\s]*\\})"
-        # match the last } ([\S\s] matches any character). use the modelview-transformed coordinate
-        replacement: |-
-          gl_ClipDistance[0] = dot(
-              (iris_ModelViewMatrix * getVertexPosition()).xyz, iportal_ClippingEquation.xyz
-          ) + iportal_ClippingEquation.w;
-          }
-    debugOutput: false
   - comment: For sodium
     type: vs
     affectedShaders:
       - sodium:blocks/block_layer_opaque.vsh
+      - embeddium:blocks/block_layer_opaque.vsh
     transformations:
       - pattern: |-
           void ( )*main( )*\(( )*( )*\)( )*(

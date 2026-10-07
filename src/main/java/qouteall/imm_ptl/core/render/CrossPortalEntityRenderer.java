@@ -96,6 +96,21 @@ public class CrossPortalEntityRenderer {
         return IPGlobal.correctCrossPortalEntityRendering;
     }
     
+    /**
+     * Read-only render-entry query for backends that cannot clip individual
+     * visualized entities. Snapshot this before a backend begins its frame, not
+     * while the temporary per-entity GL clip flag is enabled.
+     */
+    public static boolean hasClippedEntitiesInLevel(Level level) {
+        if (level == null || !isCrossPortalRenderingEnabled()) return false;
+        for (Entity entity : collidedEntities.keySet()) {
+            if (entity.isRemoved() || entity.level() != level) continue;
+            PortalCollisionHandler handler = ((IEEntity) entity).ip_getPortalCollisionHandler();
+            if (handler != null && !handler.portalCollisions.isEmpty()) return true;
+        }
+        return false;
+    }
+
     public static void onEndRenderingEntitiesAndBlockEntities(PoseStack matrixStack) {
         isRenderingEntityNormally = false;
         

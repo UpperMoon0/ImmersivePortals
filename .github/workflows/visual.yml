@@ -12,6 +12,27 @@ on:
       sable:
         type: boolean
         default: true
+      shadow_fixture:
+        type: boolean
+        default: false
+      real_pack:
+        type: string
+        default: none
+      negative_control:
+        type: string
+        default: none
+      flywheel_backend:
+        type: string
+        default: default
+      render_mode:
+        type: string
+        default: normal
+      gl_context:
+        type: string
+        default: default
+      disable_copy_image:
+        type: boolean
+        default: false
       samples:
         type: number
         default: 200
@@ -22,8 +43,10 @@ permissions:
 jobs:
   visual:
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 120
     steps:
+      - name: Start verification job budget
+        run: echo "IP_VERIFY_JOB_START_EPOCH=$(date +%s)" >> "$GITHUB_ENV"
       - uses: actions/checkout@v6
         with:
           ref: ${{ inputs.ref }}
@@ -40,25 +63,45 @@ jobs:
             sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=2 install -y xvfb libgl1-mesa-dri
           fi
           chmod +x ./gradlew
+      - name: Fetch exact official real-pack release
+        if: inputs.real_pack != 'none'
+        id: pack
+        env:
+          REAL_PACK: ${{ inputs.real_pack }}
+        run: python3 tools/fetch_shaderpack.py "$REAL_PACK" --github-output "$GITHUB_OUTPUT"
       - name: Verify portal pixels, shader reload and live timing budgets
         env:
+          SHADOW_FIXTURE: ${{ inputs.shadow_fixture }}
           RENDERER: ${{ inputs.renderer }}
           SABLE: ${{ inputs.sable }}
           SAMPLES: ${{ inputs.samples }}
+          PACK_FILE: ${{ steps.pack.outputs.file }}
+          PACK_PROFILE: ${{ steps.pack.outputs.profile }}
+          NEGATIVE: ${{ inputs.negative_control }}
+          FLYWHEEL: ${{ inputs.flywheel_backend }}
+          RENDER_MODE: ${{ inputs.render_mode }}
+          DISABLE_COPY_IMAGE: ${{ inputs.disable_copy_image }}
+          GL_CONTEXT: ${{ inputs.gl_context }}
         run: |
           extra=()
+          if [[ "$SHADOW_FIXTURE" == true ]]; then extra+=(--shadow-fixture); fi
           if [[ "$SABLE" == false ]]; then extra+=(--no-sable); fi
-          python3 tools/verify.py visual --renderer "$RENDERER" --samples "$SAMPLES" "${extra[@]}"
+          if [[ -n "$PACK_FILE" ]]; then extra+=(--shaderpack-file "$PACK_FILE" --shaderpack-profile "$PACK_PROFILE"); fi
+          if [[ "$DISABLE_COPY_IMAGE" == true ]]; then extra+=(--disable-copy-image); fi
+          python3 tools/verify.py visual --renderer "$RENDERER" --samples "$SAMPLES" \
+            --gl-context "$GL_CONTEXT" --negative-control "$NEGATIVE" --flywheel-backend "$FLYWHEEL" --render-mode "$RENDER_MODE" "${extra[@]}"
       - name: Preserve images, timings and runtime diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: portal-visual-${{ inputs.renderer }}-sable-${{ inputs.sable }}
+          name: portal-visual-${{ inputs.renderer }}-sable-${{ inputs.sable }}-${{ inputs.render_mode }}-${{ inputs.flywheel_backend }}-blit-${{ inputs.disable_copy_image }}-${{ inputs.negative_control }}-${{ inputs.real_pack }}-${{ inputs.gl_context }}-shadow-${{ inputs.shadow_fixture }}
           if-no-files-found: warn
+          include-hidden-files: true
           path: |
             build/verification-visual.json
             build/portal-visual-*/**
             run-sable-e2e-server/logs/**
             run-sable-e2e-server/crash-reports/**
+            run-sable-e2e-client/.mixin.out/**
             run-sable-e2e-client/logs/**
             run-sable-e2e-client/crash-reports/**

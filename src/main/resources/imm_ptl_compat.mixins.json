@@ -1,19 +1,9 @@
 {
   "required": true,
   "package": "qouteall.imm_ptl.core.compat.mixin",
-  "compatibilityLevel": "JAVA_17",
+  "compatibilityLevel": "JAVA_21",
   "plugin": "qouteall.imm_ptl.core.compat.IPCompatMixinPlugin",
   "mixins": [
-    "flywheel.MixinFlywheelCrumblingRenderer",
-    "flywheel.MixinFlywheelProgramCompiler",
-    "flywheel.MixinFlywheelQuadConverter",
-    "iris.MixinIrisClearPass",
-    "iris.MixinIrisFinalPassRenderer",
-    "iris.MixinIrisIris",
-    "iris.MixinIrisRenderingPipeline",
-    "iris.MixinIrisShadowRenderTargets",
-    "iris.MixinIrisSodiumShader",
-    "iris.MixinIrisTransformPatcher",
     "sable.AccessorSubLevel_SablePortalCompat",
     "sable.InvokerSubLevelTrackingSystem_SablePortalCompat",
     "sable.MixinEntity_SableCollisionCompat",
@@ -22,8 +12,47 @@
     "sable.MixinServerTeleportationManager_SableRiderCompat",
     "sable.MixinSubLevelContainer_SableGlobalPlotAllocator",
     "sable.MixinSubLevelPhysicsSystem_SableDimensionStackCompat",
-    "sable.MixinSubLevelTrackingSystem_SablePortalCompat",
+    "sable.MixinSubLevelTrackingSystem_SablePortalCompat"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  },
+  "client": [
+    "embeddium.IEEmbeddiumWorldRenderer",
+    "embeddium.MixinEmbeddiumChunkShaderInterface",
+    "embeddium.MixinEmbeddiumFlawlessFrames",
+    "embeddium.MixinEmbeddiumOcclusionCuller",
+    "embeddium.MixinEmbeddiumRenderRegion",
+    "embeddium.MixinEmbeddiumRenderSectionManager",
+    "embeddium.MixinEmbeddiumShaderLoader",
+    "embeddium.MixinEmbeddiumViewport",
+    "embeddium.MixinEmbeddiumWorldRenderer",
+    "flywheel.MixinFlywheelBlockEntityRenderDispatcher",
+    "flywheel.MixinFlywheelLevelRenderer",
+    "flywheel.MixinFlywheelVisualizationHelper",
+    "flywheel.MixinFlywheelVisualizationManager",
+    "iris.MixinIrisClearPass",
+    "iris.MixinIrisFinalPassRenderer",
+    "iris.MixinIrisFullScreenQuadRenderer",
+    "iris.MixinIrisGLDebug",
+    "iris.MixinIrisIris",
+    "iris.MixinIrisRenderingPipeline",
+    "iris.MixinIrisPipelineManager",
+    "iris.MixinIrisShaderCreator",
+    "iris.MixinIrisShadowRenderTargets",
+    "iris.MixinIrisShadowRenderer",
+    "iris.MixinIrisSodiumShader",
+    "iris.MixinIrisTransformPatcher",
+    "iris.MixinIrisVertexBuffer",
+    "iris.MixinIrisWorldShader",
+    "neoculus.MixinNeOculusEmbeddiumShader",
+    "neoculus.MixinNeOculusIris",
+    "neoculus.MixinNeOculusShaderTransformer",
+    "sable.MixinClientTeleportationManager_SableServerFirstAck",
+    "sable.MixinClientboundStartTrackingSubLevelPacket_SablePortalCompat",
+    "sable.MixinSableClientPacketContext_SablePortalCompat",
     "sodium.IESodiumWorldRenderer",
+    "sodium.MixinSodiumDefaultChunkRenderer",
     "sodium.MixinSodiumDefaultShaderInterface",
     "sodium.MixinSodiumFlawlessFrames",
     "sodium.MixinSodiumOcclusionCuller",
@@ -32,13 +61,5 @@
     "sodium.MixinSodiumShaderLoader",
     "sodium.MixinSodiumViewport",
     "sodium.MixinSodiumWorldRenderer"
-  ],
-  "injectors": {
-    "defaultRequire": 1
-  },
-  "client": [
-    "sable.MixinClientTeleportationManager_SableServerFirstAck",
-    "sable.MixinClientboundStartTrackingSubLevelPacket_SablePortalCompat",
-    "sable.MixinSableClientPacketContext_SablePortalCompat"
   ]
 }

@@ -26,6 +26,35 @@ public class FrontClipping {
     public static boolean isClippingEnabled = false;
     
     public static final double ADJUSTMENT = 0.01;
+
+    /** A draw/pass scope must restore both the plane and the actual GL enable bit. */
+    public static final class ClippingState {
+        private final double[] beforeModelView = activeClipPlaneEquationBeforeModelView;
+        private final double[] afterModelView = activeClipPlaneAfterModelView;
+        private final boolean enabled = isClippingEnabled;
+        private final boolean glEnabled = GL11.glIsEnabled(GL11.GL_CLIP_PLANE0);
+
+        private ClippingState() {}
+    }
+
+    public static ClippingState captureClippingState() {
+        return new ClippingState();
+    }
+
+    public static ClippingState suspendClipping() {
+        ClippingState state = captureClippingState();
+        GL11.glDisable(GL11.GL_CLIP_PLANE0);
+        isClippingEnabled = false;
+        return state;
+    }
+
+    public static void restoreClippingState(ClippingState state) {
+        activeClipPlaneEquationBeforeModelView = state.beforeModelView;
+        activeClipPlaneAfterModelView = state.afterModelView;
+        isClippingEnabled = state.enabled;
+        if (state.glEnabled) GL11.glEnable(GL11.GL_CLIP_PLANE0);
+        else GL11.glDisable(GL11.GL_CLIP_PLANE0);
+    }
     
     public static void disableClipping() {
         if (IPGlobal.enableClippingMechanism) {

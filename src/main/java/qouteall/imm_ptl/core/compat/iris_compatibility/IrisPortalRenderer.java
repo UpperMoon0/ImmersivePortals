@@ -12,7 +12,6 @@ import org.lwjgl.opengl.GL30;
 import qouteall.imm_ptl.core.CHelper;
 import qouteall.imm_ptl.core.IPCGlobal;
 import qouteall.imm_ptl.core.IPGlobal;
-import qouteall.imm_ptl.core.IPMcHelper;
 import qouteall.imm_ptl.core.compat.IPPortingLibCompat;
 import qouteall.imm_ptl.core.portal.Portal;
 import qouteall.imm_ptl.core.portal.PortalRenderInfo;
@@ -46,6 +45,7 @@ public class IrisPortalRenderer extends PortalRenderer {
     
     
     private SecondaryFrameBuffer[] deferredFbs = new SecondaryFrameBuffer[0];
+    private Boolean allocatedFloatingPointDepth;
     
     private boolean portalRenderingNeeded = false;
     private boolean nextFramePortalRenderingNeeded = false;
@@ -65,19 +65,25 @@ public class IrisPortalRenderer extends PortalRenderer {
     public void prepareRendering() {
         Validate.isTrue(!PortalRendering.isRendering());
     
-        // As I tested, in Nvidia videocard, glCopyImageSubData can convert depth32 into depth24stencil8.
-        // but in AMD videocard it cannot. AMD videocard only supports converting depth32 into depth32stencil8.
-        IPCGlobal.useSeparatedStencilFormat = !IPMcHelper.isNvidiaVideocard();
+        // Removing the previous renderer's stencil may reallocate main depth.
+        // Inspect the final source storage, not the old packed attachment.
+        IPPortingLibCompat.setIsStencilEnabled(client.getMainRenderTarget(), false);
+        // Match the depth component's actual storage type. Vendor names do not
+        // establish format compatibility for either blit or copy-image.
+        boolean floatingPointDepth = IPIrisHelper.hasFloatingPointDepth(client.getMainRenderTarget());
+        IPCGlobal.useSeparatedStencilFormat = floatingPointDepth;
         
-        if (deferredFbs.length != PortalRendering.getMaxPortalLayer() + 1) {
+        if (deferredFbs.length != PortalRendering.getMaxPortalLayer() + 1
+            || allocatedFloatingPointDepth == null || allocatedFloatingPointDepth != floatingPointDepth) {
             for (SecondaryFrameBuffer fb : deferredFbs) {
-                fb.fb.destroyBuffers();
+                if (fb.fb != null) fb.fb.destroyBuffers();
             }
             
             deferredFbs = new SecondaryFrameBuffer[PortalRendering.getMaxPortalLayer() + 1];
             for (int i = 0; i < deferredFbs.length; i++) {
                 deferredFbs[i] = new SecondaryFrameBuffer();
             }
+            allocatedFloatingPointDepth = floatingPointDepth;
         }
         
         CHelper.checkGlError();
@@ -99,8 +105,6 @@ public class IrisPortalRenderer extends PortalRenderer {
             deferredFb.fb.unbindWrite();
         }
     
-        IPPortingLibCompat.setIsStencilEnabled(client.getMainRenderTarget(), false);
-        
         // Iris now use vanilla framebuffer's depth
         client.getMainRenderTarget().bindWrite(false);
     }

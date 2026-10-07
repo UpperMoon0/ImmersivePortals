@@ -4,11 +4,42 @@ import net.neoforged.fml.loading.LoadingModList;
 import org.objectweb.asm.tree.ClassNode;
 import org.spongepowered.asm.mixin.extensibility.IMixinConfigPlugin;
 import org.spongepowered.asm.mixin.extensibility.IMixinInfo;
+import org.spongepowered.asm.service.MixinService;
 
 import java.util.List;
 import java.util.Set;
+import java.util.HashSet;
 
 public class IPCompatMixinPlugin implements IMixinConfigPlugin {
+    private RendererCompatibility rendererCompatibility;
+    private final Set<String> checkedTargets = new HashSet<>();
+
+    private void requireTarget(String className, String implementation) {
+        if (checkedTargets.contains(className)) return;
+        try {
+            MixinService.getService().getBytecodeProvider().getClassNode(className);
+            checkedTargets.add(className);
+        } catch (Exception exception) {
+            throw new IllegalStateException("Immersive Portals: unsupported " + implementation
+                + " installation; required compatibility target " + className + " is missing.", exception);
+        }
+    }
+
+    private RendererCompatibility rendererCompatibility(LoadingModList modList) {
+        if (rendererCompatibility == null) {
+            rendererCompatibility = RendererCompatibility.select(
+                modList.getModFileById("sodium") != null, modList.getModFileById("embeddium") != null,
+                modList.getModFileById("iris") != null, modList.getModFileById("oculus") != null
+            );
+            rendererCompatibility.checkVersions(version(modList, "embeddium"), version(modList, "oculus"));
+        }
+        return rendererCompatibility;
+    }
+
+    private static String version(LoadingModList modList, String id) {
+        return modList.getMods().stream().filter(mod -> mod.getModId().equals(id))
+            .map(mod -> mod.getVersion().toString()).findFirst().orElse(null);
+    }
     @Override
     public void onLoad(String mixinPackage) {
     
@@ -24,24 +55,16 @@ public class IPCompatMixinPlugin implements IMixinConfigPlugin {
 
 
         LoadingModList modList = LoadingModList.get();
-        if (mixinClassName.contains("IrisSodium")) {
-            boolean sodiumLoaded = modList.getModFileById("embeddium") != null || modList.getModFileById("sodium") != null;
-            boolean irisLoaded = modList.getModFileById("iris") != null;
-            return sodiumLoaded && irisLoaded;
-        }
-        
-        if (mixinClassName.contains("Iris")) {
-            boolean irisLoaded = modList.getModFileById("iris") != null;
-            return irisLoaded;
-        }
-        
-        if (mixinClassName.contains("Sodium")) {
-            boolean sodiumLoaded = modList.getModFileById("embeddium") != null || modList.getModFileById("sodium") != null;
-            return sodiumLoaded;
+        if (mixinClassName.contains(".iris.") || mixinClassName.contains(".sodium.")
+            || mixinClassName.contains(".embeddium.") || mixinClassName.contains(".neoculus.")) {
+            boolean applies = rendererCompatibility(modList).appliesTo(mixinClassName);
+            if (applies && mixinClassName.contains(".neoculus.")) requireTarget(targetClassName, "NeOculus 1.8.7");
+            return applies;
         }
         
         if (mixinClassName.contains("Flywheel")) {
             boolean flywheelLoaded =  modList.getModFileById("flywheel") != null;
+            if (flywheelLoaded) requireTarget("dev.engine_room.flywheel.impl.visualization.VisualizationManagerImpl", "Flywheel (modern 1.0 API required)");
             return flywheelLoaded;
         }
         

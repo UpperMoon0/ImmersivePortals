@@ -99,9 +99,10 @@ tasks.named('jar', Jar).configure {
         rename { 'LICENSE-Immersive-Portals' }
     }
     from(rootProject.file('NOTICE'))
-    // Dedicated E2E drivers are compiled into the dev runtime but never shipped in release jars.
-    exclude 'qouteall/imm_ptl/core/gametest/sablee2e/**'
+    // GameTests and E2E drivers are compiled into the dev runtime only.
+    exclude 'qouteall/imm_ptl/core/gametest/**'
     exclude 'imm_ptl_gametest.mixins.json'
+    exclude 'imm_ptl_portal_clipping_test.mixins.json'
 }
 
 minecraft.accessTransformers.entry 'public net.minecraft.server.MinecraftServer storageSource'
@@ -149,7 +150,7 @@ def localAeronauticsAvailable = localAeronauticsJars.every { it.exists() }
 def verificationRenderer = providers.gradleProperty('verificationRenderer').getOrElse('sodium')
 def verificationSable = providers.gradleProperty('verificationSable').getOrElse('true').toBoolean()
 def verificationRendererStaged = providers.gradleProperty('verificationRendererStaged').getOrElse('false').toBoolean()
-if (!(verificationRenderer in ['vanilla', 'sodium', 'iris', 'veil'])) {
+if (!(verificationRenderer in ['vanilla', 'sodium', 'iris', 'iris-active', 'embeddium', 'neoculus', 'neoculus-active', 'veil'])) {
     throw new GradleException('Unknown verificationRenderer: ' + verificationRenderer)
 }
 
@@ -218,6 +219,12 @@ runs {
 
     portalSmokeClient {
         runType 'client'
+        systemProperty 'mixin.debug.verbose', 'true'
+        systemProperty 'mixin.debug.export', 'true'
+        systemProperty 'mixin.debug.export.filter', 'net.minecraft.client.renderer.LevelRenderer'
+        if (verificationRenderer.startsWith('iris') || verificationRenderer.startsWith('neoculus')) {
+            arguments '--mixin', 'imm_ptl_portal_clipping_test.mixins.json'
+        }
         workingDirectory project.file('run-sable-e2e-client')
         dependencies {
             // The verification harness first resolves these artifacts from the
@@ -228,9 +235,15 @@ runs {
                 if (verificationRenderer == 'sodium' || verificationRenderer == 'veil') {
                     runtime("net.caffeinemc:sodium-neoforge:0.8.12+mc1.21.1") { transitive = false }
                 }
-                if (verificationRenderer == 'iris') {
+                if (verificationRenderer in ['iris', 'iris-active']) {
                     runtime "maven.modrinth:iris:1.8.14-beta.1+1.21.1-neoforge"
                     runtime("net.caffeinemc:sodium-neoforge:0.8.12+mc1.21.1") { transitive = false }
+                }
+                if (verificationRenderer in ['embeddium', 'neoculus', 'neoculus-active']) {
+                    runtime("maven.modrinth:embeddium:1.0.15+mc1.21.1") { transitive = false }
+                }
+                if (verificationRenderer in ['neoculus', 'neoculus-active']) {
+                    runtime("maven.modrinth:neoculus:ZMibIRkN") { transitive = false }
                 }
                 if (verificationRenderer == 'veil') {
                     runtime("foundry.veil:veil-neoforge-1.21.1:4.3.2") {
@@ -283,10 +296,25 @@ mixin {
     configs.add("imm_ptl_fabric.mixins.json")
 }
 
+// Keep the NeOculus ABI contract jar isolated from official Iris's duplicate namespace.
+configurations {
+    irisContract {
+        canBeConsumed = false
+        canBeResolved = true
+        transitive = false
+    }
+    neoculusContract {
+        canBeConsumed = false
+        canBeResolved = true
+        transitive = false
+    }
+}
+
 dependencies {
+    irisContract "maven.modrinth:iris:1.8.14-beta.1+1.21.1-neoforge"
+    neoculusContract "maven.modrinth:neoculus:ZMibIRkN"
     implementation "net.neoforged:neoforge:${neo_version}"
-    /*implementation "maven.modrinth:embeddium:Na1PoLYF"
-    compileOnly "maven.modrinth:oculus:1.20.1-1.6.15a"*/
+    compileOnly("maven.modrinth:embeddium:1.0.15+mc1.21.1") { transitive = false }
 
     compileOnly "net.caffeinemc:sodium-neoforge-mod:0.8.12+mc1.21.1"
     compileOnly("dev.ryanhcode.sable:sable-neoforge-${minecraft_version}:${sable_version}") { transitive = false }
@@ -303,9 +331,13 @@ dependencies {
     testImplementation platform("org.junit:junit-bom:5.11.4")
     testImplementation "org.junit.jupiter:junit-jupiter"
     testImplementation "org.ow2.asm:asm-tree:9.7.1"
+    testImplementation("maven.modrinth:embeddium:1.0.15+mc1.21.1") { transitive = false }
+    testImplementation("net.caffeinemc:sodium-neoforge-mod:0.8.12+mc1.21.1") { transitive = false }
     compileOnly "maven.modrinth:iris:1.8.14-beta.1+1.21.1-neoforge"
     // Optional compile-time API for Veil shader recompilation compatibility.
     compileOnly "foundry.veil:veil-neoforge-${minecraft_version}:4.3.2"
+    compileOnly("dev.engine-room.flywheel:flywheel-neoforge-1.21.1:1.0.6") { transitive = false }
+    compileOnly("net.createmod.ponder:ponder-neoforge:1.0.82+mc1.21.1") { transitive = false }
 
     implementation "maven.modrinth:cloth-config:15.0.140+neoforge"
     implementation "maven.modrinth:pehkui:3.8.3+1.21-neoforge"
@@ -331,6 +363,10 @@ dependencies {
 
 tasks.named('test').configure {
     useJUnitPlatform()
+    doFirst {
+        systemProperty 'ip.irisJar', configurations.irisContract.singleFile.absolutePath
+        systemProperty 'ip.neoculusJar', configurations.neoculusContract.singleFile.absolutePath
+    }
 }
 
 tasks.register('coreCheck') {

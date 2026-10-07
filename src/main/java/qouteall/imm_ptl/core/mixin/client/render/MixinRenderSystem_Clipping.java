@@ -22,7 +22,9 @@ public class MixinRenderSystem_Clipping {
     )
     private static void onSetShader(Supplier<ShaderInstance> supplier, CallbackInfo ci) {
         if (IPGlobal.enableClippingMechanism) {
-            if (!IrisInterface.invoker.isIrisPresent()) {
+            // Installing a shader provider does not replace vanilla draw programs
+            // while its pack is disabled. Those programs still need their plane.
+            if (!IrisInterface.invoker.isShaders()) {
                 if (CrossPortalEntityRenderer.isRenderingEntityNormally ||
                     CrossPortalEntityRenderer.isRenderingEntityProjection
                 ) {
