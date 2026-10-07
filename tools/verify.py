@@ -538,6 +538,29 @@ def validate_crumbling_evidence(check: dict, clean: dict | None) -> None:
         raise RuntimeError("cog did not return to its clean image after damage cleared")
 
 
+def validate_crossing_motion(check: dict) -> None:
+    motion = check.get("crossing_motion", {})
+    source, arrival, capture = (motion.get(key, {}) for key in ("source", "first_destination", "capture"))
+    identity = source.get("player_uuid")
+    if not identity or source.get("dimension") != "minecraft:overworld" or source.get("player_dimension") != "minecraft:overworld" or source.get("forward_input") is not True:
+        raise RuntimeError("crossing did not begin with observed source-world player input")
+    for pose in (arrival, capture):
+        if pose.get("player_uuid") != identity or pose.get("dimension") != "minecraft:the_nether" or pose.get("player_dimension") != "minecraft:the_nether":
+            raise RuntimeError("crossing player ownership was not preserved in the destination")
+    def in_aisle(point):
+        return isinstance(point, list) and len(point) == 3 and all(isinstance(v, (int, float)) and math.isfinite(v) for v in point) and abs(point[0]) <= 0.25 and abs(point[1] - 82) <= 0.25 and -2 <= point[2] <= 0.25
+    if not all(in_aisle(point) for point in (arrival.get("eye"), capture.get("eye"), capture.get("camera"))):
+        raise RuntimeError("crossing observer drifted outside the portal-to-wall aisle")
+    velocity = capture.get("velocity", [])
+    if len(velocity) != 3 or not all(isinstance(v, (int, float)) and math.isfinite(v) for v in velocity) or sum(v*v for v in velocity) >= 1e-12 or capture.get("forward_input") is not False or motion.get("velocity_stops", 0) <= 0:
+        raise RuntimeError("crossing observer retained movement at framebuffer capture")
+    if capture.get("wall_chunk_loaded") is not True or capture.get("wall_block") != "minecraft:lime_concrete":
+        raise RuntimeError("native destination wall chunk was missing after crossing")
+    server = capture.get("server", {}).get("current", {})
+    if server.get("player_uuid") != identity or server.get("dimension") != "minecraft:the_nether" or not in_aisle(server.get("eye")):
+        raise RuntimeError("authoritative server crossing pose disagreed with client")
+
+
 def validate_shader_evidence(renderer: str, render_mode: str = "normal", gl_context: str = "default") -> None:
     """A green screenshot alone cannot establish active-shader compatibility."""
     fixture_path = RESULT_DIR / "fixture.json"
@@ -600,6 +623,8 @@ def validate_shader_evidence(renderer: str, render_mode: str = "normal", gl_cont
     clean_cogs = {check["phase"]: check.get("crumbling_oracle", {}) for check in phases if check.get("scene") == "create-crumbling-clean"}
     for check in phases:
         scene = check.get("scene", "")
+        if scene == "crossing":
+            validate_crossing_motion(check)
         if scene.startswith("create-crumbling-"):
             validate_crumbling_evidence(check, clean_cogs.get(check["phase"]))
         if renderer in ACTIVE_RENDERERS and not fixture.get("diagnostic_fixture", True) and scene != "crossing":

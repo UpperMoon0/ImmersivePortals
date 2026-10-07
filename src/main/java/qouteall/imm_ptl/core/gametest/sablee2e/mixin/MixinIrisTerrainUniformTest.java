@@ -18,4 +18,8 @@ public class MixinIrisTerrainUniformTest {
     private void ip_captureTerrainUniforms(Matrix4fc matrix, CallbackInfo ci) {
         PortalShaderDiagnostics.captureTerrain(((Object) this).getClass().getSimpleName(), matrix);
     }
+    @Inject(method = "setRegionOffset", at = @At("RETURN"))
+    private void ip_captureShadowRegion(float x, float y, float z, CallbackInfo ci) {
+        qouteall.imm_ptl.core.gametest.sablee2e.PortalShadowTestControl.recordRegion(x, y, z);
+    }
 }

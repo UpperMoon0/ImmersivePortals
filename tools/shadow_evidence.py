@@ -9,6 +9,11 @@ def validate_probe(check: dict, result_dir: Path, *, expect_caster: bool) -> Non
     observation = f"{check.get('phase')}:{check.get('scene')}"
     if shadow.get("observation") != observation or shadow.get("observations", 0) < 1:
         raise RuntimeError("missing fresh real shadow-pass observation")
+    draw_states = shadow.get("terrain_draw_states", {})
+    if shadow.get("terrain_region_setups", 0) < 1 or not draw_states or any(
+        state.get("clipDistanceEnabled") is not False or state.get("probeOutput") != 1 for state in draw_states.values()
+    ):
+        raise RuntimeError("actual shadow terrain draws did not observe suspended clipping")
     samples = shadow.get("samples", [])
     if shadow.get("resolution") != 256 or shadow.get("sample_count") != 25 or len(samples) != 25:
         raise RuntimeError("missing actual shadow depth pixels")
@@ -58,6 +63,11 @@ def validate_shadow_negative(result_dir: Path) -> None:
     state = failed.get("shadow", {})
     if failed.get("phase") != "before-reload" or failed.get("scene") != "caster" or failed.get("accepted") is not False:
         raise RuntimeError("shadow negative did not fail its exact caster scene")
+    draw_states = state.get("terrain_draw_states", {})
+    if state.get("terrain_region_setups", 0) < 1 or not draw_states or any(
+        value.get("clipDistanceEnabled") is not True or value.get("probeOutput") != -1 for value in draw_states.values()
+    ):
+        raise RuntimeError("shadow negative did not re-enable clipping at actual terrain draws")
     samples = state.get("samples", [])
     if state.get("observation") != "before-reload:caster" or state.get("observations", 0) < 1 or state.get("negative_control") is not True:
         raise RuntimeError("shadow negative did not execute inside the actual shadow pass")

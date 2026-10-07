@@ -139,10 +139,28 @@ python tools/verify.py visual --renderer neoculus-active --no-sable --shadow-fix
 ```
 
 Development-only hooks enter the production shadow scope with inherited portal
-clipping enabled and verify restoration. The shadow shader deliberately writes
-negative clip distance, which must be ignored in the shadow pass. The targeted
+clipping enabled and verify restoration. A development-only uniform uploaded immediately before each terrain draw emits
+positive clip distance when the actual GL clip bit is disabled, negative when
+enabled. Both that bit and the rendered depth/color result are recorded. This
+avoids a reproduced llvmpipe artifact with unconditional/runtime-negative
+output even when the bit reports disabled, without weakening the guard oracle. The targeted
 negative re-enables the bit inside that scope only for the caster scene; it is
 accepted as a negative only after a valid lit control and actual removal of
 shadow depth pixels while the receiver remains drawn. No testing hooks or pack
 files are included in the release jar. Matrix declarations alone are not proof
 that these graphical lanes have run successfully.
+
+A focused driver regression can validate the owned fixture's projection and
+live-bit sentinel without starting Minecraft:
+
+```sh
+python tools/verify_shadow_fixture_gl.py --egl-jar /path/to/lwjgl-egl-3.3.3.jar \
+  --gradle-home "$GRADLE_USER_HOME" --report shadow-fixture-gl.txt
+```
+
+It prints the driver's behavior for a minimal runtime-negative output with the
+clip bit off/on, then requires exact receiver/caster depth under the fixture's
+live-bit probe in both states. `--gl-version 3.3` supports the lower-capability
+EGL check. Only compatibility attribute/output bindings are adapted, and the
+fixture math is read from the actual pack files. This focused check does not
+prove Minecraft submits shadow terrain or composes a visible receiver shadow.

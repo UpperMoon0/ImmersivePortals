@@ -3,6 +3,7 @@ package qouteall.imm_ptl.core.gametest.sablee2e;
 /** Deterministic receiver and shadow-map geometry; no driver or optional-mod dependencies. */
 public final class PortalShadowOracle {
     private PortalShadowOracle() {}
+    public static float clipProbe(boolean actualGlClipEnabled) { return actualGlClipEnabled ? -1 : 1; }
     public static final double LIT_DEPTH = 0.5 + 3.0 / 64.0;
     public static final double CASTER_DEPTH = 0.5 - 2.0 / 64.0;
 

@@ -41,12 +41,13 @@ class CrumblingClippingRegressionTest {
     @Test
     void lateDrawScopeUploadsTheBeforeModelViewPlaneAndRestoresStateEvenOnFailure() throws Exception {
         try (var input = getClass().getResourceAsStream(
-            "/qouteall/imm_ptl/core/mixin/client/render/shader/MixinVertexBuffer_Crumbling.class")) {
+            "/qouteall/imm_ptl/core/mixin/client/render/shader/MixinVertexBuffer_VanillaClipping.class")) {
             assertNotNull(input);
             var node = new ClassNode();
             new ClassReader(input).accept(node, 0);
-            var method = node.methods.stream().filter(m -> m.name.equals("ip_clipDamageOverlay")).findFirst().orElseThrow();
+            var method = node.methods.stream().filter(m -> m.name.equals("ip_clipVanillaWorldDraw")).findFirst().orElseThrow();
             boolean setup = false, before = false, floatUpload = false, restore = false, skipsIrisOwnedShader = false;
+            int index = 0, setupIndex = -1, uploadIndex = -1, drawIndex = -1;
             for (var instruction : method.instructions) {
                 if (instruction instanceof TypeInsnNode type && type.getOpcode() == Opcodes.INSTANCEOF
                     && type.desc.equals("qouteall/imm_ptl/core/compat/iris_compatibility/IEIrisClippingShader")) {
@@ -54,16 +55,22 @@ class CrumblingClippingRegressionTest {
                 }
                 if (instruction instanceof MethodInsnNode call) {
                     setup |= call.name.equals("setupInnerClipping");
+                    if (call.name.equals("setupInnerClipping")) setupIndex = index;
+                    if (call.name.equals("call") && uploadIndex >= 0 && drawIndex < 0) drawIndex = index;
                     before |= call.name.equals("getActiveClipPlaneEquationBeforeModelView");
                     restore |= call.name.equals("restoreClippingState");
                     if (call.owner.equals("com/mojang/blaze3d/shaders/Uniform") && call.name.equals("set")) {
                         assertEquals("(FFFF)V", call.desc, "the vec4 float uniform must never select the integer overload");
                         floatUpload = true;
+                        if (uploadIndex < 0) uploadIndex = index;
                     }
                     assertNotEquals("getActiveClipPlaneEquationAfterModelView", call.name);
                 }
+                index++;
             }
             assertTrue(setup && before && floatUpload && restore);
+            assertTrue(uploadIndex > setupIndex && drawIndex > uploadIndex,
+                "the late portal scope must be enabled and its plane uploaded before the actual draw");
             assertTrue(skipsIrisOwnedShader, "Iris Extended/Fallback shader ownership takes precedence over a colliding name");
             assertTrue(method.tryCatchBlocks.stream().anyMatch(block -> block.type == null),
                 "scoped plane/GL restoration must be protected by finally");

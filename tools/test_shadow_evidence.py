@@ -24,7 +24,8 @@ class ShadowEvidenceTest(unittest.TestCase):
                     height=600, center_green=0 if caster else 1, center_blue=1 if caster else 0,
                     center_red=0, side_green=1, receiver_distance=7, accepted=True,
                     shadow=dict(observation=f'{phase}:{scene}', observations=5, resolution=256, sample_count=25,
-                                samples=[value]*25, inherited_clipping_restored=True, negative_control=False))
+                                samples=[value]*25, inherited_clipping_restored=True, negative_control=False,
+                                terrain_region_setups=5, terrain_draw_states={"draw": {"clipDistanceEnabled": False, "probeOutput": 1}}))
 
     def write(self, checks=None, last=None):
         (self.root / 'shadow-evidence.json').write_text(json.dumps(dict(renderer='iris-active', pack='ip-shadow-fixture-v1',
@@ -38,19 +39,20 @@ class ShadowEvidenceTest(unittest.TestCase):
         self.assertEqual(evidence['name'], 'ip-shadow-fixture-v1')
         self.assertIn('shadow', evidence['programs'])
         self.assertIn('shadow.enabled=true', (client / 'shaderpacks/ip-shadow-fixture-v1/shaders/shaders.properties').read_text())
-        self.assertIn('gl_ClipDistance[0] = -1.0', (client / 'shaderpacks/ip-shadow-fixture-v1/shaders/shadow.vsh').read_text())
+        self.assertIn('gl_ClipDistance[0] = ip_ShadowClipProbe', (client / 'shaderpacks/ip-shadow-fixture-v1/shaders/shadow.vsh').read_text())
         self.assertIn('shaderPack=ip-shadow-fixture-v1', (client / 'config/iris.properties').read_text())
 
     def test_positive_requires_each_fresh_scene_and_actual_depth_pixels(self):
         self.write()
         validate_shadow_evidence(self.root, 'iris-active')
-        for change in ('missing', 'stale', 'empty', 'blank', 'state'):
+        for change in ('missing', 'stale', 'empty', 'blank', 'state', 'draw-bit'):
             altered = copy.deepcopy(self.checks)
             if change == 'missing': altered.pop()
             if change == 'stale': altered[-1]['shadow']['observation'] = 'before-reload:restored'
             if change == 'empty': altered[1]['shadow']['samples'] = [1]*25
             if change == 'blank': altered[1]['center_blue'] = 0
             if change == 'state': altered[1]['shadow']['inherited_clipping_restored'] = False
+            if change == 'draw-bit': altered[1]['shadow']['terrain_draw_states']['draw']['clipDistanceEnabled'] = True
             self.write(altered)
             with self.subTest(change=change), self.assertRaises(RuntimeError):
                 validate_shadow_evidence(self.root, 'iris-active')
@@ -58,7 +60,7 @@ class ShadowEvidenceTest(unittest.TestCase):
     def test_negative_requires_lit_control_and_removed_shadow_only(self):
         failed = copy.deepcopy(self.checks[1])
         failed.update(accepted=False, center_green=1, center_blue=0)
-        failed['shadow'].update(samples=[1]*25, negative_control=True)
+        failed['shadow'].update(samples=[1]*25, negative_control=True, terrain_draw_states={'draw': {'clipDistanceEnabled': True, 'probeOutput': -1}})
         self.write([self.checks[0]], failed)
         validate_shadow_negative(self.root)
         failed['receiver_distance'] = 1000

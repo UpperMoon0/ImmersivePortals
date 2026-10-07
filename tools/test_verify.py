@@ -286,6 +286,13 @@ class VerificationHarnessTest(unittest.TestCase):
                           for side in ("visible", "clipped"))
         checks = [{"phase": phase, "scene": scene, "screenshot": "test.png",
                    "shaders_active": active, "pack": verify.FIXTURE_NAME if active else "",
+                   "crossing_motion": {"source": {"player_uuid": "test-player", "dimension": "minecraft:overworld", "player_dimension": "minecraft:overworld", "forward_input": True},
+                       "first_destination": {"player_uuid": "test-player", "dimension": "minecraft:the_nether", "player_dimension": "minecraft:the_nether", "eye": [0, 82, -0.1]},
+                       "capture": {"player_uuid": "test-player", "dimension": "minecraft:the_nether", "player_dimension": "minecraft:the_nether",
+                           "eye": [0, 82, -0.1], "camera": [0, 82, -0.1], "velocity": [0, 0, 0], "forward_input": False,
+                           "wall_chunk_loaded": True, "wall_block": "minecraft:lime_concrete",
+                           "server": {"current": {"player_uuid": "test-player", "dimension": "minecraft:the_nether", "eye": [0, 82, -0.1]}}},
+                       "velocity_stops": 120},
                    "width": 854 if phase == "before-reload" else 960, "height": 480 if phase == "before-reload" else 640,
                    "flywheel": {"nestedContextsRestored": 0 if active else 1, "contextAccessorsInstalled": True, "contextClearedAfterFrame": True,
                                 "viewContextWitness": {"observedViews": 4, "openViews": 0, "sameRendererViewsVerified": 1,
@@ -540,6 +547,25 @@ class VerificationHarnessTest(unittest.TestCase):
         self.assertEqual(makeup["profile"], "shadowless_high")
         self.assertEqual(verify.pinned_shaderpack_profile(makeup["sha256"]), "shadowless_high")
         self.assertIsNone(verify.pinned_shaderpack_profile("0" * 64))
+
+    def test_crossing_rejects_coasting_missing_native_chunks_and_changed_player(self):
+        good = next(check for check in self.shader_evidence()["checks"] if check["scene"] == "crossing")
+        verify.validate_crossing_motion(good)
+        for key, value in (("eye", [0, 82, -4]), ("camera", [0, 82, -4]), ("velocity", [0, 0, -0.3]),
+                           ("wall_chunk_loaded", False), ("wall_block", "minecraft:air"), ("player_uuid", "replacement")):
+            bad = json.loads(json.dumps(good))
+            bad["crossing_motion"]["capture"][key] = value
+            with self.assertRaises(RuntimeError):
+                verify.validate_crossing_motion(bad)
+
+    def test_crossing_stopper_never_teleports_or_repositions_player(self):
+        path = verify.ROOT / "src/main/java/qouteall/imm_ptl/core/gametest/sablee2e/PortalSmokeClient.java"
+        source = path.read_text()
+        stopper = source.split("private static void stopDestinationMotion(", 1)[1].split("private static Map<String, Object> crossingPose", 1)[0]
+        self.assertIn("setDeltaMovement(Vec3.ZERO)", stopper)
+        self.assertNotIn(".setPos(", stopper)
+        self.assertNotIn(".teleportTo(", stopper)
+        self.assertIn("mc.player.level().dimension().equals(Level.NETHER)", stopper)
 
     def test_crumbling_requires_packet_stage_static_fixture_and_directional_cracks(self):
         good = self.shader_evidence()

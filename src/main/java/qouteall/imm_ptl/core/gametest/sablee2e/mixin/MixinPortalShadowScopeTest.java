@@ -32,7 +32,16 @@ public class MixinPortalShadowScopeTest {
                 throw new IllegalStateException("Shadow acceptance did not establish inherited portal clipping");
             }
             original.call(renderer, levelRenderer, camera);
-            var targets = ((PortalShadowTargetsAccess) renderer).ip_shadowTargets();
+            var access = (PortalShadowTargetsAccess) renderer;
+            var targets = access.ip_shadowTargets();
+            PortalShadowTestControl.recordRenderer(java.util.Map.of(
+                "terrain", access.ip_shadowTerrainDebug(),
+                "should_render_terrain", access.ip_shouldRenderShadowTerrain(),
+                "render_distance_multiplier", access.ip_shadowRenderDistanceMultiplier(),
+                "configured_shadow_distance", net.irisshaders.iris.gui.option.IrisVideoSettings.shadowDistance,
+                "effective_shadow_distance", net.irisshaders.iris.gui.option.IrisVideoSettings.getOverriddenShadowDistance(
+                    net.irisshaders.iris.gui.option.IrisVideoSettings.shadowDistance),
+                "render_distance", ShadowRenderer.renderDistance));
             PortalShadowTestControl.capture(targets.getDepthTexture().getTextureId(), targets.getResolution(),
                 FrontClipping.isClippingEnabled && GL11.glIsEnabled(GL11.GL_CLIP_PLANE0));
         } finally {

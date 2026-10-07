@@ -37,6 +37,7 @@ public final class PortalSmokeServer {
     private static String request = "";
     private static String scene = "";
     private static long fixtureGeneration;
+    private static Map<String, Object> firstCrossingPose;
 
     @SubscribeEvent
     public static void login(PlayerEvent.PlayerLoggedInEvent event) {
@@ -62,6 +63,7 @@ public final class PortalSmokeServer {
             // Change only the damage packet. Preserve the portal, camera, blocks and BEs
             // so an unrelated rebuild/re-teleport cannot masquerade as a crack overlay.
             request = token;
+            writeSceneWitness(token);
             PortalSmokeSupport.write("scene-ready.txt", token);
             return;
         }
@@ -169,7 +171,23 @@ public final class PortalSmokeServer {
             }
         }
         request = token;
+        writeSceneWitness(token);
         PortalSmokeSupport.write("scene-ready.txt", token);
+    }
+
+    private static void writeSceneWitness(String token) {
+        Map<String, Object> worlds = new java.util.LinkedHashMap<>();
+        for (var dimension : List.of(Level.OVERWORLD, Level.NETHER, Level.END)) {
+            ServerLevel level = player.server.getLevel(dimension);
+            Map<String, String> blocks = new java.util.LinkedHashMap<>();
+            for (int x : new int[]{-1, 0}) for (int z : new int[]{-4, -1, 1}) {
+                BlockPos pos = new BlockPos(x, 82, z);
+                blocks.put(x + ",82," + z, level.getBlockState(pos).toString());
+            }
+            worlds.put(dimension.location().toString(), Map.of("gameTime", level.getGameTime(), "blocks", blocks));
+        }
+        PortalSmokeSupport.write("scene-world-witness.json", new Gson().toJson(Map.of(
+            "request", token, "fixtureGeneration", fixtureGeneration, "worlds", worlds)));
     }
 
     private static void wall(ServerLevel level, int z, BlockState state) {
@@ -223,6 +241,12 @@ public final class PortalSmokeServer {
                         "block", net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(target.getBlockState(new BlockPos(x, 82, z + 2)).getBlock()).toString()))));
             }
             if (PortalSmokeSupport.exists("crossing-request.txt") && player.level().dimension().equals(Level.NETHER)) {
+                Vec3 eye = player.getEyePosition();
+                Map<String, Object> pose = Map.of("dimension", player.level().dimension().location().toString(),
+                    "player_uuid", player.getUUID().toString(), "position", List.of(player.getX(), player.getY(), player.getZ()),
+                    "eye", List.of(eye.x, eye.y, eye.z), "tick", player.tickCount);
+                if (firstCrossingPose == null) firstCrossingPose = pose;
+                PortalSmokeSupport.write("crossing-server-evidence.json", new Gson().toJson(Map.of("first_destination", firstCrossingPose, "current", pose)));
                 PortalSmokeSupport.write("crossing-server-pass.txt", "Server observed the player cross into Nether through the portal\n");
             }
             if (!PortalSmokeSupport.exists("visual-pass.txt") || timings.size() >= PortalSmokeSupport.samples()) return;

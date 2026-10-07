@@ -4,6 +4,10 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
 class PortalShadowOracleTest {
+    @Test void renderedProbeFollowsTheActualGlBit() {
+        assertEquals(1, PortalShadowOracle.clipProbe(false));
+        assertEquals(-1, PortalShadowOracle.clipProbe(true));
+    }
     @Test void actualCasterAndReceiverPixelsAreBothRequired() {
         assertTrue(PortalShadowOracle.accepts(false, 1, 0, 0, 1, PortalShadowOracle.LIT_DEPTH, 7, true));
         assertTrue(PortalShadowOracle.accepts(true, 0, 1, 0, 1, PortalShadowOracle.CASTER_DEPTH, 7, true));

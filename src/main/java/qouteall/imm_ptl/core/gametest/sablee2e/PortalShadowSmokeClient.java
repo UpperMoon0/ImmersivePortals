@@ -179,6 +179,7 @@ public final class PortalShadowSmokeClient {
     private static void save() {
         Map<String, Object> report = new LinkedHashMap<>();
         report.put("checks", checks); report.put("last_probe", lastProbe);
+        report.put("shader_control", PortalClippingTestControl.evidence());
         report.put("renderer", System.getenv("IP_SMOKE_RENDERER"));
         report.put("pack", IrisInterface.invoker.getShaderpackName());
         report.put("gl_version", GL11.glGetString(GL11.GL_VERSION));

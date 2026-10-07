@@ -12,17 +12,21 @@ import qouteall.imm_ptl.core.compat.iris_compatibility.IrisInterface;
 import qouteall.imm_ptl.core.compat.iris_compatibility.IEIrisClippingShader;
 import qouteall.imm_ptl.core.ducks.IEShader;
 import qouteall.imm_ptl.core.render.FrontClipping;
+import qouteall.imm_ptl.core.render.VanillaClippingPolicy;
 import qouteall.imm_ptl.core.render.context_management.PortalRendering;
 
-/** Vanilla damage overlays flush after the entity clipping scope has ended. */
+/**
+ * Damage overlays and provider-batched vanilla entities can flush after the coarse
+ * entity scope ends. Iris/NeOculus keep batching even with their shaderpack off.
+ */
 @Mixin(VertexBuffer.class)
-public class MixinVertexBuffer_Crumbling {
+public class MixinVertexBuffer_VanillaClipping {
     @WrapMethod(method = "_drawWithShader")
-    private void ip_clipDamageOverlay(
+    private void ip_clipVanillaWorldDraw(
         Matrix4f modelView, Matrix4f projection, ShaderInstance shader, Operation<Void> original
     ) {
         if (shader instanceof IEIrisClippingShader
-            || !"rendertype_crumbling".equals(shader.getName()) || !IPGlobal.enableClippingMechanism
+            || !VanillaClippingPolicy.needsDrawScope(shader.getName()) || !IPGlobal.enableClippingMechanism
             || IrisInterface.invoker.isRenderingShadowMap()) {
             original.call(modelView, projection, shader);
             return;
@@ -34,7 +38,7 @@ public class MixinVertexBuffer_Crumbling {
         }
         FrontClipping.ClippingState previous = FrontClipping.captureClippingState();
         try {
-            if (PortalRendering.isRendering() && !FrontClipping.isClippingEnabled) {
+            if (VanillaClippingPolicy.shouldStartPortalScope(PortalRendering.isRendering(), FrontClipping.isClippingEnabled)) {
                 FrontClipping.setupInnerClipping(PortalRendering.getActiveClippingPlane(), modelView, 0);
             }
             // Set the actual shader argument immediately before its apply/upload;

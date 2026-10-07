@@ -13,6 +13,7 @@ public final class PortalClippingTestControl {
     private static final Map<String, String> sources = new LinkedHashMap<>();
     private static final Map<String, Map<String, Integer>> draws = new LinkedHashMap<>();
     private static final Map<String, Map<String, Object>> terrainStates = new LinkedHashMap<>();
+    private static final Map<String, Map<String, Object>> bufferedDrawStates = new LinkedHashMap<>();
     private static final Map<String, Map<String, Object>> innerDepthStates = new LinkedHashMap<>();
 
     private PortalClippingTestControl() {}
@@ -26,6 +27,7 @@ public final class PortalClippingTestControl {
         sources.clear();
         draws.clear();
         terrainStates.clear();
+        bufferedDrawStates.clear();
         innerDepthStates.clear();
         observation = "";
     }
@@ -35,6 +37,7 @@ public final class PortalClippingTestControl {
         observation = name;
         draws.clear();
         terrainStates.clear();
+        bufferedDrawStates.clear();
         innerDepthStates.clear();
     }
 
@@ -77,6 +80,14 @@ public final class PortalClippingTestControl {
         innerDepthStates.put(key, copy);
     }
 
+    public static synchronized boolean needsBufferedDrawState(String key) {
+        return installed && !observation.isEmpty() && !bufferedDrawStates.containsKey(key) && bufferedDrawStates.size() < 96;
+    }
+
+    public static synchronized void recordBufferedDrawState(String key, Map<String, Object> state) {
+        bufferedDrawStates.putIfAbsent(key, new LinkedHashMap<>(state));
+    }
+
     public static synchronized boolean needsTerrainState(String key) {
         return installed && !observation.isEmpty() && !terrainStates.containsKey(key) && terrainStates.size() < 48;
     }
@@ -97,6 +108,7 @@ public final class PortalClippingTestControl {
         draws.forEach((name, counts) -> drawCopy.put(name, new LinkedHashMap<>(counts)));
         result.put("completedDrawCounts", drawCopy);
         result.put("terrainUniformStates", new LinkedHashMap<>(terrainStates));
+        result.put("bufferedDrawStates", new LinkedHashMap<>(bufferedDrawStates));
         result.put("innerWorldDepthStates", new LinkedHashMap<>(innerDepthStates));
         return result;
     }

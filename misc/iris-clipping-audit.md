@@ -129,3 +129,11 @@ runs actual EGL draws: the unpatched excluded triangle obscures all 256 sampled
 background pixels, the patched triangle obscures none, and retained/neutral-plane
 controls still draw. These cases passed on Mesa OpenGL 4.5 and an actual 3.3
 context. Exact-head Minecraft screenshots remain the runtime integration check.
+
+Iris and NeOculus also keep their fully buffered entity renderer enabled when the
+pack is off. Those vanilla entity/item/particle/beacon draws may therefore occur
+after the coarse entity scope ends. The same draw-time scope now covers these
+explicit camera-relative shader families, only if an actual `IEShader` uniform
+exists. Portal aperture, terrain, full-screen and Iris-owned shader programs keep
+their separate policies. Vanilla uniform selection checks whether a pack is
+active, rather than whether a provider happens to be installed.

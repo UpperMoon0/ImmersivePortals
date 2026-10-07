@@ -1,6 +1,10 @@
 package qouteall.imm_ptl.core.gametest.sablee2e;
 
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.renderer.ShaderInstance;
+import qouteall.imm_ptl.core.compat.iris_compatibility.IEIrisClippingShader;
+import qouteall.imm_ptl.core.compat.iris_compatibility.IrisInterface;
+import qouteall.imm_ptl.core.ducks.IEShader;
 import org.joml.Matrix4fc;
 import org.joml.Matrix4f;
 import org.joml.Vector4f;
@@ -39,6 +43,16 @@ public final class PortalShaderDiagnostics {
         state.put("portalLayer", PortalRendering.getPortalLayer());
         state.put("logicalClippingEnabled", FrontClipping.isClippingEnabled);
         state.put("glClipDistance0Enabled", glClip);
+        state.put("shadowPass", net.irisshaders.iris.shadows.ShadowRenderer.ACTIVE);
+        state.put("drawFramebuffer", GL11.glGetInteger(GL30.GL_DRAW_FRAMEBUFFER_BINDING));
+        state.put("depthWrite", GL11.glGetBoolean(GL11.GL_DEPTH_WRITEMASK));
+        state.put("depthTest", GL11.glIsEnabled(GL11.GL_DEPTH_TEST));
+        state.put("depthFunc", GL11.glGetInteger(GL11.GL_DEPTH_FUNC));
+        state.put("stencilTest", GL11.glIsEnabled(GL11.GL_STENCIL_TEST));
+        state.put("scissorTest", GL11.glIsEnabled(GL11.GL_SCISSOR_TEST));
+        int[] viewport = new int[4];
+        GL11.glGetIntegerv(GL11.GL_VIEWPORT, viewport);
+        state.put("viewport", viewport);
         state.put("planeBeforeModelView", FrontClipping.getActiveClipPlaneEquationBeforeModelView());
         state.put("planeAfterModelView", FrontClipping.getActiveClipPlaneEquationAfterModelView());
         state.put("drawModelView", drawModelView.get(new float[16]));
@@ -52,10 +66,10 @@ public final class PortalShaderDiagnostics {
             }
             Map<String, Object> uniforms = new LinkedHashMap<>();
             for (String name : new String[]{"iris_ProjectionMatrix", "gbufferProjection", "gbufferProjectionInverse",
-                "iris_ModelViewMatrix", "gbufferModelView", "gbufferModelViewInverse", "iportal_ClippingEquation"}) {
+                "iris_ModelViewMatrix", "gbufferModelView", "gbufferModelViewInverse", "iportal_ClippingEquation", "cameraPosition", "u_RegionOffset"}) {
                 int location = GL20.glGetUniformLocation(program, name);
                 if (location >= 0) {
-                    float[] value = new float[name.equals("iportal_ClippingEquation") ? 4 : 16];
+                    float[] value = new float[name.equals("iportal_ClippingEquation") ? 4 : (name.equals("cameraPosition") || name.equals("u_RegionOffset")) ? 3 : 16];
                     GL20.glGetUniformfv(program, location, value);
                     uniforms.put(name, value);
                 }
@@ -64,8 +78,64 @@ public final class PortalShaderDiagnostics {
                 }
             }
             state.put("uniforms", uniforms);
+            if (PortalShadowTestControl.enabled()) {
+                int[] count = new int[1], shaders = new int[8];
+                GL20.glGetAttachedShaders(program, count, shaders);
+                for (int i = 0; i < count[0]; i++) {
+                    int type = GL20.glGetShaderi(shaders[i], GL20.GL_SHADER_TYPE);
+                    PortalSmokeSupport.write("shadow-program-" + program + "-" + type + ".glsl", GL20.glGetShaderSource(shaders[i]));
+                }
+            }
         }
         PortalClippingTestControl.recordTerrainState(key, state);
+    }
+
+    public static void captureBufferedDraw(ShaderInstance shader, Matrix4fc modelView, Matrix4fc projection) {
+        String name = shader.getName();
+        int program = GL11.glGetInteger(GL20.GL_CURRENT_PROGRAM);
+        String dimension = Minecraft.getInstance().level == null ? "none"
+            : Minecraft.getInstance().level.dimension().location().toString();
+        boolean glClipping = GL11.glIsEnabled(GL30.GL_CLIP_DISTANCE0);
+        String key = shader.getClass().getName() + ":" + name + ":" + program + ":" + dimension
+            + ":" + PortalRendering.getPortalLayer() + ":" + FrontClipping.isClippingEnabled + ":" + glClipping;
+        if (!PortalClippingTestControl.needsBufferedDrawState(key)) return;
+        Map<String, Object> state = new LinkedHashMap<>();
+        state.put("shaderClass", shader.getClass().getName());
+        state.put("shaderName", name);
+        state.put("shaderProgram", shader.getId());
+        state.put("boundProgram", program);
+        state.put("dimension", dimension);
+        state.put("portalLayer", PortalRendering.getPortalLayer());
+        state.put("activePack", IrisInterface.invoker.isShaders());
+        state.put("irisOwned", shader instanceof IEIrisClippingShader);
+        state.put("vanillaUniformObject", shader instanceof IEShader vanilla && vanilla.ip_getClippingEquationUniform() != null);
+        state.put("logicalClippingEnabled", FrontClipping.isClippingEnabled);
+        state.put("glClipDistance0Enabled", glClipping);
+        state.put("planeBeforeModelView", FrontClipping.getActiveClipPlaneEquationBeforeModelView());
+        state.put("planeAfterModelView", FrontClipping.getActiveClipPlaneEquationAfterModelView());
+        state.put("drawModelView", modelView.get(new float[16]));
+        state.put("drawProjection", projection.get(new float[16]));
+        if (program > 0) {
+            int location = GL20.glGetUniformLocation(program, "iportal_ClippingEquation");
+            state.put("clippingUniformLocation", location);
+            if (location >= 0) {
+                float[] actual = new float[4];
+                GL20.glGetUniformfv(program, location, actual);
+                state.put("actualClippingEquation", actual);
+            }
+        }
+        if (program > 0) {
+            int attachedCount = GL20.glGetProgrami(program, GL20.GL_ATTACHED_SHADERS);
+            int[] attached = new int[attachedCount];
+            GL20.glGetAttachedShaders(program, (int[]) null, attached);
+            state.put("attachedShaderCount", attachedCount);
+            for (int stage : attached) {
+                if (GL20.glGetShaderi(stage, GL20.GL_SHADER_TYPE) == GL20.GL_VERTEX_SHADER) {
+                    state.put("vertexWritesClipDistance", GL20.glGetShaderSource(stage).contains("gl_ClipDistance"));
+                }
+            }
+        }
+        PortalClippingTestControl.recordBufferedDrawState(key, state);
     }
 
     public static void captureInnerDepth() {

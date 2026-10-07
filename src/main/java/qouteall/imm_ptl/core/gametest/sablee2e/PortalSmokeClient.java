@@ -34,6 +34,8 @@ import qouteall.imm_ptl.core.render.context_management.RenderStates;
 import java.util.ArrayList;
 import java.util.Arrays;
 import net.minecraft.core.BlockPos;
+import net.minecraft.world.level.block.Blocks;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.client.renderer.LevelRenderer;
 import net.minecraft.server.level.BlockDestructionProgress;
 import java.util.LinkedHashMap;
@@ -46,6 +48,10 @@ import java.util.concurrent.CompletableFuture;
 @EventBusSubscriber(modid = qouteall.imm_ptl.core.platform_specific.IPModEntry.MODID, value = Dist.CLIENT)
 public final class PortalSmokeClient {
     private static boolean testControlInstalled;
+    private static Map<String, Object> firstDestinationPose = Map.of();
+    private static Map<String, Object> crossingCapturePose = Map.of();
+    private static Map<String, Object> crossingSourcePose = Map.of();
+    private static int destinationStops;
     private static boolean connecting, done, initialized, toggleDisabled, waitingToggle, crossing, crossed;
     private static int frames, stableFrames, epoch, sceneIndex;
     private static String request = "";
@@ -82,6 +88,11 @@ public final class PortalSmokeClient {
     private static final String[] PHASES = {"before-reload", "after-reload", "after-toggle"};
 
     @SubscribeEvent
+    public static void beforeTick(ClientTickEvent.Pre event) {
+        if (PortalSmokeSupport.enabled() && !done) stopDestinationMotion(Minecraft.getInstance(), "tick-pre");
+    }
+
+    @SubscribeEvent
     public static void tick(ClientTickEvent.Post event) {
         if (!PortalSmokeSupport.enabled() || done) return;
         Minecraft mc = Minecraft.getInstance();
@@ -91,7 +102,14 @@ public final class PortalSmokeClient {
         }
         if (crossing && !crossed && mc.player != null && mc.level != null) {
             // Real client input exercises the portal handoff rather than a server teleport command.
-            mc.options.keyUp.setDown(mc.level.dimension().equals(Level.OVERWORLD));
+            boolean ready = request.equals(PortalSmokeSupport.read("scene-ready.txt"));
+            boolean source = mc.level.dimension().equals(Level.OVERWORLD) && mc.player.level().dimension().equals(Level.OVERWORLD);
+            mc.options.keyUp.setDown(ready && source && firstDestinationPose.isEmpty());
+            if (ready && source && crossingSourcePose.isEmpty()) {
+                crossingSourcePose = crossingPose(mc, "source-input-start");
+                PortalSmokeSupport.write("crossing-source.json", new Gson().toJson(crossingSourcePose));
+            }
+            stopDestinationMotion(mc, "tick-post");
         }
         if (initialized && mc.level != null && request.contains(":particle-")
             && request.equals(PortalSmokeSupport.read("scene-ready.txt"))) {
@@ -115,6 +133,7 @@ public final class PortalSmokeClient {
     public static void beforeFrame(RenderFrameEvent.Pre event) {
         if (!PortalSmokeSupport.enabled()) return;
         frameStart = System.nanoTime();
+        stopDestinationMotion(Minecraft.getInstance(), "frame-pre");
         IPGlobal.renderMode = IPGlobal.RenderMode.valueOf(System.getenv().getOrDefault("IP_SMOKE_RENDER_MODE", "normal"));
         if ("true".equals(System.getenv("IP_SMOKE_DISABLE_COPY_IMAGE"))) {
             System.setProperty("ip.iris.forceFramebufferBlit", "true");
@@ -132,6 +151,8 @@ public final class PortalSmokeClient {
         if (mc.level == null || mc.player == null || mc.screen != null || mc.getOverlay() != null) return;
         try {
             mc.options.hideGui = true;
+            // Teleportation may happen in rendering, after the last client-tick event.
+            stopDestinationMotion(mc, "frame-post");
             if (!initialized) {
                 GLResourceCacheRegression.verify();
                 verifyMods();
@@ -186,6 +207,7 @@ public final class PortalSmokeClient {
                 }
                 mc.options.keyUp.setDown(false);
                 if (!crossed) {
+                    verifyCrossingEndpoint(mc);
                     capture("crossing", "after-crossing", false);
                     crossed = true;
                     PortalSmokeSupport.write("visual-pass.txt", "All positive controls, excluded-plane scenes, nested/mirror views, reload/toggle and crossing passed\n");
@@ -212,6 +234,8 @@ public final class PortalSmokeClient {
                 frames = 0;
             } else {
                 crossing = true;
+                firstDestinationPose = crossingCapturePose = crossingSourcePose = Map.of();
+                destinationStops = 0;
                 request = "after-crossing:crossing";
                 frames = 0;
                 PortalSmokeSupport.write("scene-request.txt", request);
@@ -405,6 +429,9 @@ public final class PortalSmokeClient {
                 "green_pixels", green, "red_pixels", red, "sampled_pixels", total,
                 "portal_layers", layers, "width", pixels.getWidth(), "height", pixels.getHeight()));
             check.put("reference_witness", referenceWitness);
+            if (scene.equals("crossing")) check.put("crossing_motion", Map.of(
+                "source", crossingSourcePose, "first_destination", firstDestinationPose,
+                "capture", crossingCapturePose, "velocity_stops", destinationStops));
             check.put("straddling_witness", fragmentWitness);
             check.put("shader_path", PortalClippingTestControl.evidence());
             if (scene.startsWith("mirror")) check.put("mirror_observer", verifyMirrorObserverIsolation(mc));
@@ -512,6 +539,68 @@ public final class PortalSmokeClient {
             if (selected) result[count++] = image.getPixelRGBA(x, y);
         }
         return Arrays.copyOf(result, count);
+    }
+
+    private static void stopDestinationMotion(Minecraft mc, String hook) {
+        if (!crossing || mc.player == null || mc.level == null
+            || !mc.level.dimension().equals(Level.NETHER) || !mc.player.level().dimension().equals(Level.NETHER)) return;
+        if (firstDestinationPose.isEmpty()) {
+            // Observe the real handoff before changing velocity. Never set position,
+            // replace the player, or use a server teleport to satisfy this test.
+            firstDestinationPose = crossingPose(mc, hook);
+            PortalSmokeSupport.write("crossing-arrival.json", new Gson().toJson(firstDestinationPose));
+            frames = stableFrames = 0; // Settle in the destination, not during the approach.
+        }
+        mc.options.keyUp.setDown(false);
+        mc.player.setDeltaMovement(Vec3.ZERO);
+        destinationStops++;
+    }
+
+    private static Map<String, Object> crossingPose(Minecraft mc, String hook) {
+        Vec3 eye = mc.player.getEyePosition(), camera = mc.gameRenderer.getMainCamera().getPosition();
+        Vec3 velocity = mc.player.getDeltaMovement();
+        BlockPos wall = new BlockPos(0, 82, -4);
+        return Map.ofEntries(Map.entry("hook", hook), Map.entry("player_uuid", mc.player.getUUID().toString()),
+            Map.entry("dimension", mc.level.dimension().location().toString()),
+            Map.entry("player_dimension", mc.player.level().dimension().location().toString()),
+            Map.entry("position", List.of(mc.player.getX(), mc.player.getY(), mc.player.getZ())),
+            Map.entry("eye", List.of(eye.x, eye.y, eye.z)), Map.entry("camera", List.of(camera.x, camera.y, camera.z)),
+            Map.entry("velocity", List.of(velocity.x, velocity.y, velocity.z)), Map.entry("yaw", mc.player.getYRot()),
+            Map.entry("pitch", mc.player.getXRot()), Map.entry("flying", mc.player.getAbilities().flying),
+            Map.entry("forward_input", mc.options.keyUp.isDown()),
+            Map.entry("tick", mc.player.tickCount), Map.entry("wall_chunk_loaded", mc.level.hasChunkAt(wall)),
+            Map.entry("wall_block", BuiltInRegistries.BLOCK.getKey(mc.level.getBlockState(wall).getBlock()).toString()));
+    }
+
+    @SuppressWarnings("unchecked")
+    private static void verifyCrossingEndpoint(Minecraft mc) {
+        crossingCapturePose = crossingPose(mc, "framebuffer-capture");
+        Map<String, Object> server = new Gson().fromJson(PortalSmokeSupport.read("crossing-server-evidence.json"), Map.class);
+        Map<String, Object> complete = new LinkedHashMap<>(crossingCapturePose);
+        complete.put("server", server == null ? Map.of() : server);
+        crossingCapturePose = complete;
+        // Write before asserting so an endpoint or native-chunk failure remains diagnosable.
+        PortalSmokeSupport.write("crossing-capture.json", new Gson().toJson(crossingCapturePose));
+        require(!firstDestinationPose.isEmpty() && !crossingSourcePose.isEmpty(), "Crossing ownership transition was not observed");
+        List<Number> firstEye = (List<Number>) firstDestinationPose.get("eye");
+        require(PortalSmokeCrossingBounds.contains(firstEye.get(0).doubleValue(), firstEye.get(1).doubleValue(), firstEye.get(2).doubleValue()),
+            "CROSSING_INITIAL_DESTINATION_OUT_OF_BOUNDS: " + firstDestinationPose);
+        Vec3 eye = mc.player.getEyePosition(), camera = mc.gameRenderer.getMainCamera().getPosition();
+        require(PortalSmokeCrossingBounds.contains(eye.x, eye.y, eye.z)
+            && PortalSmokeCrossingBounds.contains(camera.x, camera.y, camera.z),
+            "CROSSING_ENDPOINT_OUT_OF_BOUNDS: " + crossingCapturePose);
+        require(mc.player.getDeltaMovement().lengthSqr() < 1.0e-12,
+            "Crossing observer still had spectator momentum: " + crossingCapturePose);
+        require(mc.level.hasChunkAt(new BlockPos(0, 82, -4))
+            && mc.level.getBlockState(new BlockPos(0, 82, -4)).is(Blocks.LIME_CONCRETE),
+            "CROSSING_NATIVE_WALL_MISSING: " + crossingCapturePose);
+        require(server != null && server.get("current") instanceof Map<?, ?>, "Missing authoritative crossing pose");
+        Map<?, ?> current = (Map<?, ?>) server.get("current");
+        List<Number> serverEye = (List<Number>) current.get("eye");
+        require(mc.player.getUUID().toString().equals(current.get("player_uuid"))
+            && "minecraft:the_nether".equals(current.get("dimension"))
+            && PortalSmokeCrossingBounds.contains(serverEye.get(0).doubleValue(), serverEye.get(1).doubleValue(), serverEye.get(2).doubleValue()),
+            "Server crossing endpoint disagreed with client: " + server);
     }
 
     private static Map<?, ?> depthState(String key) {
@@ -795,12 +884,15 @@ public final class PortalSmokeClient {
     private static void saveEvidence() {
         Map<String, Object> evidence = new LinkedHashMap<>();
         evidence.put("checks", checks);
+        evidence.put("crossing_motion", Map.of("source", crossingSourcePose, "first_destination", firstDestinationPose,
+            "capture", crossingCapturePose, "velocity_stops", destinationStops));
         evidence.put("shader_control", PortalClippingTestControl.evidence());
         evidence.put("framebuffer_copy", framebufferCopyEvidence);
         evidence.put("flywheel_view_context_witness", PortalSmokeRenderContextWitness.LIVE.snapshot());
         evidence.put("render_mode", System.getenv().getOrDefault("IP_SMOKE_RENDER_MODE", "normal"));
         evidence.put("required_scenes", PortalSmokeSupport.scenes());
         evidence.put("toggle_disabled_verified", toggleDisabled);
+        evidence.put("scene_state", PortalSmokeSceneWitness.capture(request));
         evidence.put("mods", ModList.get().getMods().stream().map(mod -> Map.of(
             "id", mod.getModId(), "version", mod.getVersion().toString())).toList());
         PortalSmokeSupport.write("runtime-evidence.json", new Gson().toJson(evidence));
