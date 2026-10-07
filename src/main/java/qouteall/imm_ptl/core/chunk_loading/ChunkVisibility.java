@@ -154,25 +154,39 @@ public class ChunkVisibility {
                 IPGlobal.indirectLoadingRadiusCap,
                 loadDistance / 3
             );
-            return new ChunkLoader(
+            return createIndirectChunkLoader(
                 new DimensionalChunkPos(
                     portal.getDestDim(),
                     new ChunkPos(BlockPos.containing(transformedPos))
                 ),
-                getChunkDataLoadingRadius(Math.max(1, renderDistance))
+                Math.max(1, renderDistance), ServerPerformanceMonitor.getLevel()
             );
         }
         else {
-            return new ChunkLoader(
+            return createIndirectChunkLoader(
                 new DimensionalChunkPos(
                     portal.getDestDim(),
                     new ChunkPos(BlockPos.containing(portal.getDestPos()))
                 ),
-                getChunkDataLoadingRadius(getCappedLoadingDistance(
+                getCappedLoadingDistance(
                     portal, player, getNestedPortalLoadingDistance(loadDistance)
-                ))
+                ), ServerPerformanceMonitor.getLevel()
             );
         }
+    }
+
+    /**
+     * Reduce work when the server is busy without dropping a visible second-hop
+     * destination. The one-chunk visible radius covers both sides of a boundary
+     * portal; the outer data ring still supplies every mesh's 3x3 prerequisites.
+     * Apply this after the existing caps, so an explicit smaller cap is preserved.
+     */
+    static ChunkLoader createIndirectChunkLoader(
+        DimensionalChunkPos center, int cappedVisibleRadius, PerformanceLevel serverPerformance
+    ) {
+        int visibleRadius = serverPerformance == PerformanceLevel.good
+            ? cappedVisibleRadius : Math.min(cappedVisibleRadius, 1);
+        return new ChunkLoader(center, getChunkDataLoadingRadius(visibleRadius));
     }
 
     /** A portal on a chunk boundary needs its adjacent destination chunks even at low view distances. */
@@ -227,19 +241,19 @@ public class ChunkVisibility {
             
             func.accept(getGeneralDirectPortalLoader(player, portal));
     
-            if (!isShrinkLoading()) {
-                List<Portal> indirectNearbyPortals = getNearbyPortals(
-                    ((ServerLevel) destinationWorld),
-                    transformedPlayerPos,
-                    p -> p.broadcastToPlayer(player),
-                    indirectVisiblePortalRangeChunks, 32
-                );
-    
-                for (Portal innerPortal : indirectNearbyPortals) {
-                    func.accept(getGeneralPortalIndirectLoader(
-                        player, transformedPlayerPos, innerPortal
-                    ));
-                }
+            // Keep the existing portal-query bounds at every performance level.
+            // Degrading performance shrinks each loader, not the set of visible worlds.
+            List<Portal> indirectNearbyPortals = getNearbyPortals(
+                ((ServerLevel) destinationWorld),
+                transformedPlayerPos,
+                p -> p.broadcastToPlayer(player),
+                indirectVisiblePortalRangeChunks, 32
+            );
+
+            for (Portal innerPortal : indirectNearbyPortals) {
+                func.accept(getGeneralPortalIndirectLoader(
+                    player, transformedPlayerPos, innerPortal
+                ));
             }
         }
     }

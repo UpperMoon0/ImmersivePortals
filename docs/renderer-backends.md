@@ -37,6 +37,10 @@ boundary, with an independently instantiated Embeddium implementation.
   boundaries. CE replaces vanilla's main-view packet tracking, so its main-view loader also restores the
   outer ring normally supplied by vanilla. Configured indirect caps are normalized to 1–32; zero visible
   radius means the center plus its neighbors, negative inputs are normalized, and overflow is rejected.
+- Medium/bad server performance keeps the existing nearby second-hop portal queries and limits each
+  nested loader to a visible radius of one chunk, plus the mesh-data ring (25 chunks at the usual cap).
+  It no longer drops the destination entirely while that portal is still rendered. Good-performance
+  radii and existing visibility caps are unchanged; both global and ordinary nested portals use this rule.
 - Each recursive view swaps render lists, render distance, current viewport, and portal frustum culler.
   Rebuild queues, their visibility frame and camera positions, mesh buffers and build jobs remain owned
   by the dimension renderer: Embeddium consumes previous-pass discoveries before collecting visibility

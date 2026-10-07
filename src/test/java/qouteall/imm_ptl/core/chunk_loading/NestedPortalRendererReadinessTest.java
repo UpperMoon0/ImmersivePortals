@@ -32,7 +32,7 @@ class NestedPortalRendererReadinessTest {
             assertNotNull(input);
             var target = new ClassNode();
             new ClassReader(input).accept(target, 0);
-            for (String name : new String[]{"playerDirectLoader", "getGeneralDirectPortalLoader", "getGeneralPortalIndirectLoader"}) {
+            for (String name : new String[]{"playerDirectLoader", "getGeneralDirectPortalLoader", "createIndirectChunkLoader"}) {
                 var method = target.methods.stream().filter(m -> m.name.equals(name)).findFirst().orElseThrow();
                 int haloCalls = 0, loaders = 0;
                 for (var instruction : method.instructions) {
@@ -41,9 +41,46 @@ class NestedPortalRendererReadinessTest {
                         if (call.owner.equals("qouteall/imm_ptl/core/chunk_loading/ChunkLoader") && call.name.equals("<init>")) loaders++;
                     }
                 }
-                assertEquals(name.equals("playerDirectLoader") ? 1 : 2, loaders, name);
+                assertEquals(name.equals("getGeneralDirectPortalLoader") ? 2 : 1, loaders, name);
                 assertEquals(loaders, haloCalls, name + " must pad every direct/global/nested branch");
             }
+        }
+    }
+
+    @Test
+    void bothIndirectPortalKindsUseTheBoundedLoaderAndAreStillEnumeratedWhenTheServerIsBusy() throws Exception {
+        try (var input = getClass().getClassLoader().getResourceAsStream(
+            "qouteall/imm_ptl/core/chunk_loading/ChunkVisibility.class")) {
+            assertNotNull(input);
+            var target = new ClassNode();
+            new ClassReader(input).accept(target, 0);
+            var indirect = target.methods.stream().filter(m -> m.name.equals("getGeneralPortalIndirectLoader")).findFirst().orElseThrow();
+            int boundedLoaders = 0;
+            for (var instruction : indirect.instructions) {
+                if (instruction instanceof MethodInsnNode call && call.owner.equals(target.name)
+                    && call.name.equals("createIndirectChunkLoader")) boundedLoaders++;
+            }
+            assertEquals(2, boundedLoaders, "Both global and ordinary second-hop portals must retain a bounded loader");
+            var enumerate = target.methods.stream().filter(m -> m.name.equals("foreachBaseChunkLoaders")).findFirst().orElseThrow();
+            int nestedCalls = 0;
+            for (var instruction : enumerate.instructions) {
+                if (instruction instanceof MethodInsnNode call) {
+                    assertFalse(call.name.equals("isShrinkLoading"), "Performance must not skip nested destinations");
+                    assertFalse(call.owner.endsWith("/ServerPerformanceMonitor"), "Apply server performance to radius, not enumeration");
+                    if (call.name.equals("getGeneralPortalIndirectLoader")) nestedCalls++;
+                }
+            }
+            assertEquals(1, nestedCalls);
+        }
+    }
+
+    @Test
+    void busyServerLoadersKeepBothBackendsBoundaryMeshesReady() throws Exception {
+        for (var performance : PerformanceLevel.values()) {
+            int visibleRadius = ChunkVisibility.createIndirectChunkLoader(
+                new DimensionalChunkPos(null, 0, 0), 2, performance).radius() - 1;
+            checkTracker("org.embeddedt.embeddium.impl.render.chunk.map.", visibleRadius);
+            checkTracker("net.caffeinemc.mods.sodium.client.render.chunk.map.", visibleRadius);
         }
     }
 

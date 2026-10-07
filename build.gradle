@@ -99,8 +99,8 @@ tasks.named('jar', Jar).configure {
         rename { 'LICENSE-Immersive-Portals' }
     }
     from(rootProject.file('NOTICE'))
-    // Dedicated E2E drivers are compiled into the dev runtime but never shipped in release jars.
-    exclude 'qouteall/imm_ptl/core/gametest/sablee2e/**'
+    // GameTests and E2E drivers are compiled into the dev runtime only.
+    exclude 'qouteall/imm_ptl/core/gametest/**'
     exclude 'imm_ptl_gametest.mixins.json'
     exclude 'imm_ptl_portal_clipping_test.mixins.json'
 }

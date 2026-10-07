@@ -408,10 +408,19 @@ class VerificationHarnessTest(unittest.TestCase):
             with zipfile.ZipFile(jar, "w") as archive:
                 archive.writestr("normal.class", b"class")
             verify.validate_release_jar()
-            with zipfile.ZipFile(jar, "a") as archive:
-                archive.writestr("qouteall/imm_ptl/core/gametest/sablee2e/PortalSmokeClient.class", b"class")
-            with self.assertRaisesRegex(RuntimeError, "development test classes leaked"):
-                verify.validate_release_jar()
+            for entry in (
+                "qouteall/imm_ptl/core/gametest/sablee2e/PortalSmokeClient.class",
+                "qouteall/imm_ptl/core/gametest/SableCollisionIntegrationGameTest.class",
+                "qouteall/imm_ptl/core/gametest/NestedPortalLoadingGameTest.class",
+                "imm_ptl_gametest.mixins.json",
+                "imm_ptl_portal_clipping_test.mixins.json",
+            ):
+                with self.subTest(entry=entry):
+                    with zipfile.ZipFile(jar, "w") as archive:
+                        archive.writestr("normal.class", b"class")
+                        archive.writestr(entry, b"class")
+                    with self.assertRaisesRegex(RuntimeError, "development test classes leaked"):
+                        verify.validate_release_jar()
 
     def test_capability_absent_lane_requires_actual_gl33_without_override(self):
         report = self.shader_evidence()

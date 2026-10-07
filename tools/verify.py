@@ -736,7 +736,7 @@ def validate_release_jar() -> None:
     jar = ROOT / "build" / "libs" / f"immersive_portals-{version[1].strip()}.jar"
     with zipfile.ZipFile(jar) as archive:
         forbidden = [name for name in archive.namelist()
-                     if name.startswith("qouteall/imm_ptl/core/gametest/sablee2e/")
+                     if name.startswith("qouteall/imm_ptl/core/gametest/")
                      or name in {"imm_ptl_gametest.mixins.json", "imm_ptl_portal_clipping_test.mixins.json"}]
     if forbidden:
         raise RuntimeError("development test classes leaked into release jar: " + ", ".join(forbidden))

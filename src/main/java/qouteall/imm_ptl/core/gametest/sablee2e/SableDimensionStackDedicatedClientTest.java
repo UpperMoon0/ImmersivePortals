@@ -164,8 +164,9 @@ public final class SableDimensionStackDedicatedClientTest {
     /**
      * Strong continuity invariant: once the client has observed the logical Sable UUID, at
      * least one copy must exist every client tick and the player's current dimension must
-     * already contain it. A short source+destination overlap is valid during atomic handoff;
-     * a long overlap is a leaked stale copy.
+     * already contain it outside the correlated detach window. A staged destination may
+     * overlap the source while the bounded handoff awaits its authoritative Ack. After that
+     * Ack, or without a correlated handoff, prolonged overlap is a leaked stale copy.
      */
     private static void verifyContinuousClientOwnership(Minecraft minecraft) {
         boolean inOverworld = hasSubLevel(Level.OVERWORLD);
@@ -183,13 +184,12 @@ public final class SableDimensionStackDedicatedClientTest {
             verifyBodyRemainsSpatiallyContinuous(minecraft, current);
         }
 
-        if (inOverworld && inNether) {
-            require(++overlapTicks <= MAX_OVERLAP_TICKS,
-                "source and destination Sable client copies overlapped too long");
-        }
-        else {
-            overlapTicks = 0;
-        }
+        var handoff = SableServerFirstClientHandoff.getActiveHandoffSnapshot();
+        overlapTicks = SableRiderHandoffGrace.verifyOverlap(
+            inOverworld && inNether, waitingForCorrelatedHandoff,
+            handoff == null ? null : handoff.phase(),
+            detachedHandoffTicks, RIDING_SYNC_GRACE_TICKS, overlapTicks, MAX_OVERLAP_TICKS
+        );
 
         if (lastObservedDimension != null && !lastObservedDimension.equals(currentDimension)) {
             seamTransitions++;
@@ -454,6 +454,8 @@ public final class SableDimensionStackDedicatedClientTest {
         ClientSubLevel remote = getClientSubLevel(Level.NETHER);
         require(remote != null,
             "remote Nether Sable sublevel vanished before final client confirmation");
+        require(!hasSubLevel(Level.OVERWORLD),
+            "stale source Sable copy survived after the completed handoffs");
         require(Math.abs(remote.logicalPose().position().x() - remoteSourceX) >= MIN_REMOTE_OBSERVED_MOVEMENT,
             "remote Nether Sable pose regressed before final client confirmation");
 
@@ -478,6 +480,7 @@ public final class SableDimensionStackDedicatedClientTest {
             + " activeServerHandoff=" + SableServerFirstClientHandoff.hasActiveServerInitiatedHandoff()
             + " handoff=" + SableServerFirstClientHandoff.getActiveHandoffSnapshot()
             + " detachedHandoffTicks=" + detachedHandoffTicks
+            + " staleOverlapTicks=" + overlapTicks + "/" + MAX_OVERLAP_TICKS
             + " destinationStaged=" + (remote != null)
             + " detachedTicks=" + ridingSyncTicks
             + " subLevel=" + subLevelId

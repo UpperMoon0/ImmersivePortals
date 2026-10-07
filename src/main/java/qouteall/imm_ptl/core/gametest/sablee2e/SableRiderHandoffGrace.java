@@ -29,6 +29,31 @@ final class SableRiderHandoffGrace {
             && expectedDestination != null && expectedDestination.equals(capturedDestination);
     }
 
+    /**
+     * Destination full-sync precedes entity transfer; source retirement is queued only when
+     * that transaction commits, before its terminal Ack. Only the correlated, bounded detach
+     * window before that Ack may pause the stale-copy deadline. Keep any earlier stale ticks:
+     * entering a handoff must not reset a duplicate that was already present.
+     */
+    static int verifyOverlap(
+        boolean copiesOverlap, boolean correlatedDetachedWindow, String handoffPhase,
+        int detachedTicks, int maximumDetachedTicks, int previousStaleTicks, int maximumStaleTicks
+    ) {
+        if (!copiesOverlap) return 0;
+        boolean awaitingCommit = correlatedDetachedWindow
+            && "awaiting-authoritative-ack".equals(handoffPhase)
+            && detachedTicks > 0 && detachedTicks <= maximumDetachedTicks;
+        int staleTicks = previousStaleTicks + (awaitingCommit ? 0 : 1);
+        if (staleTicks > maximumStaleTicks) {
+            throw new IllegalStateException("source and destination Sable client copies overlapped too long"
+                + " staleOverlapTicks=" + staleTicks + "/" + maximumStaleTicks
+                + " correlatedDetachedWindow=" + correlatedDetachedWindow
+                + " handoffPhase=" + handoffPhase
+                + " detachedTicks=" + detachedTicks + "/" + maximumDetachedTicks);
+        }
+        return staleTicks;
+    }
+
 
     static void verifySpatialDistance(
         double currentOrSourceDistance, double stagedDestinationDistance, boolean correlatedWindow, double maximumDistance

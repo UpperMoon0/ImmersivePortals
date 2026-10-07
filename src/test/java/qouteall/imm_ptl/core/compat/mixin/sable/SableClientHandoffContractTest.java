@@ -42,6 +42,12 @@ class SableClientHandoffContractTest {
             "The observer must recognize correlated client-request-first handoffs too");
         assertTrue(invokesNamed(findMethodByName(observer, "verifyContinuousClientOwnership"),
             "verifyBodyRemainsSpatiallyContinuous"), "Settled spatial continuity remains mandatory");
+        MethodNode continuity = findMethodByName(observer, "verifyContinuousClientOwnership");
+        assertTrue(invocationIndex(continuity, "verifyDetachedHandoffWindow")
+            < invocationIndex(continuity, "verifyOverlap"),
+            "Overlap grace must follow nonce, seat, dimensions, timeout, and spatial validation");
+        assertTrue(invokesNamed(continuity, "phase"),
+            "Only the actual production handoff phase may defer the stale-copy deadline");
     }
 
     @Test
