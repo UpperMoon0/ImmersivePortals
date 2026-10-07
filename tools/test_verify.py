@@ -131,6 +131,20 @@ class VerificationHarnessTest(unittest.TestCase):
         self.assertFalse(verify.needs_windows_interactive_bridge(7, 7))
         self.assertTrue(verify.needs_windows_interactive_bridge(0, 7))
 
+    def test_windows_session_bridge_forwards_shadow_driver_selection(self):
+        for renderer in ("iris-active", "neoculus-active"):
+            for shadow_mode in ("true", "false"):
+                with self.subTest(renderer=renderer, shadow_mode=shadow_mode):
+                    env = {"IP_PORTAL_SMOKE": "true", "IP_SHADOW_SMOKE": shadow_mode,
+                           "IP_SMOKE_RENDERER": renderer}
+                    # Exercise wrapper generation without launching a desktop process.
+                    with patch.object(verify.ctypes, "windll", Mock(), create=True):
+                        verify.launch_windows_interactive(["gradlew.bat", "runPortalSmokeClient"], env, 7)
+                    wrapper = (self.results / "client-session.cmd").read_text(encoding="utf-8")
+                    self.assertIn(f'set "IP_SHADOW_SMOKE={shadow_mode}"', wrapper)
+                    self.assertIn('set "IP_PORTAL_SMOKE=true"', wrapper)
+                    self.assertIn(f'set "IP_SMOKE_RENDERER={renderer}"', wrapper)
+
     def test_clean_exit_still_requires_results(self):
         (self.results / "client-pass.txt").unlink()
         with self.assertRaisesRegex(RuntimeError, "client-pass"):
