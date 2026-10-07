@@ -14,6 +14,11 @@ public final class PortalSmokeCreateScene {
         PortalSmokeCreateSceneServer.setup(level, x, y, z);
     }
 
+    public static void setSpeed(ServerLevel level, int x, int y, int z, int rpm) {
+        if (!ModList.get().isLoaded("create")) throw new IllegalStateException("Create scene requires Create");
+        PortalSmokeCreateSceneServer.setSpeed(level, x, y, z, rpm);
+    }
+
     public static Map<String, Object> describeServerScene(ServerLevel level, int x, int y, int z) {
         if (!ModList.get().isLoaded("create")) return Map.of("present", false);
         return PortalSmokeCreateSceneServer.describe(level, x, y, z);

@@ -26,8 +26,10 @@ The adapter uses `org.embeddedt.embeddium.impl` and the public Embeddium sprite 
 boundary, with an independently instantiated Embeddium implementation.
 
 - Chunk arrival/removal updates the destination world's `ChunkTracker` block-data status.
-- Each recursive view swaps render lists, rebuild lists, render distance, visibility frame, camera positions,
-  current viewport, and portal frustum culler. Dimension-owned mesh buffers/build jobs are shared.
+- Each recursive view swaps render lists, render distance, current viewport, and portal frustum culler.
+  Rebuild queues, their visibility frame and camera positions, mesh buffers and build jobs remain owned
+  by the dimension renderer: Embeddium consumes previous-pass discoveries before collecting visibility
+  for the next pass. Build timestamps and translucency-sort origins must remain associated with that work.
 - Each region has an independent `ChunkRenderList` per portal depth, preserving outer translucent geometry.
 - Portal-specific visibility-search origins apply throughout graph traversal, including its outward-direction
   constraint, and are reset after traversal. Portal frustum tests preserve Embeddium's actual padded AABBs.
@@ -65,3 +67,21 @@ NeOculus jar separately from the official Iris test classpath, avoiding accident
 fields, descriptors and call sites. These tests do not prove that Mixin transforms apply or that pixels are correct.
 Client validation must additionally cover active shaderpack terrain/entities/translucency, nested portals,
 mirrors, dimension crossing, and resource reload, preserving logs and images for every backend.
+
+An optional production-helper GL test is available without a display server:
+
+```sh
+python tools/verify_framebuffer_copy_gl.py \
+  --minecraft-jar /path/to/built/neoforge-21.1.228.jar \
+  --egl-jar /path/to/lwjgl-egl-3.3.3.jar \
+  --gradle-home "$GRADLE_USER_HOME" --report framebuffer-copy-gl.txt
+```
+
+The EGL dependency is `org.lwjgl:lwjgl-egl:3.3.3` from Maven Central. The test does not download dependencies.
+It compiles the current production `IPIrisHelper` and uses the real Minecraft `RenderTarget` carrier with
+already-created GL attachments, bypassing its game-only constructor. It checks D24S8/D32FS8 storage,
+resized buffers, full and partial copies, and GL state preservation using copy-image and forced blit paths.
+Passing this focused GL test does not establish that a Minecraft mixin applies or a portal renders correctly.
+With `--clipping-classpath` set to the built main classes and their runtime dependencies (a platform-separated
+classpath), it also checks the actual `FrontClipping` class: all four logical/GL enable combinations,
+nested suspension, and exact restoration of both clip equations. No Minecraft class is stubbed.

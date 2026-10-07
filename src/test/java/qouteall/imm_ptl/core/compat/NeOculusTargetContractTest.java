@@ -45,6 +45,9 @@ class NeOculusTargetContractTest {
             method(read(jar, IRIS + "pipeline/FinalPassRenderer"), "renderFinalPass", "()V");
             read(jar, IRIS + "shadows/ShadowRenderTargets");
             field(read(jar, IRIS + "shadows/ShadowRenderer"), "ACTIVE", "Z");
+            method(read(jar, IRIS + "shadows/ShadowRenderer"), "renderShadows",
+                "(L" + IRIS + "mixin/LevelRendererAccessor;Lnet/minecraft/client/Camera;)V");
+            method(read(jar, IRIS + "pathways/FullScreenQuadRenderer"), "renderQuad", "()V");
             var iris = read(jar, IRIS + "Iris");
             method(iris, "getCurrentPack", "()Ljava/util/Optional;");
             method(iris, "getCurrentPackName", "()Ljava/lang/String;");

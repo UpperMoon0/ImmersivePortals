@@ -2,9 +2,7 @@ package qouteall.imm_ptl.core.compat;
 
 import org.junit.jupiter.api.Test;
 import org.objectweb.asm.ClassReader;
-import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.tree.ClassNode;
-import org.objectweb.asm.tree.FieldInsnNode;
 import org.objectweb.asm.tree.MethodInsnNode;
 import org.objectweb.asm.tree.MethodNode;
 
@@ -46,11 +44,9 @@ class FlywheelPortalFallbackTest {
             "A finally handler must restore context when recursive rendering throws");
         int reads = 0, writes = 0;
         for (var instruction : method.instructions) {
-            if (instruction instanceof FieldInsnNode field && field.name.equals("flywheel$renderContext")) {
-                if (field.getOpcode() == Opcodes.GETFIELD) reads++;
-                if (field.getOpcode() == Opcodes.PUTFIELD) writes++;
-            }
             if (instruction instanceof MethodInsnNode call) {
+                if (call.name.equals("ip_getFlywheelRenderContext")) reads++;
+                if (call.name.equals("ip_setFlywheelRenderContext")) writes++;
                 assertFalse(call.name.startsWith("reset") || call.name.equals("chooseBackend"),
                     "Entering a portal must not reset a level manager or change the selected backend");
             }
@@ -58,6 +54,18 @@ class FlywheelPortalFallbackTest {
         assertEquals(1, reads);
         assertEquals(2, writes, "Context must restore on both normal and exceptional paths");
         assertTrue(invokes(method, "call"));
+    }
+
+    @Test
+    void contextFieldIsResolvedAfterMixinFieldsAreMerged() throws Exception {
+        for (String accessor : new String[]{"ip_getFlywheelRenderContext", "ip_setFlywheelRenderContext"}) {
+            var method = method("MixinFlywheelLevelRenderer", accessor);
+            assertNotNull(method.visibleAnnotations);
+            assertTrue(method.visibleAnnotations.stream().anyMatch(annotation ->
+                annotation.desc.equals("Lorg/spongepowered/asm/mixin/gen/Accessor;")
+                    && annotation.values.contains("flywheel$renderContext")),
+                "The upstream-injected field must use a late-resolved accessor, not a preparation-time shadow");
+        }
     }
 
     @Test

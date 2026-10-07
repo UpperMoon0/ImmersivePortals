@@ -213,7 +213,7 @@ class VerificationHarnessTest(unittest.TestCase):
             self.assertIn("enableShaders=false", (client / "config/oculus.properties").read_text())
 
     def shader_evidence(self, active=True):
-        scenes = {"solid-visible", "solid-clipped", "nested", "mirror", "create-visible", "create-clipped"}
+        scenes = {"solid-visible", "solid-clipped", "nested", "create-nested", "mirror", "create-visible", "create-clipped", "create-crumbling-clean", "create-crumbling-damaged", "create-crumbling-clipped"}
         phases = ["before-reload", "after-reload"]
         if active:
             phases.append("after-toggle")
@@ -222,6 +222,8 @@ class VerificationHarnessTest(unittest.TestCase):
         checks = [{"phase": phase, "scene": scene, "screenshot": "test.png",
                    "shaders_active": active, "pack": verify.FIXTURE_NAME if active else "",
                    "width": 854 if phase == "before-reload" else 960, "height": 480 if phase == "before-reload" else 640,
+                   "flywheel": {"nestedContextsRestored": 1, "contextAccessorsInstalled": True, "contextClearedAfterFrame": True}, "source_motion_changed_pixels": 100, "create_motion_changed_pixels": 100,
+                   "create_server_motion": True, "nested_contexts_restored_this_scene": 1, "crumbling_changed_pixels": 100, "crumbling_darkening": 10,
                    "pipeline": "net.irisshaders.iris.pipeline.IrisRenderingPipeline" if active else "VanillaRenderingPipeline",
                    "renderer": "IrisPortalRenderer" if active else "RendererUsingStencil"}
                   for phase, scene in [(p, s) for p in phases for s in scenes] + [("after-crossing", "crossing")]]
@@ -289,7 +291,7 @@ class VerificationHarnessTest(unittest.TestCase):
                 self.assertIn(f"renderer: {renderer},", workflow)
             self.assertIn("negative_control: pack-disabled", workflow)
             self.assertIn("negative_control: clipping-disabled", workflow)
-        for name in ("nightly", "release"):
+        for name in ("ci", "nightly", "release"):
             workflow = (verify.ROOT / f".github/workflows/{name}.yml").read_text()
             self.assertIn("disable_copy_image: true", workflow)
             for backend in ("off", "instancing", "indirect"):
@@ -309,6 +311,45 @@ class VerificationHarnessTest(unittest.TestCase):
                 archive.writestr("qouteall/imm_ptl/core/gametest/sablee2e/PortalSmokeClient.class", b"class")
             with self.assertRaisesRegex(RuntimeError, "development test classes leaked"):
                 verify.validate_release_jar()
+
+    def test_pack_profiles_use_declared_values_and_reject_unknown_or_cyclic_presets(self):
+        properties = "profile.low = !SHADOWS QUALITY=0 DEPTH:0.5\nprofile.high = profile.low SHADOWS QUALITY=2\n"
+        self.assertEqual(verify.shader_profile_options(properties), ("low", {"SHADOWS": "false", "QUALITY": "0", "DEPTH": "0.5"}))
+        self.assertEqual(verify.shader_profile_options(properties, "high")[1]["QUALITY"], "2")
+        with self.assertRaisesRegex(RuntimeError, "no profile"):
+            verify.shader_profile_options(properties, "missing")
+        with self.assertRaisesRegex(RuntimeError, "inheritance"):
+            verify.shader_profile_options("profile.low = profile.low", "low")
+        with self.assertRaisesRegex(RuntimeError, "program enablement"):
+            verify.shader_profile_options("profile.low = !program.shadow", "low")
+
+    def test_visual_timeout_scales_with_actual_scene_and_epoch_scope(self):
+        base = verify.visual_timeout("sodium", 200, "normal", True)
+        active = verify.visual_timeout("iris-active", 200, "normal", True)
+        real_pack = verify.visual_timeout("iris-active", 200, "normal", False)
+        self.assertGreater(active, base)
+        self.assertGreater(active, real_pack)
+        self.assertGreater(verify.visual_timeout("iris-active", 1200, "normal", True), active)
+
+    def test_live_shader_options_must_match_recorded_preset(self):
+        (self.results / "fixture.json").write_text(json.dumps({"name": verify.FIXTURE_NAME, "options": {"SHADOWS": "false"}}))
+        self.write_shader_evidence(self.shader_evidence())
+        with self.assertRaisesRegex(RuntimeError, "live shaderpack options"):
+            verify.validate_shader_evidence("iris-active")
+
+    def test_create_evidence_requires_separate_source_target_motion_and_crumbling(self):
+        for scene, key, value in (("create-visible", "source_motion_changed_pixels", 0),
+                                  ("create-visible", "create_motion_changed_pixels", 0),
+                                  ("create-visible", "create_server_motion", False),
+                                  ("create-crumbling-damaged", "crumbling_changed_pixels", 0),
+                                  ("create-crumbling-damaged", "crumbling_darkening", 0),
+                                  ("create-nested", "nested_contexts_restored_this_scene", 0)):
+            with self.subTest(scene=scene, key=key):
+                report = self.shader_evidence()
+                next(check for check in report["checks"] if check["scene"] == scene)[key] = value
+                self.write_shader_evidence(report)
+                with self.assertRaises(RuntimeError):
+                    verify.validate_shader_evidence("iris-active")
 
     def test_framebuffer_evidence_requires_both_paths_and_actual_values(self):
         for key, value in (("color", [0, 0, 0, 0]), ("depth", float("nan")),

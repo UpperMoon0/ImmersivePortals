@@ -1,0 +1,42 @@
+[
+  {
+    "name": "MakeUp - Ultra Fast",
+    "version": "9.4a",
+    "modrinth_version": "KkGY3RTO",
+    "project_url": "https://modrinth.com/shader/makeup-ultra-fast-shaders",
+    "download_url": "https://cdn.modrinth.com/data/izsIPI7a/versions/KkGY3RTO/MakeUp-UltraFast-9.4a.zip",
+    "source_url": "https://github.com/javiergcim/MakeUpUltraFast",
+    "sha256": "84cca2673de0d751e015aab57aaa5b8d07bb4c30833a1372489867301c5e1019",
+    "sha512": "edb1c9cc144a86432a376c7e88a7ed1ebfc1d0a52e674546b3778acac1a106405965edfb612e8affff70f8d9855698970c3ea6346f5d5b2dff7a65663d8901bb",
+    "license": {
+      "id": "LGPL-3.0-or-later",
+      "name": "GNU Lesser General Public License v3.0 or later",
+      "url": null
+    },
+    "included_license": "LGPL-3.0-or-later",
+    "minecraft_1_21_1_listed": true,
+    "iris_loader_listed": true,
+    "geometry_or_tessellation_files": [],
+    "verification": "Source inventory and official artifact hashes checked. Actual Iris 1.8.14 and NeOculus 1.8.7 active-pack rendering must be verified separately."
+  },
+  {
+    "name": "Complementary Shaders - Reimagined",
+    "version": "r5.5.1",
+    "modrinth_version": "sAAjYvFB",
+    "project_url": "https://modrinth.com/shader/complementary-reimagined",
+    "download_url": "https://cdn.modrinth.com/data/HVnmMxH1/versions/sAAjYvFB/ComplementaryReimagined_r5.5.1.zip",
+    "source_url": "https://github.com/ComplementaryDevelopment/ComplementaryReimagined",
+    "sha256": "20897248a5fe91b33bf7fd4b75959c30aa2003df195297979a410ee37d3bb62f",
+    "sha512": "e3168c3e8b9a59e70dbc7dd27931d8b245e5b16b093c87f1dccd01edc3a8be0fb14153fe8175e822ea6463ac0d715de377d186455580915c6f9d98c02b39194f",
+    "license": {
+      "id": "LicenseRef-Custom",
+      "name": "",
+      "url": "https://github.com/ComplementaryDevelopment/ComplementaryReimagined/blob/main/License.txt"
+    },
+    "included_license": "Complementary License Agreement 1.5",
+    "minecraft_1_21_1_listed": true,
+    "iris_loader_listed": true,
+    "geometry_or_tessellation_files": [],
+    "verification": "Source inventory and official artifact hashes checked. Actual Iris 1.8.14 and NeOculus 1.8.7 active-pack rendering must be verified separately."
+  }
+]

@@ -64,8 +64,11 @@ clipping scope ends. A scope around `VertexBuffer._drawWithShader` enables inner
 clipping only for transformed Iris shaders with an actual clipping uniform. It
 uses that draw's exact model-view matrix and restores the previous enabled/disabled
 state even when rendering throws. Shadow, hand and post-processing shaders do
-not have the marker/uniform and cannot activate this scope. Unmarked buffered
-draws suspend an inherited coarse clipping scope. Iris full-screen quads bypass
+not have the marker/uniform and cannot activate this scope. Unpatched buffered
+draws suspend an inherited coarse clipping scope only while a shaderpack is
+active. Existing `IEShader` clipping uniforms, including `portal_area`, preserve
+their vanilla/IP scopes and camera-relative coordinate path. With shaders off,
+the draw policy preserves all vanilla/IP clipping behavior. Iris full-screen quads bypass
 `drawWithShader`, so `FullScreenQuadRenderer.renderQuad` has a separate scoped
 suspension. The complete shadow pass also suspends clipping. All scopes restore
 the previous plane, logical state and actual GL enable bit in `finally`.
@@ -91,3 +94,20 @@ plane: the excluded half had zero colored pixels, the retained half had 841;
 with a neutral plane both halves had 841. This validates synthetic GLSL stage
 behavior only. The active-pack Minecraft fixture, real packs, nested portals,
 mirrors and shader/resource reload must be verified by the graphical matrix.
+
+## Representative real-pack inputs
+
+`iris-real-pack-inputs.json` pins official, unmodified MakeUp Ultra Fast 9.4a
+and Complementary Reimagined r5.5.1 downloads and hashes for local test runs.
+These established versions both list Minecraft 1.21.1 and Iris in their official
+release metadata. MakeUp's bundled README states Iris 1.5.1 or newer; the
+Complementary source contains Iris 1.8 compatibility branches. This is evidence
+for choosing test inputs, not proof that either pack passes on NeOculus.
+
+Both packs use the standard world projection path, including foliage/water
+movement and TAA offsets. Neither input contains geometry/tessellation shaders.
+Keep the downloaded ZIPs and their notices unchanged and outside this repository;
+do not redistribute pack shader code as part of the regression fixture. Real-pack
+smoke runs must use their own acceptance criteria rather than the fixture's
+artificial program colors. Record actual activation, compile/link results,
+portal output and reload behavior for each renderer separately.

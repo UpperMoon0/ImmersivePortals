@@ -14,6 +14,7 @@ import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.Vec3;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.network.protocol.game.ClientboundLevelParticlesPacket;
+import net.minecraft.network.protocol.game.ClientboundBlockDestructionPacket;
 import qouteall.imm_ptl.core.network.PacketRedirection;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.ModList;
@@ -53,6 +54,7 @@ public final class PortalSmokeServer {
     }
 
     private static void setup(String token) throws ReflectiveOperationException {
+        String previousScene = scene;
         scene = token.substring(token.indexOf(':') + 1);
         fixtures.forEach(Entity::discard);
         fixtures.clear();
@@ -61,13 +63,20 @@ public final class PortalSmokeServer {
         ServerLevel end = player.server.getLevel(Level.END);
         // Mutate only this freshly generated disposable world's bounded fixture volume.
         for (ServerLevel level : List.of(source, target, end)) {
-            level.getEntitiesOfClass(Entity.class, new AABB(-16, 70, -16, 16, 96, 16),
+            level.getEntitiesOfClass(Entity.class, new AABB(-16, 70, -16, 48, 96, 16),
                 entity -> !(entity instanceof ServerPlayer)).forEach(Entity::discard);
             level.setDayTime(6000);
             for (int x = -8; x <= 8; x++) for (int y = 76; y <= 88; y++) for (int z = -5; z <= 8; z++) {
                 BlockState state = z == -4 ? (level == source ? Blocks.RED_CONCRETE : Blocks.LIME_CONCRETE).defaultBlockState()
                     : Blocks.AIR.defaultBlockState();
                 level.setBlockAndUpdate(new BlockPos(x, y, z), state);
+            }
+        }
+        if (scene.equals("create-nested") || previousScene.equals("create-nested")) {
+            for (int x = 24; x <= 40; x++) for (int y = 76; y <= 88; y++) for (int z = -5; z <= 8; z++) {
+                target.setBlockAndUpdate(new BlockPos(x, y, z), (scene.equals("create-nested") && z == -4)
+                    ? Blocks.LIME_CONCRETE.defaultBlockState() : (scene.equals("create-nested") && z == 1)
+                    ? Blocks.RED_CONCRETE.defaultBlockState() : Blocks.AIR.defaultBlockState());
             }
         }
         player.teleportTo(source, 0, 80.38, 4, 180, 0);
@@ -83,12 +92,20 @@ public final class PortalSmokeServer {
             Portal portal = Portal.ENTITY_TYPE.create(source);
             configure(portal, Level.NETHER, new Vec3(0, 82, 0), new Vec3(0, 82, 0));
             add(source, portal);
-            if (scene.equals("nested")) {
+            if (scene.equals("nested") || scene.equals("create-nested")) {
                 wall(target, -4, Blocks.RED_CONCRETE.defaultBlockState());
                 wall(end, 1, Blocks.RED_CONCRETE.defaultBlockState());
                 Portal nested = Portal.ENTITY_TYPE.create(target);
-                configure(nested, Level.END, new Vec3(0, 82, -1), new Vec3(0, 82, 0));
+                configure(nested, scene.equals("create-nested") ? Level.NETHER : Level.END,
+                    new Vec3(0, 82, -1), new Vec3(scene.equals("create-nested") ? 32 : 0, 82, 0));
                 add(target, nested);
+                if (scene.equals("create-nested")) {
+                    // Re-enter the same Nether LevelRenderer to test Flywheel's per-level context restoration.
+                    var setup = Class.forName("qouteall.imm_ptl.core.gametest.sablee2e.PortalSmokeCreateScene")
+                        .getMethod("setup", ServerLevel.class, int.class, int.class, int.class);
+                    setup.invoke(null, target, 28, 82, -3);
+                    setup.invoke(null, source, 0, 82, -3);
+                }
             } else if (scene.startsWith("cutout-")) {
                 wall(target, z, Blocks.OAK_LEAVES.defaultBlockState());
             } else if (scene.startsWith("translucent-")) {
@@ -109,8 +126,13 @@ public final class PortalSmokeServer {
             } else if (scene.startsWith("create-")) {
                 // The optional helper is kept separate from this no-Sable discovery boundary.
                 Class<?> helper = Class.forName("qouteall.imm_ptl.core.gametest.sablee2e.PortalSmokeCreateScene");
-                helper.getMethod("setup", ServerLevel.class, int.class, int.class, int.class).invoke(null, target, -4, 82, visible ? -3 : 1);
-                helper.getMethod("setup", ServerLevel.class, int.class, int.class, int.class).invoke(null, source, -8, 80, -3);
+                boolean crumbling = scene.startsWith("create-crumbling-");
+                int targetX = crumbling ? 0 : -4;
+                int targetZ = scene.endsWith("-clipped") ? 1 : -3;
+                helper.getMethod("setup", ServerLevel.class, int.class, int.class, int.class).invoke(null, target, targetX, 82, targetZ);
+                helper.getMethod("setup", ServerLevel.class, int.class, int.class, int.class).invoke(null, source, 0, 82, -3);
+                if (crumbling) helper.getMethod("setSpeed", ServerLevel.class, int.class, int.class, int.class, int.class)
+                    .invoke(null, target, targetX, 82, targetZ, 0);
             } else {
                 wall(target, z, Blocks.RED_CONCRETE.defaultBlockState());
             }
@@ -157,16 +179,20 @@ public final class PortalSmokeServer {
             if (scene.startsWith("create-")) {
                 ServerLevel target = player.server.getLevel(Level.NETHER);
                 ServerLevel source = player.server.getLevel(Level.OVERWORLD);
-                int z = scene.endsWith("-visible") ? -3 : 1;
+                int z = scene.endsWith("-clipped") ? 1 : -3;
+                int x = scene.equals("create-nested") ? 28 : scene.startsWith("create-crumbling-") ? 0 : -4;
                 var describe = Class.forName("qouteall.imm_ptl.core.gametest.sablee2e.PortalSmokeCreateScene")
                     .getMethod("describeServerScene", ServerLevel.class, int.class, int.class, int.class);
                 PortalSmokeSupport.write("create-server.json", new Gson().toJson(Map.of(
                     "scene", request,
-                    "target", describe.invoke(null, target, -4, 82, z),
-                    "source", describe.invoke(null, source, -8, 80, -3))));
-                int crackStage = (int) (target.getGameTime() / 5 % 10);
-                target.destroyBlockProgress(78231, new BlockPos(-4, 82, z + 2), crackStage);
-                source.destroyBlockProgress(78232, new BlockPos(-8, 80, -1), crackStage);
+                    "target", describe.invoke(null, target, x, 82, z),
+                    "source", describe.invoke(null, source, 0, 82, -3))));
+                // Static target isolates the damage overlay from ordinary rotating geometry.
+                int crackStage = scene.equals("create-crumbling-damaged") || scene.equals("create-crumbling-clipped") ? 9 : -1;
+                // Vanilla only sends this packet to players physically in that dimension.
+                // Route it to the observer's remote client world, like other portal-visible effects.
+                PacketRedirection.sendRedirectedMessage(player, Level.NETHER,
+                    new ClientboundBlockDestructionPacket(78231, new BlockPos(x, 82, z + 2), crackStage));
             }
             if (PortalSmokeSupport.exists("crossing-request.txt") && player.level().dimension().equals(Level.NETHER)) {
                 PortalSmokeSupport.write("crossing-server-pass.txt", "Server observed the player cross into Nether through the portal\n");

@@ -36,8 +36,12 @@ public final class PortalSmokeClient {
     private static String request = "";
     private static CompletableFuture<Void> reload;
     private static long frameStart;
+    private static long nestedContextBaseline;
     private static int[] previousCreatePixels;
-    private static int createMotionPixels;
+    private static int[] previousSourcePixels;
+    private static int[] crumblingBaseline;
+    private static int createMotionPixels, sourceMotionPixels, crumblingChangedPixels;
+    private static double crumblingDarkening;
     private static double previousCreateAngle = Double.NaN;
     private static boolean createServerMotion;
     private static Map<String, Object> createServerEvidence = Map.of();
@@ -85,6 +89,7 @@ public final class PortalSmokeClient {
             if (!initialized) {
                 GLResourceCacheRegression.verify();
                 verifyMods();
+                mc.options.fov().set(70);
                 if (PortalSmokeSupport.activeShaders()) {
                     framebufferCopyEvidence = Class.forName("qouteall.imm_ptl.core.gametest.sablee2e.PortalSmokeFramebufferCopyTest")
                         .getMethod("run").invoke(null);
@@ -108,6 +113,10 @@ public final class PortalSmokeClient {
                 toggleShaders(true);
                 waitingToggle = false;
                 requestScene();
+                return;
+            }
+            if (crossed) {
+                collectMetrics(mc);
                 return;
             }
             if (!request.equals(PortalSmokeSupport.read("scene-ready.txt"))) return;
@@ -160,13 +169,20 @@ public final class PortalSmokeClient {
         }
     }
 
-    private static void requestScene() {
+    private static void requestScene() throws ReflectiveOperationException {
         frames = stableFrames = 0;
         previousCreatePixels = null;
-        createMotionPixels = 0;
+        previousSourcePixels = null;
+        createMotionPixels = sourceMotionPixels = crumblingChangedPixels = 0;
+        crumblingDarkening = 0;
+        if (PortalSmokeSupport.scenes().get(sceneIndex).equals("create-crumbling-clean")) crumblingBaseline = null;
         previousCreateAngle = Double.NaN;
         createServerMotion = false;
         createServerEvidence = Map.of();
+        if (PortalSmokeSupport.scenes().get(sceneIndex).equals("create-nested")) {
+            Map<?, ?> flywheel = (Map<?, ?>) runtimeState().get("flywheel");
+            nestedContextBaseline = ((Number) flywheel.get("nestedContextsRestored")).longValue();
+        }
         request = PHASES[epoch] + ":" + PortalSmokeSupport.scenes().get(sceneIndex);
         PortalSmokeSupport.write("scene-request.txt", request);
     }
@@ -184,30 +200,39 @@ public final class PortalSmokeClient {
                     total++;
                 }
             }
-            if (scene.startsWith("create-")) readCreateServerEvidence();
-            if (scene.equals("create-visible")) {
-                int[] current = new int[pixels.getWidth() * pixels.getHeight()];
-                for (int y = 0; y < pixels.getHeight(); y++) for (int x = 0; x < pixels.getWidth(); x++) {
-                    int i = y * pixels.getWidth() + x;
-                    current[i] = pixels.getPixelRGBA(x, y);
-                    if (previousCreatePixels != null && current[i] != previousCreatePixels[i]) createMotionPixels++;
+            boolean crumbling = scene.startsWith("create-crumbling-");
+            if (scene.startsWith("create-")) {
+                readCreateServerEvidence(crumbling);
+                int[] sourceRegion = region(pixels, 0.82, 0.22, 0.98, 0.78);
+                sourceMotionPixels += changes(previousSourcePixels, sourceRegion);
+                previousSourcePixels = sourceRegion;
+                int[] targetRegion = region(pixels, 0.38, 0.18, 0.64, 0.78);
+                createMotionPixels += changes(previousCreatePixels, targetRegion);
+                previousCreatePixels = targetRegion;
+                if (scene.equals("create-crumbling-clean")) crumblingBaseline = targetRegion;
+                if (scene.equals("create-crumbling-damaged") && crumblingBaseline != null) {
+                    crumblingChangedPixels = changes(crumblingBaseline, targetRegion);
+                    crumblingDarkening = meanBrightness(crumblingBaseline) - meanBrightness(targetRegion);
                 }
-                previousCreatePixels = current;
             }
-            boolean positive = scene.endsWith("-visible");
+            boolean positive = scene.endsWith("-visible") || scene.equals("create-nested") || scene.equals("create-crumbling-clean") || scene.equals("create-crumbling-damaged");
             // Visible controls establish that each geometry path really draws in this camera.
             // Create uses its own textures; shader fixture programs for other paths output diagnostic red.
             boolean colors = positive ? (scene.startsWith("create-") ? green < total * 0.97 : red > total * 0.02)
                 : green > total * 0.80 && red < total * 0.01;
             int layers = RenderStates.portalRenderInfos.stream().mapToInt(List::size).max().orElse(0);
             boolean geometry = (!requirePortal || RenderStates.portalsRenderedThisFrame > 0)
-                && (!scene.equals("nested") || layers >= 2)
-                && (!scene.equals("create-visible") || (createMotionPixels > 20 && createServerMotion));
+                && (!(scene.equals("nested") || scene.equals("create-nested")) || layers >= 2)
+                && (!scene.startsWith("create-") || !requiresSourcePixels() || sourceMotionPixels > 20)
+                && (!(scene.equals("create-visible") || scene.equals("create-nested")) || (createMotionPixels > 20 && createServerMotion))
+                && (!scene.equals("create-crumbling-damaged") || (crumblingChangedPixels > 20 && crumblingDarkening > 0.5));
             String screenshot = phase + "-" + scene + ".png";
             pixels.writeToFile(PortalSmokeSupport.directory().resolve(screenshot));
             stableFrames = colors && geometry ? stableFrames + 1 : 0;
             if (frames > 720) throw new IllegalStateException("PORTAL_PIXELS_MISMATCH: " + phase + "/" + scene
-                + " green=" + green + "/" + total + " red=" + red + " layers=" + layers);
+                + " green=" + green + "/" + total + " red=" + red + " layers=" + layers
+                + " targetMotion=" + createMotionPixels + " sourceMotion=" + sourceMotionPixels
+                + " crumblingChanges=" + crumblingChangedPixels + " darkening=" + crumblingDarkening);
             if (stableFrames < 3 && requirePortal) return false;
             if (!colors) throw new IllegalStateException("PORTAL_PIXELS_MISMATCH after crossing");
             int glError = GL11.glGetError();
@@ -217,8 +242,20 @@ public final class PortalSmokeClient {
                 "green_pixels", green, "red_pixels", red, "sampled_pixels", total,
                 "portal_layers", layers, "width", pixels.getWidth(), "height", pixels.getHeight()));
             check.put("create_motion_changed_pixels", createMotionPixels);
+            check.put("source_motion_changed_pixels", sourceMotionPixels);
+            check.put("source_visible_required", requiresSourcePixels());
+            check.put("target_motion_region", List.of(0.38, 0.18, 0.64, 0.78));
+            check.put("source_motion_region", List.of(0.82, 0.22, 0.98, 0.78));
+            check.put("crumbling_changed_pixels", crumblingChangedPixels);
+            check.put("crumbling_darkening", crumblingDarkening);
             if (scene.startsWith("create-")) {
                 verifyFlywheel(check.get("flywheel"));
+                if (scene.equals("create-nested")) {
+                    Map<?, ?> flywheel = (Map<?, ?>) check.get("flywheel");
+                    long restored = ((Number) flywheel.get("nestedContextsRestored")).longValue() - nestedContextBaseline;
+                    require(restored > 0, "Same-dimension nested Flywheel context restoration never ran in this scene");
+                    check.put("nested_contexts_restored_this_scene", restored);
+                }
                 check.put("create_server", createServerEvidence);
                 check.put("create_server_motion", createServerMotion);
             }
@@ -226,6 +263,37 @@ public final class PortalSmokeClient {
             saveEvidence();
             return true;
         }
+    }
+
+    private static boolean requiresSourcePixels() {
+        // Debug mode intentionally replaces the whole display with the portal view.
+        return !System.getenv().getOrDefault("IP_SMOKE_RENDER_MODE", "normal").equals("debug");
+    }
+
+    private static int[] region(NativeImage image, double left, double top, double right, double bottom) {
+        int x0 = (int) (image.getWidth() * left), x1 = (int) (image.getWidth() * right);
+        int y0 = (int) (image.getHeight() * top), y1 = (int) (image.getHeight() * bottom);
+        int[] result = new int[(x1 - x0) * (y1 - y0)];
+        int index = 0;
+        for (int y = y0; y < y1; y++) for (int x = x0; x < x1; x++) result[index++] = image.getPixelRGBA(x, y);
+        return result;
+    }
+
+    private static int changes(int[] previous, int[] current) {
+        if (previous == null || previous.length != current.length) return 0;
+        int changed = 0;
+        for (int i = 0; i < current.length; i++) {
+            int delta = 0;
+            for (int shift : new int[]{0, 8, 16}) delta += Math.abs(((previous[i] >>> shift) & 255) - ((current[i] >>> shift) & 255));
+            if (delta > 30) changed++;
+        }
+        return changed;
+    }
+
+    private static double meanBrightness(int[] pixels) {
+        double sum = 0;
+        for (int color : pixels) sum += (color & 255) + ((color >>> 8) & 255) + ((color >>> 16) & 255);
+        return sum / (pixels.length * 3.0);
     }
 
     private static void verifyMods() {
@@ -260,13 +328,30 @@ public final class PortalSmokeClient {
         state.put("pack", Optional.ofNullable(IrisInterface.invoker.getShaderpackName()).orElse(""));
         state.put("renderer", IPCGlobal.renderer.getClass().getSimpleName());
         String pipeline = "";
+        Map<String, String> shaderOptions = new LinkedHashMap<>();
         if (IrisInterface.invoker.isIrisPresent()) {
             Class<?> iris = Class.forName("net.irisshaders.iris.Iris");
             Object manager = iris.getMethod("getPipelineManager").invoke(null);
             Optional<?> active = (Optional<?>) manager.getClass().getMethod("getPipeline").invoke(manager);
             pipeline = active.map(p -> p.getClass().getName()).orElse("");
+            Optional<?> pack = (Optional<?>) iris.getMethod("getCurrentPack").invoke(null);
+            Map<?, ?> fixture = new Gson().fromJson(PortalSmokeSupport.read("fixture.json"), Map.class);
+            Map<?, ?> expectedOptions = fixture == null ? Map.of() : (Map<?, ?>) fixture.getOrDefault("options", null);
+            if (pack.isPresent() && expectedOptions != null && !expectedOptions.isEmpty()) {
+                Object packOptions = pack.get().getClass().getMethod("getShaderPackOptions").invoke(pack.get());
+                Object values = packOptions.getClass().getMethod("getOptionValues").invoke(packOptions);
+                Class<?> optionValues = Class.forName("net.irisshaders.iris.shaderpack.option.values.OptionValues");
+                for (var entry : expectedOptions.entrySet()) {
+                    String name = entry.getKey().toString(), expected = entry.getValue().toString();
+                    String accessor = expected.equals("true") || expected.equals("false") ? "getBooleanValueOrDefault" : "getStringValueOrDefault";
+                    String actual = String.valueOf(optionValues.getMethod(accessor, String.class).invoke(values, name));
+                    require(expected.equals(actual), "Shader option was not applied: " + name + " expected=" + expected + " actual=" + actual);
+                    shaderOptions.put(name, actual);
+                }
+            }
         }
         state.put("pipeline", pipeline);
+        state.put("shader_options", shaderOptions);
         state.put("gl_version", GL11.glGetString(GL11.GL_VERSION));
         state.put("gl_vendor", GL11.glGetString(GL11.GL_VENDOR));
         state.put("gl_renderer", GL11.glGetString(GL11.GL_RENDERER));
@@ -278,11 +363,16 @@ public final class PortalSmokeClient {
     }
 
     @SuppressWarnings("unchecked")
-    private static void readCreateServerEvidence() {
+    private static void readCreateServerEvidence(boolean crumbling) {
         Map<String, Object> result = new Gson().fromJson(PortalSmokeSupport.read("create-server.json"), Map.class);
         require(result != null && request.equals(result.get("scene")), "Missing current Create server evidence");
         for (String side : List.of("source", "target")) {
             Map<String, Object> assembly = (Map<String, Object>) result.get(side);
+            if (crumbling && side.equals("target")) {
+                require(((Number) assembly.get("shaftSpeed")).doubleValue() == 0,
+                    "Crumbling comparison requires a stationary target cog: " + assembly);
+                continue;
+            }
             require(((Number) assembly.get("shaftSpeed")).doubleValue() != 0
                 && Boolean.TRUE.equals(assembly.get("bearingRunning"))
                 && ((Number) assembly.get("contraptionCount")).intValue() > 0,
@@ -297,6 +387,8 @@ public final class PortalSmokeClient {
 
     private static void verifyFlywheel(Object evidence) {
         Map<?, ?> backend = (Map<?, ?>) evidence;
+        require(Boolean.TRUE.equals(backend.get("contextAccessorsInstalled")), "Live Flywheel context accessors were not installed");
+        require(Boolean.TRUE.equals(backend.get("contextClearedAfterFrame")), "Flywheel render context leaked after frame");
         String requested = System.getenv().getOrDefault("IP_SMOKE_FLYWHEEL_BACKEND", "default");
         if (!requested.equals("default")) {
             require(("flywheel:" + requested).equals(backend.get("actual")), "Requested Flywheel backend was not active: " + backend);

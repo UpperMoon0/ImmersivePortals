@@ -373,7 +373,55 @@ def cleanup_staged_renderer_mods(paths: list[Path]) -> None:
         path.unlink(missing_ok=True)
 
 
-def stage_shader_fixture(renderer: str, negative_control: str = "none", shaderpack_file: Path | None = None) -> dict:
+def shader_profile_options(properties: str, requested: str | None = None) -> tuple[str, dict[str, str]]:
+    """Expand the pack's own named preset, never guess shader macro names or values."""
+    properties = re.sub(r"\\\r?\n\s*", " ", properties)
+    profiles = dict(re.findall(r"^\s*profile\.([^\s=]+)\s*=\s*(.*?)\s*$", properties, re.M))
+    selected = requested or next((name for name in ("no_effects", "POTATO", "VERYLOW", "shadowless_low", "low", "LOW") if name in profiles), "default")
+    if selected == "default":
+        return selected, {}
+    if selected not in profiles:
+        raise RuntimeError(f"shaderpack has no profile {selected!r}; available: {', '.join(profiles)}")
+
+    def expand(name: str, parents: tuple[str, ...] = ()) -> dict[str, str]:
+        if name in parents or name not in profiles:
+            raise RuntimeError(f"invalid shader profile inheritance: {name}")
+        options = {}
+        for token in profiles[name].split():
+            if token.startswith("profile."):
+                options.update(expand(token[8:], (*parents, name)))
+            elif token.startswith("program.") or token.startswith("!program."):
+                raise RuntimeError("this shader profile changes program enablement; select an option-only low profile")
+            elif "=" in token or ":" in token:
+                key, value = re.split(r"[=:]", token, maxsplit=1)
+                options[key] = value
+            else:
+                options[token.lstrip("!")] = str(not token.startswith("!")).lower()
+        if any(not re.fullmatch(r"[A-Za-z0-9_.-]+", key) or not re.fullmatch(r"[A-Za-z0-9_.+-]+", value) for key, value in options.items()):
+            raise RuntimeError("shader profile contains an unsupported option value")
+        return options
+    return selected, expand(selected)
+
+
+def visual_scene_names(renderer: str, render_mode: str = "normal", diagnostic_fixture: bool = True) -> set[str]:
+    scenes = {"solid-visible", "solid-clipped", "mirror", "create-visible", "create-clipped",
+              "create-crumbling-clean", "create-crumbling-damaged", "create-crumbling-clipped"}
+    if render_mode == "normal":
+        scenes.update(("nested", "create-nested"))
+    if renderer in ACTIVE_RENDERERS and diagnostic_fixture:
+        scenes.update(f"{program}-{side}" for program in ("cutout", "translucent", "entity", "block-entity", "particle")
+                      for side in ("visible", "clipped"))
+    return scenes
+
+
+def visual_timeout(renderer: str, samples: int, render_mode: str, diagnostic_fixture: bool) -> float:
+    # Software-driver budget: up to 90 seconds to build/settle/check each scene,
+    # three epochs for active shaders, plus startup/crossing and consecutive frame samples.
+    epochs = 3 if renderer in ACTIVE_RENDERERS else 2
+    return max(900, len(visual_scene_names(renderer, render_mode, diagnostic_fixture)) * epochs * 90 + samples / 4 + 300)
+
+
+def stage_shader_fixture(renderer: str, negative_control: str = "none", shaderpack_file: Path | None = None, shaderpack_profile: str | None = None) -> dict:
     """Own only the disposable verification directories; never download a mutable pack."""
     source = ROOT / "tools" / "shaderpacks" / FIXTURE_NAME
     target = CLIENT_DIR / "shaderpacks" / FIXTURE_NAME
@@ -388,6 +436,7 @@ def stage_shader_fixture(renderer: str, negative_control: str = "none", shaderpa
             digest.update(path.relative_to(source).as_posix().encode())
             digest.update(path.read_bytes())
     pack_name = FIXTURE_NAME
+    profile, options = "fixture", {}
     pack_hash = digest.hexdigest()
     programs = sorted(p.stem for p in (source / "shaders").glob("*.vsh"))
     if shaderpack_file is not None:
@@ -396,6 +445,8 @@ def stage_shader_fixture(renderer: str, negative_control: str = "none", shaderpa
             raise RuntimeError("--shaderpack-file must be an existing .zip shaderpack")
         with zipfile.ZipFile(shaderpack_file) as archive:
             programs = sorted(name for name in archive.namelist() if name.endswith(".vsh"))
+            properties = archive.read("shaders/shaders.properties").decode("utf-8-sig") if "shaders/shaders.properties" in archive.namelist() else ""
+            profile, options = shader_profile_options(properties, shaderpack_profile)
             if not any(name.startswith("shaders/") for name in archive.namelist()):
                 raise RuntimeError("shaderpack ZIP must contain a top-level shaders directory")
         pack_name = "__ip_verify__" + shaderpack_file.name
@@ -404,6 +455,8 @@ def stage_shader_fixture(renderer: str, negative_control: str = "none", shaderpa
             raise RuntimeError("unsafe external shaderpack staging target")
         shutil.copy2(shaderpack_file, pack_target)
         pack_hash = hashlib.sha256(shaderpack_file.read_bytes()).hexdigest()
+    (CLIENT_DIR / "shaderpacks" / (pack_name + ".txt")).write_text(
+        "".join(f"{key}={value}\n" for key, value in sorted(options.items())), encoding="utf-8")
     enabled = renderer in ACTIVE_RENDERERS and negative_control != "pack-disabled"
     config = CLIENT_DIR / "config"
     config.mkdir(parents=True, exist_ok=True)
@@ -413,7 +466,7 @@ def stage_shader_fixture(renderer: str, negative_control: str = "none", shaderpa
             f"shaderPack={pack_name}\nenableShaders={str(enabled).lower()}\n"
             "enableDebugOptions=true\ndisableUpdateMessage=true\n", encoding="utf-8")
     evidence = {"name": pack_name, "sha256": pack_hash, "enabled": enabled,
-                "diagnostic_fixture": shaderpack_file is None,
+                "diagnostic_fixture": shaderpack_file is None, "profile": profile, "options": options,
                 "expected_active": renderer in ACTIVE_RENDERERS,
                 "programs": programs}
     (RESULT_DIR / "fixture.json").write_text(json.dumps(evidence, indent=2), encoding="utf-8")
@@ -432,12 +485,7 @@ def validate_shader_evidence(renderer: str, render_mode: str = "normal") -> None
     required = {"before-reload", "after-reload", "after-toggle"} if renderer in ACTIVE_RENDERERS else {"before-reload", "after-reload"}
     if not required.issubset({p.get("phase") for p in phases}):
         raise RuntimeError("runtime evidence is missing reload/toggle phases")
-    scenes = {"solid-visible", "solid-clipped", "nested", "mirror", "create-visible", "create-clipped"}
-    if renderer in ACTIVE_RENDERERS and fixture.get("diagnostic_fixture", True):
-        scenes.update(f"{program}-{side}" for program in ("cutout", "translucent", "entity", "block-entity", "particle")
-                      for side in ("visible", "clipped"))
-    if render_mode != "normal":
-        scenes.remove("nested")
+    scenes = visual_scene_names(renderer, render_mode, fixture.get("diagnostic_fixture", True))
     observed = {(check.get("phase"), check.get("scene")) for check in phases}
     if not {(phase, scene) for phase in required for scene in scenes}.issubset(observed):
         raise RuntimeError("runtime evidence is missing per-program positive/clipping scenes")
@@ -453,6 +501,8 @@ def validate_shader_evidence(renderer: str, render_mode: str = "normal") -> None
                 raise RuntimeError("expected CE Iris portal renderer, not stencil fallback")
         elif check.get("shaders_active"):
             raise RuntimeError("shaders-off lane unexpectedly had an active shaderpack")
+        if renderer in ACTIVE_RENDERERS and check.get("shader_options", {}) != fixture.get("options", {}):
+            raise RuntimeError("live shaderpack options do not match the recorded low preset")
     if renderer in ACTIVE_RENDERERS and not report.get("toggle_disabled_verified"):
         raise RuntimeError("shader disable/enable was not verified")
     if renderer in ACTIVE_RENDERERS:
@@ -474,6 +524,20 @@ def validate_shader_evidence(renderer: str, render_mode: str = "normal") -> None
     if dimensions.get("before-reload") == dimensions.get("after-reload"):
         raise RuntimeError("framebuffer resize was not observed after reload")
     for check in phases:
+        scene = check.get("scene", "")
+        if scene.startswith("create-") and render_mode != "debug" and check.get("source_motion_changed_pixels", 0) <= 20:
+            raise RuntimeError("visible source Create motion was not observed in its isolated region")
+        if scene.startswith("create-"):
+            flywheel = check.get("flywheel", {})
+            if not flywheel.get("contextAccessorsInstalled") or not flywheel.get("contextClearedAfterFrame"):
+                raise RuntimeError("live Flywheel context accessors/restoration were not verified")
+        if scene in ("create-visible", "create-nested") and (check.get("create_motion_changed_pixels", 0) <= 20 or not check.get("create_server_motion")):
+            raise RuntimeError("destination Create rotor motion was not verified")
+        if scene == "create-nested" and (check.get("flywheel", {}).get("nestedContextsRestored", 0) <= 0
+                                         or check.get("nested_contexts_restored_this_scene", 0) <= 0):
+            raise RuntimeError("same-dimension nested Flywheel context was not restored")
+        if scene == "create-crumbling-damaged" and (check.get("crumbling_changed_pixels", 0) <= 20 or check.get("crumbling_darkening", 0) <= 0.5):
+            raise RuntimeError("crumbling overlay was not visible against the stationary clean control")
         image = RESULT_DIR / check["screenshot"]
         if not image.is_file() or image.stat().st_size == 0:
             raise RuntimeError(f"missing screenshot: {image.name}")
@@ -545,7 +609,7 @@ def choose_tcp_udp_port(attempts: int = 64) -> int:
 def prepare_e2e() -> dict[str, str]:
     # Resolve every disposable target before deleting; never follow a redirected
     # run directory outside this checkout, and never hide cleanup errors.
-    for target in (RESULT_DIR, SERVER_DIR / "world", SERVER_DIR / "logs", CLIENT_DIR / "logs"):
+    for target in (RESULT_DIR, SERVER_DIR / "world", SERVER_DIR / "logs", CLIENT_DIR / "logs", CLIENT_DIR / ".mixin.out"):
         resolved = target.resolve()
         if resolved == ROOT.resolve() or not resolved.is_relative_to(ROOT.resolve()):
             raise RuntimeError(f"unsafe E2E cleanup target: {resolved}")
@@ -701,7 +765,7 @@ def validate_metrics(samples: int) -> None:
 
 def run_e2e(smoke: bool = False, renderer: str = "sodium", sable: bool = True, samples: int = 200,
             negative_control: str = "none", flywheel_backend: str = "default", render_mode: str = "normal",
-            disable_copy_image: bool = False, shaderpack_file: Path | None = None) -> None:
+            disable_copy_image: bool = False, shaderpack_file: Path | None = None, shaderpack_profile: str | None = None) -> None:
     print(f"[verify] {'visual ' + renderer if smoke else 'e2e'}: dedicated server + automated graphical client", flush=True)
     env = prepare_e2e()
     if smoke:
@@ -709,7 +773,7 @@ def run_e2e(smoke: bool = False, renderer: str = "sodium", sable: bool = True, s
                    IP_SMOKE_SABLE=str(sable).lower(), IP_SMOKE_SAMPLES=str(samples),
                    IP_SMOKE_NEGATIVE_CONTROL=negative_control, IP_SMOKE_FLYWHEEL_BACKEND=flywheel_backend,
                    IP_SMOKE_RENDER_MODE=render_mode, IP_SMOKE_DISABLE_COPY_IMAGE=str(disable_copy_image).lower())
-        fixture = stage_shader_fixture(renderer, negative_control, shaderpack_file)
+        fixture = stage_shader_fixture(renderer, negative_control, shaderpack_file, shaderpack_profile)
         env.update(IP_SMOKE_SHADERPACK_NAME=fixture["name"],
                    IP_SMOKE_DIAGNOSTIC_FIXTURE=str(fixture["diagnostic_fixture"]).lower())
         (CLIENT_DIR / "config" / "flywheel-client.toml").write_text(
@@ -757,7 +821,8 @@ def run_e2e(smoke: bool = False, renderer: str = "sodium", sable: bool = True, s
 
         client, client_log = launch_graphical_client(client_command, env, creation)
         try:
-            wait_for_client(server, client, timeout=max(900, samples / 20 + 600), smoke=smoke)
+            timeout = visual_timeout(renderer, samples, render_mode, fixture["diagnostic_fixture"]) if smoke else 300
+            wait_for_client(server, client, timeout=timeout, smoke=smoke)
         finally:
             stop_process_tree(client)
             if client_log is not None:
@@ -789,7 +854,7 @@ def run_e2e(smoke: bool = False, renderer: str = "sodium", sable: bool = True, s
 
 def run_visual(renderer: str, sable: bool, samples: int, negative_control: str = "none",
                flywheel_backend: str = "default", render_mode: str = "normal", disable_copy_image: bool = False,
-               shaderpack_file: Path | None = None) -> None:
+               shaderpack_file: Path | None = None, shaderpack_profile: str | None = None) -> None:
     # Keep each matrix member's evidence, including failed runs.
     global RESULT_DIR, SERVER_LOG, CLIENT_LOG
     previous = RESULT_DIR, SERVER_LOG, CLIENT_LOG
@@ -807,7 +872,7 @@ def run_visual(renderer: str, sable: bool, samples: int, negative_control: str =
         try:
             run_e2e(smoke=True, renderer=renderer, sable=sable, samples=samples,
                     negative_control=negative_control, flywheel_backend=flywheel_backend,
-                    render_mode=render_mode, disable_copy_image=disable_copy_image, shaderpack_file=shaderpack_file)
+                    render_mode=render_mode, disable_copy_image=disable_copy_image, shaderpack_file=shaderpack_file, shaderpack_profile=shaderpack_profile)
         except RuntimeError:
             failure = RESULT_DIR / "client-fail.txt"
             expected = {"pack-disabled": "SHADER_FIXTURE_NOT_ACTIVE", "clipping-disabled": "PORTAL_PIXELS_MISMATCH: before-reload/solid-clipped"}
@@ -830,6 +895,7 @@ def main() -> int:
     parser.add_argument("--flywheel-backend", choices=("default", "off", "instancing", "indirect"), default="default")
     parser.add_argument("--render-mode", choices=("normal", "compatibility", "debug"), default="normal")
     parser.add_argument("--disable-copy-image", action="store_true")
+    parser.add_argument("--shaderpack-profile", help="Exact pack profile; otherwise auto-select the lowest known pack-provided preset")
     parser.add_argument("--shaderpack-file", type=Path, help="Additionally run a user-supplied real-pack ZIP through active shader smoke checks")
     parser.add_argument("--no-sable", action="store_true")
     parser.add_argument("--samples", type=int, default=200)
@@ -838,6 +904,8 @@ def main() -> int:
         parser.error("negative controls require visual --renderer iris-active or neoculus-active")
     if args.shaderpack_file is not None and (args.mode != "visual" or args.renderer not in ACTIVE_RENDERERS or args.negative_control != "none"):
         parser.error("--shaderpack-file requires visual with an active renderer and no negative control")
+    if args.shaderpack_profile is not None and args.shaderpack_file is None:
+        parser.error("--shaderpack-profile requires --shaderpack-file")
     if args.disable_copy_image and args.renderer not in ACTIVE_RENDERERS:
         parser.error("--disable-copy-image requires an active shader renderer")
     if not 200 <= args.samples <= 12000:
@@ -850,7 +918,7 @@ def main() -> int:
             try:
                 actions = [("core", run_core), ("e2e", run_e2e),
                            ("visual", lambda: run_visual(args.renderer, not args.no_sable, args.samples, args.negative_control,
-                                                         args.flywheel_backend, args.render_mode, args.disable_copy_image, args.shaderpack_file))]
+                                                         args.flywheel_backend, args.render_mode, args.disable_copy_image, args.shaderpack_file, args.shaderpack_profile))]
                 if args.mode == "matrix":
                     actions = [(f"visual-{renderer}-{'sable' if sable else 'no-sable'}",
                                 lambda r=renderer, s=sable: run_visual(r, s, args.samples))

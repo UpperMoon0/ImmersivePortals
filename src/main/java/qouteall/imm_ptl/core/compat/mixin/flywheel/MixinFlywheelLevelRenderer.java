@@ -9,29 +9,33 @@ import net.minecraft.client.renderer.GameRenderer;
 import net.minecraft.client.renderer.LevelRenderer;
 import net.minecraft.client.renderer.LightTexture;
 import org.joml.Matrix4f;
-import org.spongepowered.asm.mixin.Dynamic;
 import org.spongepowered.asm.mixin.Mixin;
-import org.spongepowered.asm.mixin.Shadow;
+import org.spongepowered.asm.mixin.gen.Accessor;
 import qouteall.imm_ptl.core.compat.IPFlywheelCompat;
 
 /** Flywheel 1.0.6 owns one context field per renderer, including same-level recursion. */
 @Mixin(value = LevelRenderer.class, priority = 900)
 public abstract class MixinFlywheelLevelRenderer {
-    @Dynamic("Added by Flywheel's priority-1001 LevelRendererMixin")
-    @Shadow(remap = false)
-    private RenderContextImpl flywheel$renderContext;
+    // Accessors resolve after all mixins have merged their fields. A @Shadow
+    // resolves during preparation, before Flywheel's field exists in some
+    // config/priority orders, and crashes the actual client transformer.
+    @Accessor(value = "flywheel$renderContext", remap = false)
+    public abstract RenderContextImpl ip_getFlywheelRenderContext();
+
+    @Accessor(value = "flywheel$renderContext", remap = false)
+    public abstract void ip_setFlywheelRenderContext(RenderContextImpl context);
 
     @WrapMethod(method = "renderLevel")
     private void ip_restoreFlywheelRenderContext(
         DeltaTracker deltaTracker, boolean renderBlockOutline, Camera camera, GameRenderer gameRenderer,
         LightTexture lightTexture, Matrix4f modelMatrix, Matrix4f projectionMatrix, Operation<Void> original
     ) {
-        RenderContextImpl previous = flywheel$renderContext;
+        RenderContextImpl previous = ip_getFlywheelRenderContext();
         try {
             original.call(deltaTracker, renderBlockOutline, camera, gameRenderer,
                 lightTexture, modelMatrix, projectionMatrix);
         } finally {
-            flywheel$renderContext = previous;
+            ip_setFlywheelRenderContext(previous);
             if (previous != null) IPFlywheelCompat.recordNestedContextRestored();
         }
     }

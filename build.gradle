@@ -219,6 +219,7 @@ runs {
     portalSmokeClient {
         runType 'client'
         systemProperty 'mixin.debug.verbose', 'true'
+        systemProperty 'mixin.debug.export', 'true'
         workingDirectory project.file('run-sable-e2e-client')
         dependencies {
             // The verification harness first resolves these artifacts from the
@@ -319,7 +320,7 @@ dependencies {
     testImplementation platform("org.junit:junit-bom:5.11.4")
     testImplementation "org.junit.jupiter:junit-jupiter"
     testImplementation "org.ow2.asm:asm-tree:9.7.1"
-    testRuntimeOnly("maven.modrinth:embeddium:1.0.15+mc1.21.1") { transitive = false }
+    testImplementation("maven.modrinth:embeddium:1.0.15+mc1.21.1") { transitive = false }
     compileOnly "maven.modrinth:iris:1.8.14-beta.1+1.21.1-neoforge"
     // Optional compile-time API for Veil shader recompilation compatibility.
     compileOnly "foundry.veil:veil-neoforge-${minecraft_version}:4.3.2"

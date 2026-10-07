@@ -34,7 +34,7 @@ permissions:
 jobs:
   visual:
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v6
         with:
@@ -78,5 +78,6 @@ jobs:
             build/portal-visual-*/**
             run-sable-e2e-server/logs/**
             run-sable-e2e-server/crash-reports/**
+            run-sable-e2e-client/.mixin.out/**
             run-sable-e2e-client/logs/**
             run-sable-e2e-client/crash-reports/**

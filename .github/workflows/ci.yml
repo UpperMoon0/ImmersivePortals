@@ -151,6 +151,12 @@ jobs:
           - { renderer: vanilla, sable: false }
           - { renderer: iris-active, sable: true, negative_control: pack-disabled }
           - { renderer: iris-active, sable: true, negative_control: clipping-disabled }
+          - { renderer: iris-active, sable: true, render_mode: compatibility }
+          - { renderer: iris-active, sable: true, render_mode: compatibility, disable_copy_image: true }
+          - { renderer: iris-active, sable: true, render_mode: debug, disable_copy_image: true }
+          - { renderer: vanilla, sable: false, flywheel_backend: off }
+          - { renderer: vanilla, sable: false, flywheel_backend: instancing }
+          - { renderer: vanilla, sable: false, flywheel_backend: indirect }
     uses: ./.github/workflows/visual.yml
     with:
       renderer: ${{ matrix.renderer }}

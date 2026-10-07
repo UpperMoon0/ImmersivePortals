@@ -2,6 +2,7 @@ package qouteall.imm_ptl.core.gametest.sablee2e;
 
 import com.simibubi.create.content.contraptions.bearing.MechanicalBearingBlockEntity;
 import com.simibubi.create.content.kinetics.base.KineticBlockEntity;
+import com.simibubi.create.content.kinetics.motor.CreativeMotorBlockEntity;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.core.registries.BuiltInRegistries;
@@ -39,6 +40,19 @@ final class PortalSmokeCreateSceneServer {
         // Power last, so the automatic bearing assembly sees the complete rotor.
         level.setBlockAndUpdate(bearingMotor, state("creative_motor")
             .setValue(BlockStateProperties.FACING, Direction.SOUTH));
+    }
+
+    static void setSpeed(ServerLevel level, int x, int y, int z, int rpm) {
+        if (rpm < -256 || rpm > 256) throw new IllegalArgumentException("Motor RPM outside [-256, 256]");
+        BlockPos motor = new BlockPos(x, y, z);
+        for (BlockPos pos : List.of(motor, motor.east(4))) {
+            if (!(level.getBlockEntity(pos) instanceof CreativeMotorBlockEntity entity)) {
+                throw new IllegalStateException("Expected creative motor at " + pos);
+            }
+            // setValue invokes updateGeneratedRotation and syncs the BE, matching
+            // Create's own speed control rather than writing kinetic internals.
+            entity.generatedSpeed.setValue(rpm);
+        }
     }
 
     private static BlockState state(String name) {

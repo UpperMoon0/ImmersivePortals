@@ -26,8 +26,12 @@ final class PortalSmokeSupport {
             }
         }
         // Compatibility/debug renderers deliberately support one portal layer only.
-        if (System.getenv().getOrDefault("IP_SMOKE_RENDER_MODE", "normal").equals("normal")) result.add("nested");
-        result.addAll(List.of("mirror", "create-visible", "create-clipped"));
+        if (System.getenv().getOrDefault("IP_SMOKE_RENDER_MODE", "normal").equals("normal")) {
+            result.add("nested");
+            result.add("create-nested");
+        }
+        result.addAll(List.of("mirror", "create-visible", "create-clipped",
+            "create-crumbling-clean", "create-crumbling-damaged", "create-crumbling-clipped"));
         return result;
     }
     static int samples() { return Integer.parseInt(System.getenv().getOrDefault("IP_SMOKE_SAMPLES", "200")); }
