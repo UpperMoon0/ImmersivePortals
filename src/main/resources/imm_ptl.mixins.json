@@ -135,6 +135,7 @@
     "client.sync.MixinClientboundPlayerPositionPacket",
     "client.sync.MixinClientPacketListener",
     "client.sync.MixinMinecraft_RedirectedPacket",
+    "client.sync.MixinNeoForgeClientPayloadHandler",
     "client.sync.MixinReceivingLevelScreen",
     "client.sync.MixinServerBoundMovePlayerPacket",
     "client.sync.MixinServerboundMovePlayerPacketPos",

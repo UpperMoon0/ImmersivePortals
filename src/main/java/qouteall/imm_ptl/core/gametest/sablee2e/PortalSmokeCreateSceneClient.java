@@ -8,11 +8,47 @@ import net.minecraft.client.Minecraft;
 import dev.engine_room.flywheel.impl.event.RenderContextImpl;
 import qouteall.imm_ptl.core.compat.IPFlywheelCompat;
 
+import com.simibubi.create.content.contraptions.AbstractContraptionEntity;
+import net.minecraft.core.registries.Registries;
+import net.minecraft.resources.ResourceKey;
+import net.minecraft.resources.ResourceLocation;
+import qouteall.imm_ptl.core.ClientWorldLoader;
+
 import java.util.LinkedHashMap;
 import java.util.Map;
 
 final class PortalSmokeCreateSceneClient {
     private PortalSmokeCreateSceneClient() {}
+
+    static Map<String, Object> describeContraptions(Map<String, Object> serverEvidence) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        boolean ready = true;
+        for (String side : java.util.List.of("source", "target")) {
+            Map<?, ?> assembly = (Map<?, ?>) serverEvidence.get(side);
+            boolean required = ((Number) assembly.get("contraptionCount")).intValue() > 0;
+            if (!required) {
+                result.put(side, Map.of("required", false));
+                continue;
+            }
+            int entityId = ((Number) assembly.get("contraptionId")).intValue();
+            var dimension = ResourceKey.create(Registries.DIMENSION,
+                ResourceLocation.parse((String) assembly.get("dimension")));
+            var world = ClientWorldLoader.getOptionalWorld(dimension);
+            var entity = world == null ? null : world.getEntity(entityId);
+            var contraption = entity instanceof AbstractContraptionEntity moving
+                ? moving.getContraption() : null;
+            int blocks = contraption == null ? 0 : contraption.getBlocks().size();
+            int expectedBlocks = ((Number) assembly.get("contraptionBlocks")).intValue();
+            boolean decoded = entity != null && !entity.isRemoved()
+                && contraption != null && blocks == expectedBlocks && blocks > 0;
+            ready &= !required || decoded;
+            result.put(side, Map.of("dimension", assembly.get("dimension"), "entityId", entityId,
+                "required", required, "entityPresent", entity != null,
+                "spawnDataDecoded", decoded, "blocks", blocks, "expectedBlocks", expectedBlocks));
+        }
+        result.put("ready", ready);
+        return result;
+    }
 
     static Map<String, Object> describeBackend() {
         Map<String, Object> result = new LinkedHashMap<>();
