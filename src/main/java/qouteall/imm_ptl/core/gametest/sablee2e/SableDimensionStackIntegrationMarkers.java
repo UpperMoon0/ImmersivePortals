@@ -83,6 +83,22 @@ final class SableDimensionStackIntegrationMarkers {
         return Paths.get(resultDir);
     }
 
+    /** Publish existence only after the complete marker contents are closed. */
+    static void publish(Path marker, String contents) throws IOException {
+        Path temporary = Files.createTempFile(marker.getParent(), marker.getFileName().toString(), ".tmp");
+        try {
+            Files.writeString(temporary, contents, StandardCharsets.UTF_8);
+            try {
+                Files.move(temporary, marker, java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            } catch (java.nio.file.AtomicMoveNotSupportedException unsupported) {
+                Files.move(temporary, marker, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            }
+        } finally {
+            Files.deleteIfExists(temporary);
+        }
+    }
+
     private static void write(String file, String detail, Throwable error) {
         StringBuilder text = new StringBuilder(detail).append('\n');
         if (error != null) {
@@ -92,7 +108,7 @@ final class SableDimensionStackIntegrationMarkers {
         try {
             Path dir = resultDir();
             Files.createDirectories(dir);
-            Files.writeString(dir.resolve(file), text.toString(), StandardCharsets.UTF_8);
+            publish(dir.resolve(file), text.toString());
         }
         catch (IOException io) {
             throw new IllegalStateException("Cannot write Sable dimension-stack E2E marker " + file, io);

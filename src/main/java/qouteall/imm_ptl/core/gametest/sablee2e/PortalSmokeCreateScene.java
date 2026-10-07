@@ -24,6 +24,10 @@ public final class PortalSmokeCreateScene {
         return PortalSmokeCreateSceneServer.describe(level, x, y, z);
     }
 
+    public static Map<String, Object> describeClientContraptions(Map<String, Object> serverEvidence) {
+        return PortalSmokeCreateSceneClient.describeContraptions(serverEvidence);
+    }
+
     public static Map<String, Object> describeClientBackend() {
         if (!ModList.get().isLoaded("flywheel")) return Map.of("present", false, "actual", "absent");
         return PortalSmokeCreateSceneClient.describeBackend();

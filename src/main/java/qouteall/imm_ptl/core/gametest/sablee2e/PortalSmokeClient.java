@@ -408,6 +408,8 @@ public final class PortalSmokeClient {
             int layers = RenderStates.portalRenderInfos.stream().mapToInt(List::size).max().orElse(0);
             boolean geometry = (!requirePortal || RenderStates.portalsRenderedThisFrame > 0)
                 && (!(scene.startsWith("nested") || scene.startsWith("create-nested")) || layers >= 2)
+                && (!scene.startsWith("create-")
+                    || Boolean.TRUE.equals(((Map<?, ?>) createServerEvidence.get("clientSpawnData")).get("ready")))
                 && (!scene.startsWith("create-") || !requiresSourcePixels() || sourceMotionPixels > 20)
                 && (!(scene.equals("create-visible") || scene.equals("create-nested")) || (createMotionPixels > 20 && createServerMotion))
                 && (!scene.equals("create-crumbling-damaged") || crumblingMeasurement != null && crumblingMeasurement.showsDamage())
@@ -418,6 +420,7 @@ public final class PortalSmokeClient {
             if (frames > 720) throw new IllegalStateException("PORTAL_PIXELS_MISMATCH: " + phase + "/" + scene
                 + " green=" + green + "/" + total + " red=" + red + " layers=" + layers
                 + " targetMotion=" + createMotionPixels + " sourceMotion=" + sourceMotionPixels
+                + " spawnData=" + createServerEvidence.get("clientSpawnData")
                 + " crumblingChanges=" + crumblingChangedPixels + " darkening=" + crumblingDarkening
                 + " straddling=" + fragmentWitness + " reference=" + referenceWitness + " crumbling=" + crumblingEvidence);
             if (stableFrames < 3 && requirePortal) return false;
@@ -818,7 +821,7 @@ public final class PortalSmokeClient {
     }
 
     @SuppressWarnings("unchecked")
-    private static void readCreateServerEvidence(boolean crumbling, boolean background) {
+    private static void readCreateServerEvidence(boolean crumbling, boolean background) throws ReflectiveOperationException {
         Map<String, Object> result = new Gson().fromJson(PortalSmokeSupport.read("create-server.json"), Map.class);
         require(result != null && request.equals(result.get("scene")), "Missing current Create server evidence");
         for (String side : List.of("source", "target")) {
@@ -843,6 +846,8 @@ public final class PortalSmokeClient {
         double angle = ((Number) target.get("bearingAngle")).doubleValue();
         if (Double.isFinite(previousCreateAngle) && Math.abs(angle - previousCreateAngle) > 0.01) createServerMotion = true;
         previousCreateAngle = angle;
+        Class<?> helper = Class.forName("qouteall.imm_ptl.core.gametest.sablee2e.PortalSmokeCreateScene");
+        result.put("clientSpawnData", helper.getMethod("describeClientContraptions", Map.class).invoke(null, result));
         createServerEvidence = result;
     }
 
