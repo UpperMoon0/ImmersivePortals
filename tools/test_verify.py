@@ -194,6 +194,186 @@ class VerificationHarnessTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "expected one sodium"):
             verify.renderer_mod_sources(classpath, "sodium")
 
+    def test_shader_fixture_is_explicit_reproducible_and_lane_scoped(self):
+        client = self.results / "client"
+        with patch.object(verify, "CLIENT_DIR", client):
+            off = verify.stage_shader_fixture("iris")
+            self.assertFalse(off["enabled"])
+            self.assertIn("enableShaders=false", (client / "config/iris.properties").read_text())
+            active = verify.stage_shader_fixture("iris-active")
+            self.assertTrue(active["enabled"])
+            self.assertTrue(active["expected_active"])
+            self.assertEqual(off["sha256"], active["sha256"])
+            self.assertEqual(len(active["sha256"]), 64)
+            self.assertTrue({"gbuffers_terrain_solid", "gbuffers_terrain_cutout", "gbuffers_water",
+                             "gbuffers_entities", "gbuffers_block", "gbuffers_particles"}.issubset(active["programs"]))
+            disabled = verify.stage_shader_fixture("neoculus-active", "pack-disabled")
+            self.assertFalse(disabled["enabled"])
+            self.assertTrue(disabled["expected_active"])
+            self.assertIn("enableShaders=false", (client / "config/oculus.properties").read_text())
+
+    def shader_evidence(self, active=True):
+        scenes = {"solid-visible", "solid-clipped", "nested", "mirror", "create-visible", "create-clipped"}
+        phases = ["before-reload", "after-reload"]
+        if active:
+            phases.append("after-toggle")
+            scenes.update(f"{program}-{side}" for program in ("cutout", "translucent", "entity", "block-entity", "particle")
+                          for side in ("visible", "clipped"))
+        checks = [{"phase": phase, "scene": scene, "screenshot": "test.png",
+                   "shaders_active": active, "pack": verify.FIXTURE_NAME if active else "",
+                   "width": 854 if phase == "before-reload" else 960, "height": 480 if phase == "before-reload" else 640,
+                   "pipeline": "net.irisshaders.iris.pipeline.IrisRenderingPipeline" if active else "VanillaRenderingPipeline",
+                   "renderer": "IrisPortalRenderer" if active else "RendererUsingStencil"}
+                  for phase, scene in [(p, s) for p in phases for s in scenes] + [("after-crossing", "crossing")]]
+        (self.results / "test.png").write_bytes(b"image")
+        (self.results / "crossing-server-pass.txt").write_text("crossed")
+        return {"checks": checks, "toggle_disabled_verified": active,
+                "framebuffer_copy": {"passed": True, "cases": [
+                    {"width": size, "forcedBlit": forced, "path": "framebuffer-blit", "stateRestored": True,
+                     "depth": 0.375, "stencil": 77, "color": [0.25, 0.75, 0.5, 1.0]}
+                    for size in (8, 13) for forced in (False, True)]}}
+
+    def write_shader_evidence(self, report):
+        (self.results / "runtime-evidence.json").write_text(json.dumps(report))
+
+    def test_active_lane_requires_pack_pipeline_and_ce_shader_renderer(self):
+        report = self.shader_evidence()
+        self.write_shader_evidence(report)
+        verify.validate_shader_evidence("iris-active")
+        for key, value in (("shaders_active", False), ("pack", "other-pack"),
+                           ("pipeline", "VanillaRenderingPipeline"), ("renderer", "RendererUsingStencil")):
+            with self.subTest(key=key):
+                changed = self.shader_evidence()
+                changed["checks"][0][key] = value
+                self.write_shader_evidence(changed)
+                with self.assertRaises(RuntimeError):
+                    verify.validate_shader_evidence("iris-active")
+
+    def test_active_lane_requires_every_scene_reload_toggle_and_crossing(self):
+        report = self.shader_evidence()
+        for changed in (dict(report, toggle_disabled_verified=False),
+                        dict(report, checks=report["checks"][1:]),
+                        dict(report, checks=[c for c in report["checks"] if c["phase"] != "after-toggle"]),
+                        dict(report, checks=[c for c in report["checks"] if c["scene"] != "crossing"])):
+            self.write_shader_evidence(changed)
+            with self.assertRaises(RuntimeError):
+                verify.validate_shader_evidence("iris-active")
+
+    def test_shader_evidence_requires_actual_screenshot_files(self):
+        self.write_shader_evidence(self.shader_evidence())
+        (self.results / "test.png").unlink()
+        with self.assertRaisesRegex(RuntimeError, "missing screenshot"):
+            verify.validate_shader_evidence("iris-active")
+
+    def test_installed_iris_lane_requires_shaders_disabled(self):
+        self.write_shader_evidence(self.shader_evidence(active=False))
+        verify.validate_shader_evidence("iris")
+        self.write_shader_evidence(self.shader_evidence(active=True))
+        with self.assertRaisesRegex(RuntimeError, "shaders-off"):
+            verify.validate_shader_evidence("iris")
+
+    def test_neoculus_staging_never_selects_sodium_or_official_iris(self):
+        names = ["embeddium-1.0.15+mc1.21.1.jar", "neoculus-mc1.21.1-1.8.7.jar",
+                 "sodium-neoforge-0.8.12+mc1.21.1.jar", "iris-1.8.14-beta.1+1.21.1-neoforge.jar"]
+        for name in names:
+            (self.results / name).write_bytes(b"jar")
+        classpath = self.results / "classpath.txt"
+        classpath.write_text("\n".join(str(self.results / name) for name in names))
+        self.assertEqual({p.name for p in verify.renderer_mod_sources(classpath, "neoculus-active")}, set(names[:2]))
+        self.assertEqual({p.name for p in verify.renderer_mod_sources(classpath, "iris-active")}, set(names[2:]))
+
+    def test_ci_and_release_require_active_shader_and_negative_control_lanes(self):
+        for name in ("ci", "nightly", "release"):
+            workflow = (verify.ROOT / f".github/workflows/{name}.yml").read_text()
+            for renderer in ("iris", "iris-active", "embeddium", "neoculus-active"):
+                self.assertIn(f"renderer: {renderer},", workflow)
+            self.assertIn("negative_control: pack-disabled", workflow)
+            self.assertIn("negative_control: clipping-disabled", workflow)
+        for name in ("nightly", "release"):
+            workflow = (verify.ROOT / f".github/workflows/{name}.yml").read_text()
+            self.assertIn("disable_copy_image: true", workflow)
+            for backend in ("off", "instancing", "indirect"):
+                self.assertIn(f"flywheel_backend: {backend}", workflow)
+
+    def test_release_jar_check_rejects_development_classes(self):
+        import zipfile
+        root = self.results / "checkout"
+        (root / "build/libs").mkdir(parents=True)
+        (root / "gradle.properties").write_text("mod_version=1.0\n")
+        jar = root / "build/libs/immersive_portals-1.0.jar"
+        with patch.object(verify, "ROOT", root):
+            with zipfile.ZipFile(jar, "w") as archive:
+                archive.writestr("normal.class", b"class")
+            verify.validate_release_jar()
+            with zipfile.ZipFile(jar, "a") as archive:
+                archive.writestr("qouteall/imm_ptl/core/gametest/sablee2e/PortalSmokeClient.class", b"class")
+            with self.assertRaisesRegex(RuntimeError, "development test classes leaked"):
+                verify.validate_release_jar()
+
+    def test_framebuffer_evidence_requires_both_paths_and_actual_values(self):
+        for key, value in (("color", [0, 0, 0, 0]), ("depth", float("nan")),
+                           ("stencil", 0), ("stateRestored", False), ("path", "copy-image")):
+            with self.subTest(key=key):
+                report = self.shader_evidence()
+                report["framebuffer_copy"]["cases"][1][key] = value
+                self.write_shader_evidence(report)
+                with self.assertRaises(RuntimeError):
+                    verify.validate_shader_evidence("iris-active")
+        report = self.shader_evidence()
+        report["framebuffer_copy"]["cases"].pop()
+        self.write_shader_evidence(report)
+        with self.assertRaisesRegex(RuntimeError, "missing live framebuffer"):
+            verify.validate_shader_evidence("iris-active")
+
+    def test_framebuffer_resize_evidence_is_mandatory(self):
+        report = self.shader_evidence()
+        for check in report["checks"]:
+            check["width"], check["height"] = 854, 480
+        self.write_shader_evidence(report)
+        with self.assertRaisesRegex(RuntimeError, "resize was not observed"):
+            verify.validate_shader_evidence("iris-active")
+
+    def test_real_pack_staging_records_its_bytes_without_fixture_program_claims(self):
+        import hashlib
+        import zipfile
+        pack = self.results / "RealPack-1.2.zip"
+        with zipfile.ZipFile(pack, "w") as archive:
+            archive.writestr("shaders/gbuffers_basic.vsh", "void main() {}")
+        with patch.object(verify, "CLIENT_DIR", self.results / "client"):
+            evidence = verify.stage_shader_fixture("iris-active", shaderpack_file=pack)
+        self.assertEqual(evidence["name"], "__ip_verify__RealPack-1.2.zip")
+        self.assertEqual(evidence["sha256"], hashlib.sha256(pack.read_bytes()).hexdigest())
+        self.assertEqual(evidence["programs"], ["shaders/gbuffers_basic.vsh"])
+        self.assertFalse(evidence["diagnostic_fixture"])
+        with zipfile.ZipFile(pack, "w") as archive:
+            archive.writestr("not-a-pack.txt", "no shaders")
+        with patch.object(verify, "CLIENT_DIR", self.results / "client"):
+            with self.assertRaisesRegex(RuntimeError, "top-level shaders"):
+                verify.stage_shader_fixture("iris-active", shaderpack_file=pack)
+
+    def test_negative_controls_accept_only_the_intended_failure(self):
+        root = self.results / "checkout"
+        with patch.object(verify, "ROOT", root):
+            def fail_with(text):
+                def run(**kwargs):
+                    verify.RESULT_DIR.mkdir(parents=True, exist_ok=True)
+                    (verify.RESULT_DIR / "client-fail.txt").write_text(text)
+                    raise RuntimeError(text)
+                return run
+            with patch.object(verify, "run_e2e", side_effect=fail_with("SHADER_FIXTURE_NOT_ACTIVE")):
+                verify.run_visual("iris-active", True, 200, "pack-disabled")
+            with patch.object(verify, "run_e2e", side_effect=fail_with("MixinApplyError: unrelated boot failure")):
+                with self.assertRaisesRegex(RuntimeError, "unrelated boot failure"):
+                    verify.run_visual("iris-active", True, 200, "pack-disabled")
+            with patch.object(verify, "run_e2e", side_effect=fail_with("PORTAL_PIXELS_MISMATCH: before-reload/solid-visible")):
+                with self.assertRaisesRegex(RuntimeError, "solid-visible"):
+                    verify.run_visual("iris-active", True, 200, "clipping-disabled")
+            with patch.object(verify, "run_e2e", side_effect=fail_with("PORTAL_PIXELS_MISMATCH: before-reload/solid-clipped")):
+                verify.run_visual("iris-active", True, 200, "clipping-disabled")
+            with patch.object(verify, "run_e2e"):
+                with self.assertRaisesRegex(RuntimeError, "unexpectedly passed"):
+                    verify.run_visual("iris-active", True, 200, "clipping-disabled")
+
     def test_sable_gametest_holders_are_loadable_without_sable(self):
         gametest_dir = verify.ROOT / "src/main/java/qouteall/imm_ptl/core/gametest"
         holders = [

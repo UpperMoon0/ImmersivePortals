@@ -15,6 +15,8 @@ import argparse
 from contextlib import contextmanager
 import ctypes
 import json
+import math
+import hashlib
 import os
 import re
 from pathlib import Path
@@ -24,6 +26,7 @@ import socket
 import subprocess
 import sys
 import time
+import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 RESULT_DIR = ROOT / "build" / "sable-dimension-stack-e2e"
@@ -31,6 +34,12 @@ SERVER_DIR = ROOT / "run-sable-e2e-server"
 CLIENT_DIR = ROOT / "run-sable-e2e-client"
 SERVER_LOG = RESULT_DIR / "server.log"
 CLIENT_LOG = RESULT_DIR / "client.log"
+RENDERERS = ("vanilla", "sodium", "iris", "iris-active", "embeddium", "neoculus", "neoculus-active", "veil")
+ACTIVE_RENDERERS = ("iris-active", "neoculus-active")
+FIXTURE_NAME = "ip-clipping-fixture-v1"
+MATRIX = (("vanilla", True), ("sodium", True), ("iris", True), ("iris-active", True),
+          ("embeddium", False), ("neoculus", False), ("neoculus-active", False),
+          ("veil", False), ("vanilla", False))
 GAMETEST_LOG = ROOT / "runs" / "gameTestServer" / "logs" / "latest.log"
 
 
@@ -169,7 +178,9 @@ def launch_windows_interactive(
 
     wrapper = RESULT_DIR / "client-session.cmd"
     inherited = ("IP_SABLE_E2E", "IP_SABLE_E2E_PORT", "IP_SABLE_E2E_RESULT_DIR", "GRADLE_USER_HOME",
-                 "IP_PORTAL_SMOKE", "IP_SMOKE_SAMPLES", "IP_SMOKE_RENDERER", "IP_SMOKE_SABLE")
+                 "IP_PORTAL_SMOKE", "IP_SMOKE_SAMPLES", "IP_SMOKE_RENDERER", "IP_SMOKE_SABLE",
+                 "IP_SMOKE_NEGATIVE_CONTROL", "IP_SMOKE_FLYWHEEL_BACKEND", "IP_SMOKE_RENDER_MODE",
+                 "IP_SMOKE_DISABLE_COPY_IMAGE", "IP_SMOKE_SHADERPACK_NAME", "IP_SMOKE_DIAGNOSTIC_FIXTURE")
     lines = ["@echo off", f'cd /d "{ROOT}"']
     for key in inherited:
         value = env.get(key)
@@ -308,6 +319,10 @@ def renderer_mod_sources(classpath: Path, renderer: str) -> list[Path]:
             re.compile(r"^veil-neoforge-.*\.jar$", re.I),
         ),
     }
+    patterns["iris-active"] = patterns["iris"]
+    patterns["embeddium"] = (re.compile(r"^embeddium-.*\.jar$", re.I),)
+    patterns["neoculus"] = (*patterns["embeddium"], re.compile(r"^(?:neoculus|oculus)-.*\.jar$", re.I))
+    patterns["neoculus-active"] = patterns["neoculus"]
     if renderer not in patterns:
         raise RuntimeError(f"unknown renderer staging request: {renderer}")
 
@@ -358,11 +373,131 @@ def cleanup_staged_renderer_mods(paths: list[Path]) -> None:
         path.unlink(missing_ok=True)
 
 
+def stage_shader_fixture(renderer: str, negative_control: str = "none", shaderpack_file: Path | None = None) -> dict:
+    """Own only the disposable verification directories; never download a mutable pack."""
+    source = ROOT / "tools" / "shaderpacks" / FIXTURE_NAME
+    target = CLIENT_DIR / "shaderpacks" / FIXTURE_NAME
+    if target.exists():
+        if target.is_symlink() or not target.resolve().is_relative_to(CLIENT_DIR.resolve()):
+            raise RuntimeError("unsafe shader fixture staging target")
+        shutil.rmtree(target)
+    shutil.copytree(source, target)
+    digest = hashlib.sha256()
+    for path in sorted(source.rglob("*")):
+        if path.is_file():
+            digest.update(path.relative_to(source).as_posix().encode())
+            digest.update(path.read_bytes())
+    pack_name = FIXTURE_NAME
+    pack_hash = digest.hexdigest()
+    programs = sorted(p.stem for p in (source / "shaders").glob("*.vsh"))
+    if shaderpack_file is not None:
+        shaderpack_file = shaderpack_file.resolve()
+        if not shaderpack_file.is_file() or shaderpack_file.suffix.lower() != ".zip":
+            raise RuntimeError("--shaderpack-file must be an existing .zip shaderpack")
+        with zipfile.ZipFile(shaderpack_file) as archive:
+            programs = sorted(name for name in archive.namelist() if name.endswith(".vsh"))
+            if not any(name.startswith("shaders/") for name in archive.namelist()):
+                raise RuntimeError("shaderpack ZIP must contain a top-level shaders directory")
+        pack_name = "__ip_verify__" + shaderpack_file.name
+        pack_target = CLIENT_DIR / "shaderpacks" / pack_name
+        if pack_target.is_symlink():
+            raise RuntimeError("unsafe external shaderpack staging target")
+        shutil.copy2(shaderpack_file, pack_target)
+        pack_hash = hashlib.sha256(shaderpack_file.read_bytes()).hexdigest()
+    enabled = renderer in ACTIVE_RENDERERS and negative_control != "pack-disabled"
+    config = CLIENT_DIR / "config"
+    config.mkdir(parents=True, exist_ok=True)
+    # NeOculus reads oculus.properties, while official Iris reads iris.properties.
+    for name in ("iris.properties", "oculus.properties"):
+        (config / name).write_text(
+            f"shaderPack={pack_name}\nenableShaders={str(enabled).lower()}\n"
+            "enableDebugOptions=true\ndisableUpdateMessage=true\n", encoding="utf-8")
+    evidence = {"name": pack_name, "sha256": pack_hash, "enabled": enabled,
+                "diagnostic_fixture": shaderpack_file is None,
+                "expected_active": renderer in ACTIVE_RENDERERS,
+                "programs": programs}
+    (RESULT_DIR / "fixture.json").write_text(json.dumps(evidence, indent=2), encoding="utf-8")
+    return evidence
+
+
+def validate_shader_evidence(renderer: str, render_mode: str = "normal") -> None:
+    """A green screenshot alone cannot establish active-shader compatibility."""
+    fixture_path = RESULT_DIR / "fixture.json"
+    fixture = json.loads(fixture_path.read_text()) if fixture_path.is_file() else {"name": FIXTURE_NAME, "diagnostic_fixture": True}
+    path = RESULT_DIR / "runtime-evidence.json"
+    if not path.is_file():
+        raise RuntimeError("missing runtime shader/renderer evidence")
+    report = json.loads(path.read_text(encoding="utf-8"))
+    phases = report.get("checks", [])
+    required = {"before-reload", "after-reload", "after-toggle"} if renderer in ACTIVE_RENDERERS else {"before-reload", "after-reload"}
+    if not required.issubset({p.get("phase") for p in phases}):
+        raise RuntimeError("runtime evidence is missing reload/toggle phases")
+    scenes = {"solid-visible", "solid-clipped", "nested", "mirror", "create-visible", "create-clipped"}
+    if renderer in ACTIVE_RENDERERS and fixture.get("diagnostic_fixture", True):
+        scenes.update(f"{program}-{side}" for program in ("cutout", "translucent", "entity", "block-entity", "particle")
+                      for side in ("visible", "clipped"))
+    if render_mode != "normal":
+        scenes.remove("nested")
+    observed = {(check.get("phase"), check.get("scene")) for check in phases}
+    if not {(phase, scene) for phase in required for scene in scenes}.issubset(observed):
+        raise RuntimeError("runtime evidence is missing per-program positive/clipping scenes")
+    if ("after-crossing", "crossing") not in observed or not (RESULT_DIR / "crossing-server-pass.txt").is_file():
+        raise RuntimeError("cross-dimension player crossing was not verified")
+    for check in phases:
+        if renderer in ACTIVE_RENDERERS:
+            if not check.get("shaders_active") or check.get("pack") != fixture["name"]:
+                raise RuntimeError("shader fixture was not active in runtime evidence")
+            if "Iris" not in check.get("pipeline", "") or "Vanilla" in check.get("pipeline", ""):
+                raise RuntimeError("expected an actual Iris shader pipeline")
+            if check.get("renderer") not in {"IrisPortalRenderer", "IrisCompatibilityPortalRenderer"}:
+                raise RuntimeError("expected CE Iris portal renderer, not stencil fallback")
+        elif check.get("shaders_active"):
+            raise RuntimeError("shaders-off lane unexpectedly had an active shaderpack")
+    if renderer in ACTIVE_RENDERERS and not report.get("toggle_disabled_verified"):
+        raise RuntimeError("shader disable/enable was not verified")
+    if renderer in ACTIVE_RENDERERS:
+        copy = report.get("framebuffer_copy", {})
+        cases = copy.get("cases", [])
+        if copy.get("passed") is not True or len(cases) != 4 or {(c.get("width"), c.get("forcedBlit")) for c in cases} != {(8, False), (8, True), (13, False), (13, True)}:
+            raise RuntimeError("missing live framebuffer copy cases")
+        for case in cases:
+            color = case.get("color", [])
+            if len(color) != 4 or any(not isinstance(v, (int, float)) or not math.isfinite(v) or abs(v - expected) > 0.006
+                                     for v, expected in zip(color, (0.25, 0.75, 0.5, 1.0))):
+                raise RuntimeError("framebuffer color evidence failed")
+            depth = case.get("depth", -1)
+            if case.get("stateRestored") is not True or not math.isfinite(depth) or abs(depth - 0.375) > 0.00001 or case.get("stencil") != 77:
+                raise RuntimeError("framebuffer depth/stencil/state evidence failed")
+            if case["forcedBlit"] and case.get("path") != "framebuffer-blit":
+                raise RuntimeError("forced framebuffer blit was not exercised")
+    dimensions = {check["phase"]: (check.get("width"), check.get("height")) for check in phases if check.get("scene") == "solid-clipped"}
+    if dimensions.get("before-reload") == dimensions.get("after-reload"):
+        raise RuntimeError("framebuffer resize was not observed after reload")
+    for check in phases:
+        image = RESULT_DIR / check["screenshot"]
+        if not image.is_file() or image.stat().st_size == 0:
+            raise RuntimeError(f"missing screenshot: {image.name}")
+
+
+def validate_release_jar() -> None:
+    version = re.search(r"^mod_version\s*=\s*(.+)$", (ROOT / "gradle.properties").read_text(), re.M)
+    if not version:
+        raise RuntimeError("mod_version is missing")
+    jar = ROOT / "build" / "libs" / f"immersive_portals-{version[1].strip()}.jar"
+    with zipfile.ZipFile(jar) as archive:
+        forbidden = [name for name in archive.namelist()
+                     if name.startswith("qouteall/imm_ptl/core/gametest/sablee2e/")
+                     or name == "imm_ptl_gametest.mixins.json"]
+    if forbidden:
+        raise RuntimeError("development test classes leaked into release jar: " + ", ".join(forbidden))
+
+
 def run_core() -> None:
     print("[verify] core: build + JUnit + GameTests", flush=True)
     subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "tools", "-p", "test_*.py"], cwd=ROOT, check=True)
     subprocess.run(gradle_cmd("coreCheck"), cwd=ROOT, check=True)
     validate_gametest_log()
+    validate_release_jar()
 
 
 def run_staff() -> None:
@@ -425,7 +560,7 @@ def prepare_e2e() -> dict[str, str]:
     # Deterministic low-cost graphics; real rendering and Sodium remain enabled.
     (CLIENT_DIR / "options.txt").write_text(
         "onboardAccessibility:false\nrenderDistance:3\nsimulationDistance:3\n"
-        "maxFps:60\nenableVsync:false\npauseOnLostFocus:false\n"
+        "overrideWidth:854\noverrideHeight:480\nmaxFps:60\nenableVsync:false\npauseOnLostFocus:false\n"
         "soundCategory_master:0.0\n", encoding="utf-8")
     (SERVER_DIR / "eula.txt").write_text("eula=true\n", encoding="utf-8")
     (SERVER_DIR / "server.properties").write_text(
@@ -564,12 +699,21 @@ def validate_metrics(samples: int) -> None:
         print(f"[verify] {side}: p95={value:.2f} ms, heap={values['heap_used_bytes']} bytes", flush=True)
 
 
-def run_e2e(smoke: bool = False, renderer: str = "sodium", sable: bool = True, samples: int = 200) -> None:
+def run_e2e(smoke: bool = False, renderer: str = "sodium", sable: bool = True, samples: int = 200,
+            negative_control: str = "none", flywheel_backend: str = "default", render_mode: str = "normal",
+            disable_copy_image: bool = False, shaderpack_file: Path | None = None) -> None:
     print(f"[verify] {'visual ' + renderer if smoke else 'e2e'}: dedicated server + automated graphical client", flush=True)
     env = prepare_e2e()
     if smoke:
         env.update(IP_SABLE_E2E="false", IP_PORTAL_SMOKE="true", IP_SMOKE_RENDERER=renderer,
-                   IP_SMOKE_SABLE=str(sable).lower(), IP_SMOKE_SAMPLES=str(samples))
+                   IP_SMOKE_SABLE=str(sable).lower(), IP_SMOKE_SAMPLES=str(samples),
+                   IP_SMOKE_NEGATIVE_CONTROL=negative_control, IP_SMOKE_FLYWHEEL_BACKEND=flywheel_backend,
+                   IP_SMOKE_RENDER_MODE=render_mode, IP_SMOKE_DISABLE_COPY_IMAGE=str(disable_copy_image).lower())
+        fixture = stage_shader_fixture(renderer, negative_control, shaderpack_file)
+        env.update(IP_SMOKE_SHADERPACK_NAME=fixture["name"],
+                   IP_SMOKE_DIAGNOSTIC_FIXTURE=str(fixture["diagnostic_fixture"]).lower())
+        (CLIENT_DIR / "config" / "flywheel-client.toml").write_text(
+            f'backend="{"DEFAULT" if flywheel_backend == "default" else "flywheel:" + flywheel_backend}"\n', encoding="utf-8")
     else:
         env["IP_PORTAL_SMOKE"] = "false"
     properties = [f"-PverificationRenderer={renderer}", f"-PverificationSable={str(sable).lower()}"]
@@ -578,6 +722,10 @@ def run_e2e(smoke: bool = False, renderer: str = "sodium", sable: bool = True, s
     invalidate_generated_run_classpath(server_run)
     invalidate_generated_run_classpath(client_run)
     staged_renderer_mods = stage_renderer_mods(renderer, properties) if smoke else []
+    if smoke:
+        (RESULT_DIR / "staged-mods.json").write_text(json.dumps([
+            {"file": p.name, "sha256": hashlib.sha256(p.read_bytes()).hexdigest()}
+            for p in staged_renderer_mods], indent=2), encoding="utf-8")
     client_properties = properties
     if staged_renderer_mods:
         client_properties = [*properties, "-PverificationRendererStaged=true"]
@@ -609,7 +757,7 @@ def run_e2e(smoke: bool = False, renderer: str = "sodium", sable: bool = True, s
 
         client, client_log = launch_graphical_client(client_command, env, creation)
         try:
-            wait_for_client(server, client, timeout=max(300, samples / 20 + 240), smoke=smoke)
+            wait_for_client(server, client, timeout=max(900, samples / 20 + 600), smoke=smoke)
         finally:
             stop_process_tree(client)
             if client_log is not None:
@@ -617,6 +765,7 @@ def run_e2e(smoke: bool = False, renderer: str = "sodium", sable: bool = True, s
 
         validate_log_health()
         if smoke:
+            validate_shader_evidence(renderer, render_mode)
             validate_metrics(samples)
         print("[verify] " + (RESULT_DIR / "server-pass.txt").read_text(encoding="utf-8").strip(), flush=True)
         print("[verify] " + (RESULT_DIR / "client-pass.txt").read_text(encoding="utf-8").strip(), flush=True)
@@ -638,14 +787,37 @@ def run_e2e(smoke: bool = False, renderer: str = "sodium", sable: bool = True, s
         cleanup_staged_renderer_mods(staged_renderer_mods)
 
 
-def run_visual(renderer: str, sable: bool, samples: int) -> None:
+def run_visual(renderer: str, sable: bool, samples: int, negative_control: str = "none",
+               flywheel_backend: str = "default", render_mode: str = "normal", disable_copy_image: bool = False,
+               shaderpack_file: Path | None = None) -> None:
     # Keep each matrix member's evidence, including failed runs.
     global RESULT_DIR, SERVER_LOG, CLIENT_LOG
     previous = RESULT_DIR, SERVER_LOG, CLIENT_LOG
     RESULT_DIR = ROOT / "build" / f"portal-visual-{renderer}-{'sable' if sable else 'no-sable'}"
+    suffix = f"-{render_mode}-{flywheel_backend}"
+    if disable_copy_image:
+        suffix += "-no-copy-image"
+    if negative_control != "none":
+        suffix += "-negative-" + negative_control
+    if shaderpack_file is not None:
+        suffix += "-pack-" + re.sub(r"[^a-zA-Z0-9_-]", "_", shaderpack_file.stem)
+    RESULT_DIR = RESULT_DIR.with_name(RESULT_DIR.name + suffix)
     SERVER_LOG, CLIENT_LOG = RESULT_DIR / "server.log", RESULT_DIR / "client.log"
     try:
-        run_e2e(smoke=True, renderer=renderer, sable=sable, samples=samples)
+        try:
+            run_e2e(smoke=True, renderer=renderer, sable=sable, samples=samples,
+                    negative_control=negative_control, flywheel_backend=flywheel_backend,
+                    render_mode=render_mode, disable_copy_image=disable_copy_image, shaderpack_file=shaderpack_file)
+        except RuntimeError:
+            failure = RESULT_DIR / "client-fail.txt"
+            expected = {"pack-disabled": "SHADER_FIXTURE_NOT_ACTIVE", "clipping-disabled": "PORTAL_PIXELS_MISMATCH: before-reload/solid-clipped"}
+            if negative_control == "none" or not failure.is_file() or expected[negative_control] not in failure.read_text():
+                raise
+            (RESULT_DIR / "negative-control-pass.txt").write_text(
+                f"Expected {negative_control} regression was detected: {failure.read_text()}\n", encoding="utf-8")
+        else:
+            if negative_control != "none":
+                raise RuntimeError("negative control unexpectedly passed the shader lane")
     finally:
         RESULT_DIR, SERVER_LOG, CLIENT_LOG = previous
 
@@ -653,10 +825,21 @@ def run_visual(renderer: str, sable: bool, samples: int) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run the canonical Immersive Portals verification suite")
     parser.add_argument("mode", choices=("core", "e2e", "visual", "full", "matrix", "staff"), nargs="?", default="full")
-    parser.add_argument("--renderer", choices=("vanilla", "sodium", "iris", "veil"), default="sodium")
+    parser.add_argument("--renderer", choices=RENDERERS, default="sodium")
+    parser.add_argument("--negative-control", choices=("none", "pack-disabled", "clipping-disabled"), default="none")
+    parser.add_argument("--flywheel-backend", choices=("default", "off", "instancing", "indirect"), default="default")
+    parser.add_argument("--render-mode", choices=("normal", "compatibility", "debug"), default="normal")
+    parser.add_argument("--disable-copy-image", action="store_true")
+    parser.add_argument("--shaderpack-file", type=Path, help="Additionally run a user-supplied real-pack ZIP through active shader smoke checks")
     parser.add_argument("--no-sable", action="store_true")
     parser.add_argument("--samples", type=int, default=200)
     args = parser.parse_args()
+    if args.negative_control != "none" and (args.mode != "visual" or args.renderer not in ACTIVE_RENDERERS):
+        parser.error("negative controls require visual --renderer iris-active or neoculus-active")
+    if args.shaderpack_file is not None and (args.mode != "visual" or args.renderer not in ACTIVE_RENDERERS or args.negative_control != "none"):
+        parser.error("--shaderpack-file requires visual with an active renderer and no negative control")
+    if args.disable_copy_image and args.renderer not in ACTIVE_RENDERERS:
+        parser.error("--disable-copy-image requires an active shader renderer")
     if not 200 <= args.samples <= 12000:
         parser.error("--samples must be between 200 and 12000")
 
@@ -666,12 +849,12 @@ def main() -> int:
             stages = []
             try:
                 actions = [("core", run_core), ("e2e", run_e2e),
-                           ("visual", lambda: run_visual(args.renderer, not args.no_sable, args.samples))]
+                           ("visual", lambda: run_visual(args.renderer, not args.no_sable, args.samples, args.negative_control,
+                                                         args.flywheel_backend, args.render_mode, args.disable_copy_image, args.shaderpack_file))]
                 if args.mode == "matrix":
                     actions = [(f"visual-{renderer}-{'sable' if sable else 'no-sable'}",
                                 lambda r=renderer, s=sable: run_visual(r, s, args.samples))
-                               for renderer, sable in (("vanilla", True), ("sodium", True),
-                                                       ("iris", True), ("veil", False), ("vanilla", False))]
+                               for renderer, sable in MATRIX]
                 else:
                     actions = [(name, action) for name, action in actions if args.mode in (name, "full")]
                     if args.mode == "staff":

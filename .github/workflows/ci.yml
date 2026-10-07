@@ -136,7 +136,29 @@ jobs:
   portal-visual:
     needs: changes
     if: needs.changes.outputs.e2e == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { renderer: vanilla, sable: true }
+          - { renderer: sodium, sable: true }
+          - { renderer: iris, sable: true }
+          - { renderer: iris-active, sable: true }
+          - { renderer: embeddium, sable: false }
+          - { renderer: neoculus, sable: false }
+          - { renderer: neoculus-active, sable: false }
+          - { renderer: veil, sable: false }
+          - { renderer: vanilla, sable: false }
+          - { renderer: iris-active, sable: true, negative_control: pack-disabled }
+          - { renderer: iris-active, sable: true, negative_control: clipping-disabled }
     uses: ./.github/workflows/visual.yml
+    with:
+      renderer: ${{ matrix.renderer }}
+      sable: ${{ matrix.sable }}
+      negative_control: ${{ matrix.negative_control || 'none' }}
+      flywheel_backend: ${{ matrix.flywheel_backend || 'default' }}
+      render_mode: ${{ matrix.render_mode || 'normal' }}
+      disable_copy_image: ${{ matrix.disable_copy_image || false }}
 
   required:
     name: Required verification

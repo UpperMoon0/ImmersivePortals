@@ -50,14 +50,23 @@ Assembly fixtures sharing one block position run in sequence and wait for the pr
 
 The Sable E2E drives a tall physics body and a real Create seat through Overworld -> Nether -> Overworld, allows a gravity-driven recross, and exercises client dismount. Server and client independently verify the entity/passenger graph. All five client phase markers, both pass markers, zero client exit status, and clean critical-runtime checks are required.
 
-The visual test creates a red source wall and green destination wall connected by a portal. A second red destination wall lies in front of the destination clipping plane and must not appear. It requires actual portal rendering and matching green framebuffer pixels over multiple frames, both before and after resource/shader reload. Screenshots are retained. This is a targeted clipping regression, not exhaustive visual coverage or an Iris shaderpack test.
+The visual test creates a red source wall and lime destination connected by a portal. Per-program scenes place diagnostic geometry on the retained side first (a positive control), then on the excluded side of the destination plane. Actual framebuffer pixels must match over multiple frames. It also requires nested portal depth, a mirror view, a real player dimension crossing observed by both processes, and rotating Create fixtures. The suite repeats after resource reload and resize; active shader lanes repeat after a verified shader disable/enable cycle.
+
+`iris` and `neoculus` explicitly keep shaders off. `iris-active` and `neoculus-active` stage the repository-owned `ip-clipping-fixture-v1` pack with explicit solid, cutout, translucent, entity, block-entity and particle/fallback programs. They require the exact active pack, a live Iris rendering pipeline and the CE Iris portal renderer; stencil fallback fails. The pack and staged jars are SHA-256 recorded, alongside loaded mod versions, live GL capabilities, actual Flywheel backend, phase screenshots and pixel counts. A fixture pass is targeted regression coverage, not a claim that arbitrary artistic packs or geometry/tessellation programs are compatible. To collect real-pack evidence, pass an existing ZIP with `--shaderpack-file`; the harness records its exact filename and SHA-256 and requires that pack throughout reload/toggle. It uses solid, nested, mirror, crossing and Create smoke scenes, without relying on the diagnostic fixture's red cutout/entity programs. These real-pack runs are additional coverage and never replace the required fixture lanes.
 
 ```text
 python tools/verify.py visual                       # Sodium, Sable present
 python tools/verify.py visual --renderer vanilla --no-sable
-python tools/verify.py visual --renderer iris
+python tools/verify.py visual --renderer iris         # Iris installed, shaders off
+python tools/verify.py visual --renderer iris-active  # Mandatory active fixture
+python tools/verify.py visual --renderer neoculus-active --no-sable
+python tools/verify.py visual --renderer iris-active --shaderpack-file /path/to/real-pack.zip
+python tools/verify.py visual --renderer iris-active --negative-control pack-disabled
+python tools/verify.py visual --renderer iris-active --negative-control clipping-disabled
+python tools/verify.py visual --renderer iris-active --render-mode compatibility --disable-copy-image
+python tools/verify.py visual --renderer vanilla --no-sable --flywheel-backend instancing
 python tools/verify.py visual --renderer veil
-python tools/verify.py matrix --samples 1200        # all five configurations, longer runtime samples
+python tools/verify.py matrix --samples 1200        # all nine renderer/Sable configurations
 ```
 
 Visual runs measure real server tick processing and client frame rendering after scene warmup. They require at least 200 samples (1200 in nightly runs), server p95 <= 100 ms and client p95 <= 250 ms. These conservative shared-runner budgets detect gross regressions; they are not hardware-independent FPS guarantees. Reports also record maximum duration and heap usage. The former fixed-count/synthetic-loop "benchmarks" were removed; their useful mixin contract check remains in JUnit.
@@ -67,8 +76,8 @@ Visual runs measure real server tick processing and client frame rendering after
 - Every branch push: core checks.
 - PRs targeting `main`: core checks plus Sable E2E and visual checks for every non-documentation change. Unknown paths require heavy checks. Documentation-only PRs skip graphics.
 - Every push to `main` and manual CI run: core, Sable E2E and visual checks.
-- Nightly/manual extended workflow: vanilla, Sodium, Iris, Veil, and vanilla without Sable, with 1200 runtime samples each.
-- Release: core, Sable E2E and all five visual configurations must pass before publishing the jar produced by core verification.
+- Nightly/manual extended workflow: all nine renderer/Sable lanes, both negative controls, compatibility/debug copy-path lanes, and explicit Flywheel off/instancing/indirect lanes, with 1200 runtime samples each. Compatibility/debug renderers have a documented one-layer limit, so nesting is required by normal-renderer lanes only.
+- Release: core, Sable E2E and all declared renderer, active-pack, negative-control, framebuffer-blit and Flywheel configurations must pass before publishing the jar produced by core verification.
 
 Configure branch protection to require **Required verification**. This stable aggregate job fails if any selected test failed, was cancelled or unexpectedly skipped. A workflow file alone cannot configure repository branch protection.
 
@@ -78,7 +87,7 @@ The local Aeronautics/Simulated/Offroad sibling jars are confined to the manual 
 
 Use Java 21 (`JAVA_HOME` if the default Java differs). Linux without a display needs `xvfb-run` and Mesa (`xvfb libgl1-mesa-dri` on Ubuntu); Windows needs a logged-in graphical desktop. No manual game interaction is needed. Local runs are sequential to limit memory pressure.
 
-Only one harness may run per checkout. Its disposable `run-sable-e2e-*` directories must not contain personal worlds or settings. Fresh worlds and result markers prevent stale passes. Reports live in `build/verification-<mode>.json`, Sable evidence in `build/sable-dimension-stack-e2e/`, and visual evidence in `build/portal-visual-<renderer>-<sable|no-sable>/`. CI preserves evidence on failure. Run Python regressions alone with `python -m unittest discover -s tools -p "test_*.py"`.
+Only one harness may run per checkout. Its disposable `run-sable-e2e-*` directories must not contain personal worlds or settings. Fresh worlds and result markers prevent stale passes. Reports live in `build/verification-<mode>.json`, Sable evidence in `build/sable-dimension-stack-e2e/`, and visual evidence in `build/portal-visual-<renderer>-<sable|no-sable>-<mode>-<backend>*/`. CI preserves evidence on failure. Negative-control runs succeed only when the expected named shader/pixel assertion fails, never for an arbitrary boot or compilation failure. `clipping-disabled` turns off clip-distance use in the development client to demonstrate that the pixel oracle detects front-plane leakage; it does not alter release code. Requested Flywheel backends must actually be active; unsupported hardware is a failed/unverified backend lane rather than a silent fallback pass. Run Python regressions alone with `python -m unittest discover -s tools -p "test_*.py"`.
 
 The runnable jar is `build/libs/immersive_portals-<version>.jar`. Dedicated E2E/visual driver classes are excluded from that jar.
 

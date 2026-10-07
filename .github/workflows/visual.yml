@@ -12,6 +12,18 @@ on:
       sable:
         type: boolean
         default: true
+      negative_control:
+        type: string
+        default: none
+      flywheel_backend:
+        type: string
+        default: default
+      render_mode:
+        type: string
+        default: normal
+      disable_copy_image:
+        type: boolean
+        default: false
       samples:
         type: number
         default: 200
@@ -45,15 +57,21 @@ jobs:
           RENDERER: ${{ inputs.renderer }}
           SABLE: ${{ inputs.sable }}
           SAMPLES: ${{ inputs.samples }}
+          NEGATIVE: ${{ inputs.negative_control }}
+          FLYWHEEL: ${{ inputs.flywheel_backend }}
+          RENDER_MODE: ${{ inputs.render_mode }}
+          DISABLE_COPY_IMAGE: ${{ inputs.disable_copy_image }}
         run: |
           extra=()
           if [[ "$SABLE" == false ]]; then extra+=(--no-sable); fi
-          python3 tools/verify.py visual --renderer "$RENDERER" --samples "$SAMPLES" "${extra[@]}"
+          if [[ "$DISABLE_COPY_IMAGE" == true ]]; then extra+=(--disable-copy-image); fi
+          python3 tools/verify.py visual --renderer "$RENDERER" --samples "$SAMPLES" \
+            --negative-control "$NEGATIVE" --flywheel-backend "$FLYWHEEL" --render-mode "$RENDER_MODE" "${extra[@]}"
       - name: Preserve images, timings and runtime diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: portal-visual-${{ inputs.renderer }}-sable-${{ inputs.sable }}
+          name: portal-visual-${{ inputs.renderer }}-sable-${{ inputs.sable }}-${{ inputs.render_mode }}-${{ inputs.flywheel_backend }}-blit-${{ inputs.disable_copy_image }}-${{ inputs.negative_control }}
           if-no-files-found: warn
           path: |
             build/verification-visual.json

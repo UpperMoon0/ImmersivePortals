@@ -77,6 +77,7 @@ public class IrisCompatibilityPortalRenderer extends PortalRenderer {
         IPPortingLibCompat.setIsStencilEnabled(
             client.getMainRenderTarget(), false
         );
+        IPIrisHelper.matchDepthAttachment(client.getMainRenderTarget(), deferredBuffer.fb);
         
         // Iris now use vanilla framebuffer's depth
         client.getMainRenderTarget().bindWrite(false);
