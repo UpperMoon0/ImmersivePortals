@@ -21,7 +21,7 @@ import qouteall.imm_ptl.core.render.context_management.RenderStates;
 public class MixinSodiumRenderSectionManager implements IESodiumRenderSectionManager {
     @Redirect(method = "scheduleRebuild", at = @At(value = "INVOKE",
         target = "Lnet/caffeinemc/mods/sodium/client/render/chunk/RenderSection;isBuilt()Z"))
-    public static boolean ip_hasCapturedMesh(RenderSection section) {
+    private static boolean ip_hasCapturedMesh(RenderSection section) {
         // Reload replaces the manager and starts asynchronous initial meshes. A
         // redirected block update can arrive after a task captured its snapshot
         // but before upload marks the section built. Sodium's built-only gate

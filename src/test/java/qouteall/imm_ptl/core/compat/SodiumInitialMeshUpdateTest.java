@@ -15,7 +15,7 @@ import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-class SodiumInitialMeshUpdateTest {
+public class SodiumInitialMeshUpdateTest {
     @Test
     void updateBetweenInitialSnapshotAndUploadIsRetainedAfterReload() throws Exception {
         var section = new RenderSection(null, 0, 5, -1);
@@ -54,7 +54,7 @@ class SodiumInitialMeshUpdateTest {
         var built = RenderSection.class.getDeclaredField("built");
         built.setAccessible(true);
         built.setBoolean(section, true);
-        assertTrue(MixinSodiumRenderSectionManager.ip_hasCapturedMesh(section));
+        assertTrue(redirect(section));
         var fixed = scheduler(true, section);
         schedule(fixed);
         assertEquals(2, section.getPendingUpdate());
@@ -63,6 +63,13 @@ class SodiumInitialMeshUpdateTest {
     private static void schedule(Object scheduler) throws Exception {
         scheduler.getClass().getMethod("scheduleRebuild", int.class, int.class, int.class, boolean.class)
             .invoke(scheduler, 0, 5, -1, false);
+    }
+
+    public static boolean redirect(RenderSection section) throws Exception {
+        var hook = MixinSodiumRenderSectionManager.class.getDeclaredMethod("ip_hasCapturedMesh", RenderSection.class);
+        assertTrue(java.lang.reflect.Modifier.isPrivate(hook.getModifiers()), "Mixin requires private static handlers");
+        hook.setAccessible(true);
+        return (boolean) hook.invoke(null, section);
     }
 
     /** Execute the pinned scheduler bytecode without constructing its GL renderer.
@@ -98,8 +105,8 @@ class SodiumInitialMeshUpdateTest {
                         assertEquals("()Z", call.desc);
                         gates++;
                         if (fixed) method.instructions.set(call, new MethodInsnNode(Opcodes.INVOKESTATIC,
-                            "qouteall/imm_ptl/core/compat/mixin/sodium/MixinSodiumRenderSectionManager",
-                            "ip_hasCapturedMesh", "(Lnet/caffeinemc/mods/sodium/client/render/chunk/RenderSection;)Z", false));
+                            "qouteall/imm_ptl/core/compat/SodiumInitialMeshUpdateTest",
+                            "redirect", "(Lnet/caffeinemc/mods/sodium/client/render/chunk/RenderSection;)Z", false));
                     }
                 }
             }
