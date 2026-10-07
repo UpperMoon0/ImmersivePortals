@@ -166,10 +166,6 @@ jobs:
           - { renderer: vanilla, sable: false, flywheel_backend: off }
           - { renderer: vanilla, sable: false, flywheel_backend: instancing }
           - { renderer: vanilla, sable: false, flywheel_backend: indirect }
-          - { renderer: iris-active, sable: true, real_pack: makeup }
-          - { renderer: iris-active, sable: true, real_pack: complementary }
-          - { renderer: neoculus-active, sable: false, real_pack: makeup }
-          - { renderer: neoculus-active, sable: false, real_pack: complementary }
     uses: ./.github/workflows/visual.yml
     with:
       renderer: ${{ matrix.renderer }}
@@ -182,10 +178,29 @@ jobs:
       disable_copy_image: ${{ matrix.disable_copy_image || false }}
       gl_context: ${{ matrix.gl_context || 'default' }}
 
+  # Real packs take substantially longer on software graphics. Preserve their
+  # required gate, but do not repeat them while an earlier regression is failing.
+  real-pack-visual:
+    needs: [changes, core, graphical-e2e, portal-visual]
+    if: needs.changes.outputs.e2e == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { renderer: iris-active, sable: true, real_pack: makeup }
+          - { renderer: iris-active, sable: true, real_pack: complementary }
+          - { renderer: neoculus-active, sable: false, real_pack: makeup }
+          - { renderer: neoculus-active, sable: false, real_pack: complementary }
+    uses: ./.github/workflows/visual.yml
+    with:
+      renderer: ${{ matrix.renderer }}
+      sable: ${{ matrix.sable }}
+      real_pack: ${{ matrix.real_pack }}
+
   required:
     name: Required verification
     if: always()
-    needs: [changes, core, graphical-e2e, portal-visual]
+    needs: [changes, core, graphical-e2e, portal-visual, real-pack-visual]
     runs-on: ubuntu-latest
     steps:
       - name: Enforce all selected checks
@@ -194,11 +209,13 @@ jobs:
           CORE: ${{ needs.core.result }}
           HEAVY: ${{ needs.graphical-e2e.result }}
           VISUAL: ${{ needs.portal-visual.result }}
+          REAL_PACKS: ${{ needs.real-pack-visual.result }}
           REQUIRED: ${{ needs.changes.outputs.e2e }}
         run: |
           [[ "$SELECT" == success && "$CORE" == success ]]
+          [[ "$REQUIRED" == true || "$REQUIRED" == false ]]
           if [[ "$REQUIRED" == true ]]; then
-            [[ "$HEAVY" == success && "$VISUAL" == success ]]
+            [[ "$HEAVY" == success && "$VISUAL" == success && "$REAL_PACKS" == success ]]
           else
-            [[ "$HEAVY" == skipped && "$VISUAL" == skipped ]]
+            [[ "$HEAVY" == skipped && "$VISUAL" == skipped && "$REAL_PACKS" == skipped ]]
           fi

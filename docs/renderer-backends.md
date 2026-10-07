@@ -125,11 +125,15 @@ valid entry point; the capability truth table also covers loaders returning an a
 The separate owned `ip-shadow-fixture-v1` pack runs real Iris/NeOculus shadow
 passes at 256×256. A red caster wholly at Z=1..2 is excluded from destination
 world geometry, but must shadow a receiver at Z=-3. The runner requires the
-caster's actual depth pixels (0.46875), the lit receiver's depth (0.546875),
+caster's actual depth pixels (0.25), the lit receiver's depth (0.875),
 a blue shadow on the receiver, a green unshadowed side region, and retained
 world depth at seven blocks. It repeats lit/caster/removed controls after a
 resource reload and resize. These are separate from ordinary clipping-fixture
 or real-pack grading checks.
+
+The owned light's near/far planes at Z=+4/-4 fit inside the cleared Z=-5..8
+scene slab. This excludes natural Nether terrain behind the caster: the previous
+Z=+/-32 projection admitted terrain at Z=30 and incorrectly shadowed the lit control.
 
 ```sh
 python tools/verify.py visual --renderer iris-active --shadow-fixture
@@ -160,7 +164,10 @@ python tools/verify_shadow_fixture_gl.py --egl-jar /path/to/lwjgl-egl-3.3.3.jar 
 
 It prints the driver's behavior for a minimal runtime-negative output with the
 clip bit off/on, then requires exact receiver/caster depth under the fixture's
-live-bit probe in both states. `--gl-version 3.3` supports the lower-capability
+live-bit probe in both states, including draws with unrelated terrain outside
+the scene slab at Z=+/-30. It also runs the pack's actual receiver fragment shader
+and checks green/blue/green pixels for lit/caster/forced-clipping scenes.
+`--gl-version 3.3` supports the lower-capability
 EGL check. Only compatibility attribute/output bindings are adapted, and the
 fixture math is read from the actual pack files. This focused check does not
-prove Minecraft submits shadow terrain or composes a visible receiver shadow.
+prove Minecraft submits shadow terrain or composes a visible receiver shadow in a portal.

@@ -8,7 +8,7 @@ const bool shadowtex0Nearest = true;
 /* RENDERTARGETS: 0 */
 void main() {
     vec2 uv = vec2(worldPosition.x, worldPosition.y - 82.0) / 32.0 + 0.5;
-    float receiverDepth = 0.5 - worldPosition.z / 64.0;
+    float receiverDepth = 0.5 - worldPosition.z / 8.0;
     float blockerDepth = texture(shadowtex0, uv).r;
     bool shadowed = blockerDepth + 0.002 < receiverDepth;
     vec3 color = shadowed ? vec3(0.05, 0.15, 0.85) : vec3(0.1, 0.85, 0.1);

@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Exercise actual ShaderCodeTransformation YAML on a real EGL crumbling draw.
+"""Exercise actual YAML on real EGL damage-overlay and buffered Create world draws.
 
 Requires a normal built project runtime classpath (Minecraft compiled jar, main
 classes, Cloth Config and LWJGL with EGL/Linux natives). No stubs or downloads.
+Checks pixels and depth, zero/nonzero ChunkOffset, and the before-model-view plane.
 This probes generated GLSL; exact-head client runs verify mixin/scoped uploads.
 """
 import argparse

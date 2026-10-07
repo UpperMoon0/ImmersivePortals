@@ -123,6 +123,12 @@ public final class PortalShaderDiagnostics {
                 GL20.glGetUniformfv(program, location, actual);
                 state.put("actualClippingEquation", actual);
             }
+            int chunkOffsetLocation = GL20.glGetUniformLocation(program, "ChunkOffset");
+            if (chunkOffsetLocation >= 0) {
+                float[] offset = new float[3];
+                GL20.glGetUniformfv(program, chunkOffsetLocation, offset);
+                state.put("actualChunkOffset", offset);
+            }
         }
         if (program > 0) {
             int attachedCount = GL20.glGetProgrami(program, GL20.GL_ATTACHED_SHADERS);

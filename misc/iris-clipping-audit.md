@@ -134,6 +134,27 @@ Iris and NeOculus also keep their fully buffered entity renderer enabled when th
 pack is off. Those vanilla entity/item/particle/beacon draws may therefore occur
 after the coarse entity scope ends. The same draw-time scope now covers these
 explicit camera-relative shader families, only if an actual `IEShader` uniform
-exists. Portal aperture, terrain, full-screen and Iris-owned shader programs keep
-their separate policies. Vanilla uniform selection checks whether a pack is
-active, rather than whether a provider happens to be installed.
+exists. Vanilla uniform selection checks whether a pack is active, rather than
+whether a provider happens to be installed.
+
+Create 6.0.10 also buffers its contraptions with `RenderType.chunkBufferLayers()`;
+`BracketedKineticBlockEntityRenderer` uses `RenderType.solid()` for large cogs and
+their shafts. Consequently a crumbling scene can leak the ordinary solid cog
+even when the `rendertype_crumbling` draw has the correct plane and GL clip bit.
+Shaders-off runtime captures demonstrated that exact combination, and an Iris
+contraption capture likewise showed an unclipped vanilla `rendertype_solid` draw.
+The late scope therefore includes the four transformed terrain-named shaders.
+Their YAML rule continues to evaluate `Position + ChunkOffset`, matching the
+position passed to ModelView. Deferred Create vertices use zero ChunkOffset;
+chunk-local vertices keep their caller-supplied offset. Vanilla section terrain
+uses `VertexBuffer.draw()` directly, retaining its existing layer clipping scope.
+Portal aperture, full-screen and Iris-owned shader programs retain their separate
+policies, including the shadow bypass and finally restoration.
+
+The EGL check additionally covers all four terrain-named programs, with strict
+color and depth checks for excluded, retained and neutral-plane draws, positive
+and negative ChunkOffset, and a translated ModelView. Its disabled-clipping
+control reproduces the solid leak. These 32 draw cases pass on Mesa OpenGL 4.5
+and 3.3. Removing ChunkOffset fails the real pixel oracle; the pre-fix draw-scope
+policy fails the new policy regression. The actual Minecraft graphical lanes
+remain required to establish integration.

@@ -19,7 +19,7 @@ def validate_probe(check: dict, result_dir: Path, *, expect_caster: bool) -> Non
         raise RuntimeError("missing actual shadow depth pixels")
     if any(not isinstance(x, (int, float)) or not math.isfinite(x) or not 0 <= x <= 1 for x in samples):
         raise RuntimeError("invalid shadow depth pixels")
-    expected = 0.5 - 2 / 64 if expect_caster else 0.5 + 3 / 64
+    expected = 0.5 - 2 / 8 if expect_caster else 0.5 + 3 / 8
     if any(abs(value - expected) >= 0.004 for value in (min(samples), sorted(samples)[12], max(samples))):
         raise RuntimeError("shadow map did not contain the expected caster/receiver geometry")
     if shadow.get("inherited_clipping_restored") is not True:

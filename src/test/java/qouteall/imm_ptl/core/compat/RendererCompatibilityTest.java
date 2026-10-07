@@ -26,6 +26,7 @@ class RendererCompatibilityTest {
             assertEquals(iris && !oculus, backend.appliesTo(PREFIX + "iris.MixinIrisSodiumShader"));
             assertEquals(oculus, backend.appliesTo(PREFIX + "neoculus.MixinNeOculusEmbeddiumShader"));
             assertEquals(iris || oculus, backend.appliesTo(PREFIX + "iris.MixinIrisRenderingPipeline"));
+            assertEquals(iris || oculus, backend.appliesTo(PREFIX + "iris.MixinIrisPipelineManager"));
         }
     }
 

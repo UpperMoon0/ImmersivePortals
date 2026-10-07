@@ -6,7 +6,7 @@ import java.util.Set;
 public record RendererCompatibility(Renderer renderer, Shaders shaders) {
     private static final Set<String> SHARED_IRIS_MIXINS = Set.of(
         "MixinIrisClearPass", "MixinIrisFinalPassRenderer", "MixinIrisIris",
-        "MixinIrisRenderingPipeline", "MixinIrisShadowRenderTargets", "MixinIrisTransformPatcher",
+        "MixinIrisRenderingPipeline", "MixinIrisPipelineManager", "MixinIrisShadowRenderTargets", "MixinIrisTransformPatcher",
         "MixinIrisWorldShader", "MixinIrisShaderCreator", "MixinIrisVertexBuffer",
         "MixinIrisShadowRenderer", "MixinIrisFullScreenQuadRenderer", "MixinIrisGLDebug"
     );

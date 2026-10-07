@@ -17,7 +17,9 @@ import qouteall.imm_ptl.core.render.context_management.PortalRendering;
 
 /**
  * Damage overlays and provider-batched vanilla entities can flush after the coarse
- * entity scope ends. Iris/NeOculus keep batching even with their shaderpack off.
+ * entity scope ends. This includes Create's chunk render types for contraptions and
+ * kinetic block entities. Iris/NeOculus keep batching even with their shaderpack off.
+ * Vanilla section terrain uses VertexBuffer.draw directly and retains its own scope.
  */
 @Mixin(VertexBuffer.class)
 public class MixinVertexBuffer_VanillaClipping {
@@ -43,6 +45,8 @@ public class MixinVertexBuffer_VanillaClipping {
             }
             // Set the actual shader argument immediately before its apply/upload;
             // RenderSystem.setShader ran before this late clipping scope existed.
+            // Terrain-named shaders evaluate Position + ChunkOffset in the YAML;
+            // preserve their offset and pass the same camera-relative equation.
             double[] equation = FrontClipping.getActiveClipPlaneEquationBeforeModelView();
             if (FrontClipping.isClippingEnabled && equation != null) {
                 uniform.set((float) equation[0], (float) equation[1], (float) equation[2], (float) equation[3]);

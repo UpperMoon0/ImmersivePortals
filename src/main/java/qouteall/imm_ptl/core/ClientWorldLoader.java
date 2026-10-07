@@ -532,6 +532,18 @@ public class ClientWorldLoader {
         isReloadingOtherWorldRenderers = false;
     }
     
+    /** Reload one dimension without propagating its provider-specific settings to other renderers. */
+    public static void reloadWorldRenderer(ClientLevel world) {
+        boolean wasReloading = isReloadingOtherWorldRenderers;
+        isReloadingOtherWorldRenderers = true;
+        try {
+            withSwitchedWorld(world, () -> CLIENT.levelRenderer.allChanged());
+        }
+        finally {
+            isReloadingOtherWorldRenderers = wasReloading;
+        }
+    }
+
     /**
      * It will not switch the dimension of client player
      */

@@ -37,6 +37,7 @@
     "iris.MixinIrisGLDebug",
     "iris.MixinIrisIris",
     "iris.MixinIrisRenderingPipeline",
+    "iris.MixinIrisPipelineManager",
     "iris.MixinIrisShaderCreator",
     "iris.MixinIrisShadowRenderTargets",
     "iris.MixinIrisShadowRenderer",

@@ -2,9 +2,13 @@ package qouteall.imm_ptl.core.render;
 
 import java.util.Set;
 
-/** Camera-relative vanilla programs from the YAML entity/particle rule, excluding portal_area. */
+/** Vanilla world programs transformed by the YAML rules, excluding portal_area. */
 public final class VanillaClippingPolicy {
     static final Set<String> WORLD_SHADER_NAMES = Set.of(
+        // Create also uses chunk render types for camera-relative contraptions and block entities.
+        // The terrain YAML rule includes ChunkOffset, so both zero-offset buffered geometry and
+        // chunk-local geometry use the same before-model-view clipping equation.
+        "rendertype_solid", "rendertype_cutout", "rendertype_cutout_mipped", "rendertype_translucent",
         "rendertype_entity_solid", "rendertype_entity_cutout", "rendertype_entity_cutout_no_cull",
         "rendertype_entity_cutout_no_cull_z_offset", "rendertype_item_entity_translucent_cull",
         "rendertype_entity_translucent_cull", "rendertype_entity_translucent", "rendertype_entity_smooth_cutout",

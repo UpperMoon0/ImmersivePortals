@@ -17,7 +17,7 @@ class ShadowEvidenceTest(unittest.TestCase):
 
     def check(self, phase, scene):
         caster = scene == 'caster'
-        value = 0.5 - 2 / 64 if caster else 0.5 + 3 / 64
+        value = 0.5 - 2 / 8 if caster else 0.5 + 3 / 8
         filename = f'{phase}-{scene}.png'
         (self.root / filename).write_bytes(b'fixture')
         return dict(phase=phase, scene=scene, screenshot=filename, width=800 if phase == 'before-reload' else 960,
@@ -45,7 +45,7 @@ class ShadowEvidenceTest(unittest.TestCase):
     def test_positive_requires_each_fresh_scene_and_actual_depth_pixels(self):
         self.write()
         validate_shadow_evidence(self.root, 'iris-active')
-        for change in ('missing', 'stale', 'empty', 'blank', 'state', 'draw-bit'):
+        for change in ('missing', 'stale', 'empty', 'blank', 'state', 'draw-bit', 'unrelated-terrain'):
             altered = copy.deepcopy(self.checks)
             if change == 'missing': altered.pop()
             if change == 'stale': altered[-1]['shadow']['observation'] = 'before-reload:restored'
@@ -53,6 +53,7 @@ class ShadowEvidenceTest(unittest.TestCase):
             if change == 'blank': altered[1]['center_blue'] = 0
             if change == 'state': altered[1]['shadow']['inherited_clipping_restored'] = False
             if change == 'draw-bit': altered[1]['shadow']['terrain_draw_states']['draw']['clipDistanceEnabled'] = True
+            if change == 'unrelated-terrain': altered[0]['shadow']['samples'] = [0.031250477]*25
             self.write(altered)
             with self.subTest(change=change), self.assertRaises(RuntimeError):
                 validate_shadow_evidence(self.root, 'iris-active')

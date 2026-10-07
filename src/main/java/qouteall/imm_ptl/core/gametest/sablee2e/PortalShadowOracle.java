@@ -4,8 +4,9 @@ package qouteall.imm_ptl.core.gametest.sablee2e;
 public final class PortalShadowOracle {
     private PortalShadowOracle() {}
     public static float clipProbe(boolean actualGlClipEnabled) { return actualGlClipEnabled ? -1 : 1; }
-    public static final double LIT_DEPTH = 0.5 + 3.0 / 64.0;
-    public static final double CASTER_DEPTH = 0.5 - 2.0 / 64.0;
+    // The owned light clips at Z=+/-4, wholly inside the cleared scene slab.
+    public static final double LIT_DEPTH = 0.5 + 3.0 / 8.0;
+    public static final double CASTER_DEPTH = 0.5 - 2.0 / 8.0;
 
     public static boolean accepts(boolean caster, double green, double blue, double red,
         double sideGreen, double shadowDepth, double receiverDistance, boolean restored) {
