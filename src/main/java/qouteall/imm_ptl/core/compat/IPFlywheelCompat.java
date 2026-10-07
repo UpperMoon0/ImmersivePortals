@@ -21,7 +21,10 @@ public final class IPFlywheelCompat {
 
     public static void recordPortalFallback() { portalFallbackQueries++; }
     public static long portalFallbackQueries() { return portalFallbackQueries; }
-    public static void recordNestedContextRestored() { nestedContextsRestored++; }
+    public static void recordContextRestored(Object expected, Object actual) {
+        if (actual != expected) throw new IllegalStateException("Flywheel render context was not restored by identity");
+        if (expected != null) nestedContextsRestored++;
+    }
     public static long nestedContextsRestored() { return nestedContextsRestored; }
 
     public static void init() {

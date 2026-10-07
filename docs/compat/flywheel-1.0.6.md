@@ -18,7 +18,14 @@ Flywheel's Maven source artifact is the authoritative reference; the current
   lazily rebound by the next backend draw; no cancellation is required.
 - Flywheel keeps one `flywheel$renderContext` field per LevelRenderer. A nested
   render of the same level overwrites it and clears it on return. IP now saves
-  and restores that field with `try/finally` around the entire render call.
+  and restores that field with `try/finally` around the entire render call,
+  reading back the actual field to verify identity before recording restoration.
+- Iris's deferred portal renderer invokes nested worlds from
+  `MixinGameRenderer.wrapRenderLevel` **after** the parent's LevelRenderer returns.
+  Its Flywheel context is already null, even during same-dimension recursion.
+  This differs from the stencil path, which recurses inside LevelRenderer.
+  Backend-off does not explain that difference: Flywheel 1.0.6 creates its
+  context unconditionally, before checking whether a visualization manager exists.
 
 ## Scoped fallback
 
@@ -72,6 +79,14 @@ sides of portals, nested views, crumbling, remote creation, and resource reload.
 `PortalSmokeCreateScene` builds motor/shaft/cog and rotating bearing fixtures;
 its backend evidence reports configured and actual backend IDs, instantiated
 main-view engine type, observed fallback decisions and restored nested contexts.
+Stencil views require fresh non-null context restorations in each nested scene.
+Deferred Iris/NeOculus views instead require a test-only whole-GameRenderer
+stack witness: the **same renderer instance** must appear in an enclosing view,
+and the actual null context and fallback scope must both survive each child
+return unchanged. The witness only reads state; it cannot repair a failed
+restoration. Reports include separate null/live counters, fresh per-scene
+deltas and an empty after-frame witness stack. These checks also run when the
+backend is off; switching it off never bypasses the nested-view requirement.
 An active backend request must not pass as off. Hardware/driver limitations must
 be reported separately from passing rendered checks.
 

@@ -21,6 +21,11 @@ NeOculus's dummy `iris` mod ID never selects official Iris's `SodiumShader` mixi
 
 ## Embeddium-specific integration
 
+Sodium 0.8.12 additionally caches multi-draw commands per render region. The Sodium adapter tracks the
+actual render-list and batch identities per terrain pass at draw time, invalidating only when ownership
+changes. This covers nested same-dimension views, resuming outer translucency, and Iris shadow-map batch
+swaps. Embeddium 1.0.15 unconditionally refills its scratch batch and does not need this extra cache hook.
+
 The adapter uses `org.embeddedt.embeddium.impl` and the public Embeddium sprite API. It never loads
 `net.caffeinemc.mods.sodium` classes. The existing `SodiumInterface.Invoker` name remains the common invocation
 boundary, with an independently instantiated Embeddium implementation.
@@ -114,3 +119,30 @@ MESA_GL_VERSION_OVERRIDE=3.3 MESA_EXTENSION_OVERRIDE=-GL_ARB_copy_image \
 The probe verifies the advertised GL 4.3/ARB capability flags are both absent and checks automatic blit
 selection before setting any force flag. Copy-image support requires the advertised capability and a
 valid entry point; the capability truth table also covers loaders returning an address without support.
+
+### Actual shadow-pass acceptance
+
+The separate owned `ip-shadow-fixture-v1` pack runs real Iris/NeOculus shadow
+passes at 256×256. A red caster wholly at Z=1..2 is excluded from destination
+world geometry, but must shadow a receiver at Z=-3. The runner requires the
+caster's actual depth pixels (0.46875), the lit receiver's depth (0.546875),
+a blue shadow on the receiver, a green unshadowed side region, and retained
+world depth at seven blocks. It repeats lit/caster/removed controls after a
+resource reload and resize. These are separate from ordinary clipping-fixture
+or real-pack grading checks.
+
+```sh
+python tools/verify.py visual --renderer iris-active --shadow-fixture
+python tools/verify.py visual --renderer neoculus-active --no-sable --shadow-fixture
+python tools/verify.py visual --renderer iris-active --shadow-fixture --negative-control shadow-clipping-enabled
+python tools/verify.py visual --renderer neoculus-active --no-sable --shadow-fixture --negative-control shadow-clipping-enabled
+```
+
+Development-only hooks enter the production shadow scope with inherited portal
+clipping enabled and verify restoration. The shadow shader deliberately writes
+negative clip distance, which must be ignored in the shadow pass. The targeted
+negative re-enables the bit inside that scope only for the caster scene; it is
+accepted as a negative only after a valid lit control and actual removal of
+shadow depth pixels while the receiver remains drawn. No testing hooks or pack
+files are included in the release jar. Matrix declarations alone are not proof
+that these graphical lanes have run successfully.

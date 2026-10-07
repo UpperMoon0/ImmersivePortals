@@ -418,7 +418,7 @@ def pinned_shaderpack_profile(sha256: str) -> str | None:
 
 def visual_scene_names(renderer: str, render_mode: str = "normal", diagnostic_fixture: bool = True) -> set[str]:
     scenes = {"solid-visible", "solid-clipped", "mirror", "create-visible", "create-clipped",
-              "create-crumbling-clean", "create-crumbling-damaged", "create-crumbling-clipped"}
+              "create-crumbling-clean", "create-crumbling-damaged", "create-crumbling-restored", "create-crumbling-clipped"}
     if render_mode == "normal":
         scenes.update(("nested", "create-nested"))
     if renderer in ACTIVE_RENDERERS and not diagnostic_fixture:
@@ -439,10 +439,11 @@ def visual_timeout(renderer: str, samples: int, render_mode: str, diagnostic_fix
     return min(VISUAL_CLIENT_SECONDS, estimated)
 
 
-def stage_shader_fixture(renderer: str, negative_control: str = "none", shaderpack_file: Path | None = None, shaderpack_profile: str | None = None) -> dict:
+def stage_shader_fixture(renderer: str, negative_control: str = "none", shaderpack_file: Path | None = None, shaderpack_profile: str | None = None, shadow_fixture: bool = False) -> dict:
     """Own only the disposable verification directories; never download a mutable pack."""
-    source = ROOT / "tools" / "shaderpacks" / FIXTURE_NAME
-    target = CLIENT_DIR / "shaderpacks" / FIXTURE_NAME
+    fixture_name = "ip-shadow-fixture-v1" if shadow_fixture else FIXTURE_NAME
+    source = ROOT / "tools" / "shaderpacks" / fixture_name
+    target = CLIENT_DIR / "shaderpacks" / fixture_name
     if target.exists():
         if target.is_symlink() or not target.resolve().is_relative_to(CLIENT_DIR.resolve()):
             raise RuntimeError("unsafe shader fixture staging target")
@@ -453,7 +454,7 @@ def stage_shader_fixture(renderer: str, negative_control: str = "none", shaderpa
         if path.is_file():
             digest.update(path.relative_to(source).as_posix().encode())
             digest.update(path.read_bytes())
-    pack_name = FIXTURE_NAME
+    pack_name = fixture_name
     profile, options = "fixture", {}
     pack_hash = digest.hexdigest()
     programs = sorted(p.stem for p in (source / "shaders").glob("*.vsh"))
@@ -486,7 +487,7 @@ def stage_shader_fixture(renderer: str, negative_control: str = "none", shaderpa
             f"shaderPack={pack_name}\nenableShaders={str(enabled).lower()}\n"
             "enableDebugOptions=true\ndisableUpdateMessage=true\n", encoding="utf-8")
     evidence = {"name": pack_name, "sha256": pack_hash, "enabled": enabled,
-                "diagnostic_fixture": shaderpack_file is None, "profile": profile, "options": options,
+                "diagnostic_fixture": shaderpack_file is None, "shadow_fixture": shadow_fixture, "profile": profile, "options": options,
                 "expected_active": renderer in ACTIVE_RENDERERS,
                 "programs": programs}
     (RESULT_DIR / "fixture.json").write_text(json.dumps(evidence, indent=2), encoding="utf-8")
@@ -507,10 +508,44 @@ def validate_target_shader_path(evidence: dict, target: str, expect_clipping: bo
     raise RuntimeError(f"no completed portal {target} draw with clipping={expect_clipping}")
 
 
+def validate_crumbling_evidence(check: dict, clean: dict | None) -> None:
+    scene = check["scene"]
+    proof = check.get("crumbling_oracle", {})
+    stage = 9 if scene in ("create-crumbling-damaged", "create-crumbling-clipped") else -1
+    position = [0, 82, 3 if scene.endswith("-clipped") else -1]
+    if proof.get("stage") != stage or proof.get("client_stage") != stage or proof.get("position") != position or proof.get("block") != "create:large_cogwheel" or proof.get("packet_sent") is not True:
+        raise RuntimeError("crumbling stage was not sent and observed on the intended cog")
+    if proof.get("face_samples", 0) < 100 or proof.get("background_samples", 0) < 100:
+        raise RuntimeError("crumbling masks did not sample the cog and backdrop")
+    if scene not in ("create-crumbling-damaged", "create-crumbling-restored"):
+        return
+    if not clean or proof.get("fixture_generation") != clean.get("fixture_generation") or not proof.get("fixture_unchanged") or not proof.get("camera_unchanged"):
+        raise RuntimeError("crumbling comparison changed its base fixture or camera")
+    measurement = proof.get("measurement", {})
+    required = ("samples", "darkenedPixels", "brightenedPixels", "unchangedPixels", "meanDarkening", "darkeningEnergy",
+                "brighteningEnergy", "meanAbsoluteChange", "changedFraction", "backgroundDrift", "backgroundResidual")
+    if any(not isinstance(measurement.get(key), (int, float)) or not math.isfinite(measurement[key]) for key in required):
+        raise RuntimeError("missing or invalid localized crumbling measurement")
+    samples = measurement["samples"]
+    if samples != proof["face_samples"] or any(measurement[key] < 0 for key in ("darkenedPixels", "brightenedPixels", "unchangedPixels", "darkeningEnergy", "brighteningEnergy", "meanAbsoluteChange", "changedFraction", "backgroundResidual")):
+        raise RuntimeError("invalid crumbling sample counts or energies")
+    if abs(measurement["backgroundDrift"]) > 1 or measurement["backgroundResidual"] > 1:
+        raise RuntimeError("crumbling backdrop changed independently of damage")
+    if scene == "create-crumbling-damaged":
+        if measurement["meanDarkening"] <= 0.5 or measurement["darkenedPixels"] < max(20, samples * 0.02) or measurement["unchangedPixels"] < samples * 0.05 or measurement["darkeningEnergy"] <= 2 * measurement["brighteningEnergy"]:
+            raise RuntimeError("cog damage did not show localized directional darkening")
+    elif measurement["meanAbsoluteChange"] > 1 or measurement["changedFraction"] > 0.01:
+        raise RuntimeError("cog did not return to its clean image after damage cleared")
+
+
 def validate_shader_evidence(renderer: str, render_mode: str = "normal", gl_context: str = "default") -> None:
     """A green screenshot alone cannot establish active-shader compatibility."""
     fixture_path = RESULT_DIR / "fixture.json"
     fixture = json.loads(fixture_path.read_text()) if fixture_path.is_file() else {"name": FIXTURE_NAME, "diagnostic_fixture": True}
+    if fixture.get("shadow_fixture"):
+        from shadow_evidence import validate_shadow_evidence
+        validate_shadow_evidence(RESULT_DIR, renderer)
+        return
     path = RESULT_DIR / "runtime-evidence.json"
     if not path.is_file():
         raise RuntimeError("missing runtime shader/renderer evidence")
@@ -562,8 +597,11 @@ def validate_shader_evidence(renderer: str, render_mode: str = "normal", gl_cont
     dimensions = {check["phase"]: (check.get("width"), check.get("height")) for check in phases if check.get("scene") == "solid-clipped"}
     if dimensions.get("before-reload") == dimensions.get("after-reload"):
         raise RuntimeError("framebuffer resize was not observed after reload")
+    clean_cogs = {check["phase"]: check.get("crumbling_oracle", {}) for check in phases if check.get("scene") == "create-crumbling-clean"}
     for check in phases:
         scene = check.get("scene", "")
+        if scene.startswith("create-crumbling-"):
+            validate_crumbling_evidence(check, clean_cogs.get(check["phase"]))
         if renderer in ACTIVE_RENDERERS and not fixture.get("diagnostic_fixture", True) and scene != "crossing":
             witness = check.get("reference_witness", {})
             reference = witness.get("reference_scene")
@@ -600,7 +638,10 @@ def validate_shader_evidence(renderer: str, render_mode: str = "normal", gl_cont
                     raise RuntimeError("wrong same-pack comparison expectation")
                 if expected_match and (witness.get("actual_brightness", 0) <= 2.0 or error > 4.0 or fraction > 0.01):
                     raise RuntimeError("clipped real-pack view did not match its unobstructed background")
-                if not expected_match and (error < 2.0 or fraction < 0.10):
+                # Each counted pixel has summed RGB delta >12. Do not dilute that
+                # local contrast a second time by averaging over unchanged backdrop.
+                if not expected_match and (witness.get("actual_brightness", 0) <= 2.0
+                                           or fraction < 0.10 or error + 1e-9 < fraction * 13 / 3):
                     raise RuntimeError("visible real-pack geometry did not differ from its background")
         if renderer in ACTIVE_RENDERERS and not fixture.get("diagnostic_fixture", True) and scene == "crossing":
             witness = check.get("reference_witness", {})
@@ -638,11 +679,26 @@ def validate_shader_evidence(renderer: str, render_mode: str = "normal", gl_cont
                 raise RuntimeError("live Flywheel context accessors/restoration were not verified")
         if scene in ("create-visible", "create-nested") and (check.get("create_motion_changed_pixels", 0) <= 20 or not check.get("create_server_motion")):
             raise RuntimeError("destination Create rotor motion was not verified")
-        if scene == "create-nested" and (check.get("flywheel", {}).get("nestedContextsRestored", 0) <= 0
-                                         or check.get("nested_contexts_restored_this_scene", 0) <= 0):
-            raise RuntimeError("same-dimension nested Flywheel context was not restored")
-        if scene == "create-crumbling-damaged" and (check.get("crumbling_changed_pixels", 0) <= 20 or check.get("crumbling_darkening", 0) <= 0.5):
-            raise RuntimeError("crumbling overlay was not visible against the stationary clean control")
+        if scene == "create-nested":
+            flywheel = check.get("flywheel", {})
+            deferred = check.get("renderer") in {"IrisPortalRenderer", "IrisCompatibilityPortalRenderer"}
+            mode = "deferred-null-view" if deferred else "overlapping-live-context"
+            if check.get("nested_context_verification") != mode:
+                raise RuntimeError("Flywheel nested context evidence does not match the actual portal renderer")
+            if deferred:
+                witness = flywheel.get("viewContextWitness", {})
+                view_deltas = check.get("nested_view_contexts_this_scene", {})
+                views = view_deltas.get("sameRendererViewsVerified", 0)
+                keys = ("sameRendererViewsVerified", "nullContextsVerified", "nonNullContextsVerified", "fallbackScopesVerified")
+                if (witness.get("observedViews", 0) <= 0 or witness.get("openViews") != 0 or views <= 0
+                        or view_deltas.get("nullContextsVerified") != views or view_deltas.get("nonNullContextsVerified") != 0
+                        or view_deltas.get("fallbackScopesVerified") != views
+                        or any(not isinstance(view_deltas.get(key), int) or view_deltas[key] < 0
+                               or view_deltas[key] > witness.get(key, -1) for key in keys)):
+                    raise RuntimeError("deferred same-renderer Flywheel context/scope restoration was not verified")
+            elif (flywheel.get("nestedContextsRestored", 0) <= 0
+                  or check.get("nested_contexts_restored_this_scene", 0) <= 0):
+                raise RuntimeError("same-dimension nested Flywheel context was not restored")
         image = RESULT_DIR / check["screenshot"]
         if not image.is_file() or image.stat().st_size == 0:
             raise RuntimeError(f"missing screenshot: {image.name}")
@@ -1035,18 +1091,18 @@ def validate_metrics(samples: int) -> None:
 def run_e2e(smoke: bool = False, renderer: str = "sodium", sable: bool = True, samples: int = 200,
             negative_control: str = "none", flywheel_backend: str = "default", render_mode: str = "normal",
             disable_copy_image: bool = False, shaderpack_file: Path | None = None, shaderpack_profile: str | None = None,
-            gl_context: str = "default") -> None:
+            gl_context: str = "default", shadow_fixture: bool = False) -> None:
     print(f"[verify] {'visual ' + renderer if smoke else 'e2e'}: dedicated server + automated graphical client", flush=True)
     run_deadline = visual_run_deadline() if smoke else None
     env = prepare_e2e()
     if smoke:
-        env.update(IP_SABLE_E2E="false", IP_PORTAL_SMOKE="true", IP_SMOKE_RENDERER=renderer,
+        env.update(IP_SABLE_E2E="false", IP_PORTAL_SMOKE="true", IP_SHADOW_SMOKE=str(shadow_fixture).lower(), IP_SMOKE_RENDERER=renderer,
                    IP_SMOKE_SABLE=str(sable).lower(), IP_SMOKE_SAMPLES=str(samples),
                    IP_SMOKE_NEGATIVE_CONTROL=negative_control, IP_SMOKE_FLYWHEEL_BACKEND=flywheel_backend,
                    IP_SMOKE_RENDER_MODE=render_mode, IP_SMOKE_DISABLE_COPY_IMAGE=str(disable_copy_image).lower(), IP_SMOKE_GL_CONTEXT=gl_context)
         if gl_context == "no-copy-image":
             env.update(MESA_GL_VERSION_OVERRIDE="3.3", MESA_EXTENSION_OVERRIDE="-GL_ARB_copy_image")
-        fixture = stage_shader_fixture(renderer, negative_control, shaderpack_file, shaderpack_profile)
+        fixture = stage_shader_fixture(renderer, negative_control, shaderpack_file, shaderpack_profile, shadow_fixture)
         env.update(IP_SMOKE_SHADERPACK_NAME=fixture["name"],
                    IP_SMOKE_DIAGNOSTIC_FIXTURE=str(fixture["diagnostic_fixture"]).lower())
         (CLIENT_DIR / "config" / "flywheel-client.toml").write_text(
@@ -1095,7 +1151,7 @@ def run_e2e(smoke: bool = False, renderer: str = "sodium", sable: bool = True, s
 
         client, client_log = launch_graphical_client(client_command, env, creation)
         try:
-            timeout = visual_timeout(renderer, samples, render_mode, fixture["diagnostic_fixture"]) if smoke else 300
+            timeout = (1800 if shadow_fixture else visual_timeout(renderer, samples, render_mode, fixture["diagnostic_fixture"])) if smoke else 300
             if smoke:
                 timeout = min(timeout, max(0, run_deadline - time.monotonic() - VISUAL_CLEANUP_SECONDS))
                 print(f"[verify] Graphical client budget: {timeout:.0f}s; bounded by 120-minute job with diagnostics/cleanup reserve", flush=True)
@@ -1131,12 +1187,14 @@ def run_e2e(smoke: bool = False, renderer: str = "sodium", sable: bool = True, s
 
 def run_visual(renderer: str, sable: bool, samples: int, negative_control: str = "none",
                flywheel_backend: str = "default", render_mode: str = "normal", disable_copy_image: bool = False,
-               shaderpack_file: Path | None = None, shaderpack_profile: str | None = None, gl_context: str = "default") -> None:
+               shaderpack_file: Path | None = None, shaderpack_profile: str | None = None, gl_context: str = "default", shadow_fixture: bool = False) -> None:
     # Keep each matrix member's evidence, including failed runs.
     global RESULT_DIR, SERVER_LOG, CLIENT_LOG
     previous = RESULT_DIR, SERVER_LOG, CLIENT_LOG
     RESULT_DIR = ROOT / "build" / f"portal-visual-{renderer}-{'sable' if sable else 'no-sable'}"
     suffix = f"-{render_mode}-{flywheel_backend}"
+    if shadow_fixture:
+        suffix += "-shadow"
     if gl_context != "default":
         suffix += "-gl33-no-copy-image"
     if disable_copy_image:
@@ -1151,14 +1209,18 @@ def run_visual(renderer: str, sable: bool, samples: int, negative_control: str =
         try:
             run_e2e(smoke=True, renderer=renderer, sable=sable, samples=samples,
                     negative_control=negative_control, flywheel_backend=flywheel_backend,
-                    render_mode=render_mode, disable_copy_image=disable_copy_image, shaderpack_file=shaderpack_file, shaderpack_profile=shaderpack_profile, gl_context=gl_context)
+                    render_mode=render_mode, disable_copy_image=disable_copy_image, shaderpack_file=shaderpack_file, shaderpack_profile=shaderpack_profile, gl_context=gl_context, shadow_fixture=shadow_fixture)
         except RuntimeError:
             failure = RESULT_DIR / "client-fail.txt"
             expected = {"pack-disabled": "SHADER_FIXTURE_NOT_ACTIVE", "clipping-disabled": "PORTAL_PIXELS_MISMATCH: before-reload/solid-clipped",
                         "entity-clipping-disabled": "PORTAL_PIXELS_MISMATCH: before-reload/entity-clipped",
-                        "particle-clipping-disabled": "PORTAL_PIXELS_MISMATCH: before-reload/particle-clipped"}
+                        "particle-clipping-disabled": "PORTAL_PIXELS_MISMATCH: before-reload/particle-clipped",
+                        "shadow-clipping-enabled": "SHADOW_PIXELS_MISMATCH: before-reload/caster"}
             if negative_control == "none" or not failure.is_file() or expected[negative_control] not in failure.read_text():
                 raise
+            if negative_control == "shadow-clipping-enabled":
+                from shadow_evidence import validate_shadow_negative
+                validate_shadow_negative(RESULT_DIR)
             if negative_control in ("entity-clipping-disabled", "particle-clipping-disabled"):
                 target = negative_control.split("-", 1)[0]
                 report = json.loads((RESULT_DIR / "runtime-evidence.json").read_text())
@@ -1179,7 +1241,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Run the canonical Immersive Portals verification suite")
     parser.add_argument("mode", choices=("core", "e2e", "visual", "full", "matrix", "staff"), nargs="?", default="full")
     parser.add_argument("--renderer", choices=RENDERERS, default="sodium")
-    parser.add_argument("--negative-control", choices=("none", "pack-disabled", "clipping-disabled", "entity-clipping-disabled", "particle-clipping-disabled"), default="none")
+    parser.add_argument("--negative-control", choices=("none", "pack-disabled", "clipping-disabled", "entity-clipping-disabled", "particle-clipping-disabled", "shadow-clipping-enabled"), default="none")
     parser.add_argument("--flywheel-backend", choices=("default", "off", "instancing", "indirect"), default="default")
     parser.add_argument("--render-mode", choices=("normal", "compatibility", "debug"), default="normal")
     parser.add_argument("--gl-context", choices=("default", "no-copy-image"), default="default")
@@ -1188,7 +1250,12 @@ def main() -> int:
     parser.add_argument("--shaderpack-file", type=Path, help="Additionally run a user-supplied real-pack ZIP through active shader smoke checks")
     parser.add_argument("--no-sable", action="store_true")
     parser.add_argument("--samples", type=int, default=200)
+    parser.add_argument("--shadow-fixture", action="store_true", help="Run owned actual shadow-map/receiver acceptance instead of ordinary smoke scenes")
     args = parser.parse_args()
+    if args.shadow_fixture and (args.mode != "visual" or args.renderer not in ACTIVE_RENDERERS or args.shaderpack_file is not None or args.render_mode != "normal" or args.negative_control not in ("none", "shadow-clipping-enabled")):
+        parser.error("--shadow-fixture requires normal active-renderer visual mode and its own optional shadow negative")
+    if args.negative_control == "shadow-clipping-enabled" and not args.shadow_fixture:
+        parser.error("shadow negative requires --shadow-fixture")
     if args.negative_control != "none" and (args.mode != "visual" or args.renderer not in ACTIVE_RENDERERS):
         parser.error("negative controls require visual --renderer iris-active or neoculus-active")
     if args.shaderpack_file is not None and (args.mode != "visual" or args.renderer not in ACTIVE_RENDERERS or args.negative_control != "none"):
@@ -1209,7 +1276,7 @@ def main() -> int:
             try:
                 actions = [("core", run_core), ("e2e", run_e2e),
                            ("visual", lambda: run_visual(args.renderer, not args.no_sable, args.samples, args.negative_control,
-                                                         args.flywheel_backend, args.render_mode, args.disable_copy_image, args.shaderpack_file, args.shaderpack_profile, args.gl_context))]
+                                                         args.flywheel_backend, args.render_mode, args.disable_copy_image, args.shaderpack_file, args.shaderpack_profile, args.gl_context, args.shadow_fixture))]
                 if args.mode == "matrix":
                     actions = [(f"visual-{renderer}-{'sable' if sable else 'no-sable'}",
                                 lambda r=renderer, s=sable: run_visual(r, s, args.samples))

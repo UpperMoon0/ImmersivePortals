@@ -51,11 +51,12 @@ class FlywheelPortalFallbackTest {
                     "Entering a portal must not reset a level manager or change the selected backend");
             }
         }
-        assertEquals(1, reads);
+        assertEquals(3, reads, "Read back the restored identity on normal and exceptional exits");
         assertEquals(2, writes, "Context must restore on both normal and exceptional paths");
         assertTrue(invokes(method, "call"));
         assertTrue(invokes(method, "enterWorldRender"), "The stable fallback decision must precede Flywheel's frame dispatch");
         assertTrue(invokes(method, "close"), "View fallback scope must restore on recursive return");
+        assertTrue(invokes(method, "recordContextRestored"), "Count only restoration verified against the live field");
         int enter = -1, render = -1, index = 0;
         for (var instruction : method.instructions) {
             if (instruction instanceof MethodInsnNode call) {
@@ -65,6 +66,19 @@ class FlywheelPortalFallbackTest {
             index++;
         }
         assertTrue(enter >= 0 && enter < render);
+    }
+
+    @Test
+    void contextRestorationCounterRequiresActualIdentityAndNeverCreditsNull() {
+        long before = IPFlywheelCompat.nestedContextsRestored();
+        Object context = new Object();
+        IPFlywheelCompat.recordContextRestored(null, null);
+        assertEquals(before, IPFlywheelCompat.nestedContextsRestored());
+        assertThrows(IllegalStateException.class, () -> IPFlywheelCompat.recordContextRestored(context, new Object()));
+        assertThrows(IllegalStateException.class, () -> IPFlywheelCompat.recordContextRestored(null, context));
+        assertEquals(before, IPFlywheelCompat.nestedContextsRestored());
+        IPFlywheelCompat.recordContextRestored(context, context);
+        assertEquals(before + 1, IPFlywheelCompat.nestedContextsRestored());
     }
 
     @Test

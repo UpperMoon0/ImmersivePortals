@@ -46,4 +46,25 @@ class PortalSmokePixelRegionsTest {
         assertEquals("same", PortalSmokePixelRegions.depthExpectation("mirror-visible"));
         assertEquals("nearer", PortalSmokePixelRegions.depthExpectation("nested-visible"));
     }
+
+    @Test void localizedDarkGeometryKeepsPixelContrastWithoutDilutionByUnchangedBackdrop() {
+        int background = 32 | (40 << 8) | (25 << 16), object = 24 | (26 << 8) | (20 << 16);
+        int[] reference = new int[100], actual = new int[100];
+        java.util.Arrays.fill(reference, background);
+        java.util.Arrays.fill(actual, background);
+        java.util.Arrays.fill(actual, 0, 13, object);
+        var localized = PortalSmokePixelRegions.difference(reference, actual);
+        assertTrue(localized.meanAbsoluteError() < 2.0, "Reproduces both real-pack false failures");
+        assertTrue(localized.visiblyDifferent());
+        assertFalse(localized.matchesBackground(), "The clipped-background threshold is unchanged");
+
+        java.util.Arrays.fill(actual, 0, 13, background);
+        java.util.Arrays.fill(actual, 0, 9, object);
+        assertFalse(PortalSmokePixelRegions.difference(reference, actual).visiblyDifferent(), "Sparse noise is not enough");
+        java.util.Arrays.fill(actual, background + 1);
+        assertFalse(PortalSmokePixelRegions.difference(reference, actual).visiblyDifferent(), "Low contrast noise is not enough");
+        java.util.Arrays.fill(actual, 0);
+        assertFalse(PortalSmokePixelRegions.difference(reference, actual).visiblyDifferent(), "Missing black output is not enough");
+        assertFalse(new PortalSmokePixelRegions.Difference(0, 1, 100, 30).visiblyDifferent(), "Inconsistent evidence is rejected");
+    }
 }

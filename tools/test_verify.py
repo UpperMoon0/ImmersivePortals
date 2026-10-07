@@ -278,7 +278,7 @@ class VerificationHarnessTest(unittest.TestCase):
             self.assertIn("enableShaders=false", (client / "config/oculus.properties").read_text())
 
     def shader_evidence(self, active=True):
-        scenes = {"solid-visible", "solid-clipped", "nested", "create-nested", "mirror", "create-visible", "create-clipped", "create-crumbling-clean", "create-crumbling-damaged", "create-crumbling-clipped"}
+        scenes = {"solid-visible", "solid-clipped", "nested", "create-nested", "mirror", "create-visible", "create-clipped", "create-crumbling-clean", "create-crumbling-damaged", "create-crumbling-restored", "create-crumbling-clipped"}
         phases = ["before-reload", "after-reload"]
         if active:
             phases.append("after-toggle")
@@ -287,8 +287,24 @@ class VerificationHarnessTest(unittest.TestCase):
         checks = [{"phase": phase, "scene": scene, "screenshot": "test.png",
                    "shaders_active": active, "pack": verify.FIXTURE_NAME if active else "",
                    "width": 854 if phase == "before-reload" else 960, "height": 480 if phase == "before-reload" else 640,
-                   "flywheel": {"nestedContextsRestored": 1, "contextAccessorsInstalled": True, "contextClearedAfterFrame": True}, "source_motion_changed_pixels": 100, "create_motion_changed_pixels": 100,
-                   "create_server_motion": True, "nested_contexts_restored_this_scene": 1, "crumbling_changed_pixels": 100, "crumbling_darkening": 10,
+                   "flywheel": {"nestedContextsRestored": 0 if active else 1, "contextAccessorsInstalled": True, "contextClearedAfterFrame": True,
+                                "viewContextWitness": {"observedViews": 4, "openViews": 0, "sameRendererViewsVerified": 1,
+                                    "nullContextsVerified": 1, "nonNullContextsVerified": 0, "fallbackScopesVerified": 1}},
+                   "nested_context_verification": "deferred-null-view" if active else "overlapping-live-context",
+                   "nested_view_contexts_this_scene": {"sameRendererViewsVerified": 1, "nullContextsVerified": 1,
+                                                      "nonNullContextsVerified": 0, "fallbackScopesVerified": 1},
+                   "source_motion_changed_pixels": 100, "create_motion_changed_pixels": 100,
+                   "create_server_motion": True, "nested_contexts_restored_this_scene": 0 if active else 1, "crumbling_changed_pixels": 100, "crumbling_darkening": 10,
+                   "crumbling_oracle": {"stage": 9 if scene in ("create-crumbling-damaged", "create-crumbling-clipped") else -1,
+                       "client_stage": 9 if scene in ("create-crumbling-damaged", "create-crumbling-clipped") else -1,
+                       "position": [0, 82, 3 if scene.endswith("-clipped") else -1], "block": "create:large_cogwheel",
+                       "packet_sent": True, "face_samples": 1000, "background_samples": 1000, "fixture_generation": 1,
+                       "fixture_unchanged": True, "camera_unchanged": True,
+                       "measurement": {"samples": 1000, "darkenedPixels": 200 if scene == "create-crumbling-damaged" else 0,
+                           "brightenedPixels": 0, "unchangedPixels": 800, "meanDarkening": 2 if scene == "create-crumbling-damaged" else 0,
+                           "darkeningEnergy": 2000 if scene == "create-crumbling-damaged" else 0, "brighteningEnergy": 0,
+                           "meanAbsoluteChange": 2 if scene == "create-crumbling-damaged" else 0,
+                           "changedFraction": 0.2 if scene == "create-crumbling-damaged" else 0, "backgroundDrift": 0, "backgroundResidual": 0}},
                    "shader_path": {"sourceByDrawName": {"entities_cutout_diffuse": "gbuffers_entities", "particles": "gbuffers_particles"},
                                    "selectedProgramCounts": {"VANILLA:entities_cutout_diffuse": 1, "VANILLA:particles": 1},
                                    "completedDrawCounts": {"entities_cutout_diffuse": {"portalWithUniform": 1}, "particles": {"portalWithUniform": 1}}},
@@ -432,6 +448,7 @@ class VerificationHarnessTest(unittest.TestCase):
     def real_pack_evidence(self):
         report = self.shader_evidence()
         template = report["checks"][0]
+        original_checks = {check["scene"]: check for check in report["checks"]}
         checks = []
         for phase in ("before-reload", "after-reload", "after-toggle"):
             for scene in verify.visual_scene_names("iris-active", "normal", False):
@@ -456,6 +473,8 @@ class VerificationHarnessTest(unittest.TestCase):
                            "closest_view_distance": backdrop if expectation == "same" else backdrop - 3,
                            "background_view_distance": backdrop}
                 check["reference_witness"] = witness
+                if scene.startswith("create-crumbling-"):
+                    check["crumbling_oracle"] = original_checks[scene]["crumbling_oracle"]
                 checks.append(check)
         checks.append(template | {"phase": "after-crossing", "scene": "crossing", "reference_witness": {
             "crossing_palette": True, "background_color": [37, 17, 4], "visible_color": [51, 5, 4], "actual_color": [60, 160, 20],
@@ -491,6 +510,21 @@ class VerificationHarnessTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "crossing pixels"):
                 verify.validate_shader_evidence("iris-active")
 
+    def test_localized_real_pack_geometry_uses_pixel_contrast_and_depth_not_diluted_global_error(self):
+        report = self.real_pack_evidence()
+        check = next(check for check in report["checks"] if check["scene"] == "create-nested")
+        check["reference_witness"].update(mean_absolute_error=1.116, changed_fraction=0.131)
+        self.write_shader_evidence(report)
+        verify.validate_shader_evidence("iris-active")
+        for key, value in (("changed_fraction", 0.09), ("mean_absolute_error", 0),
+                           ("actual_brightness", 0), ("closest_view_distance", 8)):
+            with self.subTest(key=key):
+                bad = json.loads(json.dumps(report))
+                next(check for check in bad["checks"] if check["scene"] == "create-nested")["reference_witness"][key] = value
+                self.write_shader_evidence(bad)
+                with self.assertRaises(RuntimeError):
+                    verify.validate_shader_evidence("iris-active")
+
     def test_real_pack_reference_scenes_are_added_without_changing_fixture_scope(self):
         fixture = verify.visual_scene_names("iris-active", "normal", True)
         real = verify.visual_scene_names("iris-active", "normal", False)
@@ -506,6 +540,28 @@ class VerificationHarnessTest(unittest.TestCase):
         self.assertEqual(makeup["profile"], "shadowless_high")
         self.assertEqual(verify.pinned_shaderpack_profile(makeup["sha256"]), "shadowless_high")
         self.assertIsNone(verify.pinned_shaderpack_profile("0" * 64))
+
+    def test_crumbling_requires_packet_stage_static_fixture_and_directional_cracks(self):
+        good = self.shader_evidence()
+        clean = next(check for check in good["checks"] if check["scene"] == "create-crumbling-clean")["crumbling_oracle"]
+        damaged = next(check for check in good["checks"] if check["scene"] == "create-crumbling-damaged")
+        verify.validate_crumbling_evidence(damaged, clean)
+        for key, value in (("client_stage", -1), ("fixture_generation", 2), ("fixture_unchanged", False), ("camera_unchanged", False)):
+            bad = json.loads(json.dumps(damaged))
+            bad["crumbling_oracle"][key] = value
+            with self.assertRaises(RuntimeError):
+                verify.validate_crumbling_evidence(bad, clean)
+        for key, value in (("meanDarkening", 0.3), ("brighteningEnergy", 2000), ("darkenedPixels", 0),
+                           ("backgroundDrift", 10), ("backgroundResidual", 10)):
+            bad = json.loads(json.dumps(damaged))
+            bad["crumbling_oracle"]["measurement"][key] = value
+            with self.assertRaises(RuntimeError):
+                verify.validate_crumbling_evidence(bad, clean)
+        restored = next(check for check in good["checks"] if check["scene"] == "create-crumbling-restored")
+        verify.validate_crumbling_evidence(restored, clean)
+        restored["crumbling_oracle"]["measurement"]["changedFraction"] = 0.2
+        with self.assertRaisesRegex(RuntimeError, "clean image"):
+            verify.validate_crumbling_evidence(restored, clean)
 
     def test_pack_profiles_use_declared_values_and_reject_unknown_or_cyclic_presets(self):
         properties = "profile.low = !SHADOWS QUALITY=0 DEPTH:0.5\nprofile.high = profile.low SHADOWS QUALITY=2\n"
@@ -538,15 +594,49 @@ class VerificationHarnessTest(unittest.TestCase):
         for scene, key, value in (("create-visible", "source_motion_changed_pixels", 0),
                                   ("create-visible", "create_motion_changed_pixels", 0),
                                   ("create-visible", "create_server_motion", False),
-                                  ("create-crumbling-damaged", "crumbling_changed_pixels", 0),
-                                  ("create-crumbling-damaged", "crumbling_darkening", 0),
-                                  ("create-nested", "nested_contexts_restored_this_scene", 0)):
+                                  ("create-nested", "nested_context_verification", "overlapping-live-context")):
             with self.subTest(scene=scene, key=key):
                 report = self.shader_evidence()
                 next(check for check in report["checks"] if check["scene"] == scene)[key] = value
                 self.write_shader_evidence(report)
                 with self.assertRaises(RuntimeError):
                     verify.validate_shader_evidence("iris-active")
+
+    def test_deferred_flywheel_null_context_requires_fresh_same_renderer_and_scope_evidence(self):
+        for target, key, value in (("scene", "sameRendererViewsVerified", 0),
+                                    ("scene", "nullContextsVerified", 0),
+                                    ("scene", "nonNullContextsVerified", 1),
+                                    ("scene", "fallbackScopesVerified", 0),
+                                    ("total", "observedViews", 0),
+                                    ("total", "openViews", 1),
+                                    ("total", "sameRendererViewsVerified", 0)):
+            with self.subTest(target=target, key=key):
+                report = self.shader_evidence()
+                check = next(check for check in report["checks"] if check["scene"] == "create-nested")
+                evidence = check["nested_view_contexts_this_scene"] if target == "scene" else check["flywheel"]["viewContextWitness"]
+                evidence[key] = value
+                self.write_shader_evidence(report)
+                with self.assertRaisesRegex(RuntimeError, "deferred same-renderer"):
+                    verify.validate_shader_evidence("neoculus-active")
+
+    def test_backend_off_does_not_bypass_deferred_flywheel_context_witness(self):
+        report = self.shader_evidence()
+        check = next(check for check in report["checks"] if check["scene"] == "create-nested")
+        check["flywheel"].update({"actual": "flywheel:off", "backendOn": False})
+        self.write_shader_evidence(report)
+        verify.validate_shader_evidence("neoculus-active")
+        check.pop("nested_view_contexts_this_scene")
+        self.write_shader_evidence(report)
+        with self.assertRaisesRegex(RuntimeError, "deferred same-renderer"):
+            verify.validate_shader_evidence("neoculus-active")
+
+    def test_stencil_flywheel_still_requires_non_null_context_restoration(self):
+        report = self.shader_evidence(active=False)
+        check = next(check for check in report["checks"] if check["scene"] == "create-nested")
+        check["nested_contexts_restored_this_scene"] = 0
+        self.write_shader_evidence(report)
+        with self.assertRaisesRegex(RuntimeError, "same-dimension nested"):
+            verify.validate_shader_evidence("sodium")
 
     def test_framebuffer_evidence_requires_both_paths_and_actual_values(self):
         for key, value in (("color", [0, 0, 0, 0]), ("depth", float("nan")),

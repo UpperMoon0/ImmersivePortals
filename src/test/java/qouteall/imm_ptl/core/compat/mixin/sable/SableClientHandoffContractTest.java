@@ -16,6 +16,35 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class SableClientHandoffContractTest {
     @Test
+    void diagnosticSnapshotCorrelatesBothInitiationOrdersWithoutChangingTheHandshake() throws Exception {
+        ClassNode handoff = readClass("qouteall/imm_ptl/core/compat/sable/SableServerFirstClientHandoff.class");
+        assertTrue(invokesNamed(findMethodByName(handoff, "begin"), "captureRider"));
+        assertTrue(invokesNamed(findMethodByName(handoff, "prepareServerInitiated"), "captureRider"));
+        MethodNode snapshot = findMethodByName(handoff, "getActiveHandoffSnapshot");
+        assertNotNull(snapshot);
+        assertTrue(invokesNamed(snapshot, "vehicleId"));
+        assertTrue(invokesNamed(snapshot, "sourceDimension"));
+        assertTrue(invokesNamed(snapshot, "destinationDimension"));
+        assertTrue(invokesNamed(snapshot, "handoffId"));
+        for (var instruction : snapshot.instructions) {
+            if (instruction instanceof FieldInsnNode field) {
+                assertTrue(field.getOpcode() != Opcodes.PUTSTATIC && field.getOpcode() != Opcodes.PUTFIELD,
+                    "Diagnostics must not mutate production handoff state");
+            }
+        }
+        ClassNode observer = readClass("qouteall/imm_ptl/core/gametest/sablee2e/SableDimensionStackDedicatedClientTest.class");
+        MethodNode gate = findMethodByName(observer, "verifyDetachedHandoffWindow");
+        assertTrue(invokesNamed(gate, "getActiveHandoffSnapshot"));
+        assertTrue(invokesNamed(gate, "matchesHandoff"));
+        assertTrue(invokesNamed(gate, "verifySourceSeat"));
+        assertTrue(invokesNamed(gate, "hasSubLevel"));
+        assertTrue(!invokesNamed(gate, "hasActiveServerInitiatedHandoff"),
+            "The observer must recognize correlated client-request-first handoffs too");
+        assertTrue(invokesNamed(findMethodByName(observer, "verifyContinuousClientOwnership"),
+            "verifyBodyRemainsSpatiallyContinuous"), "Settled spatial continuity remains mandatory");
+    }
+
+    @Test
     void deferredCameraTransformUsesPrePacketStateInBothOrderings() throws Exception {
         ClassNode handoff = readClass(
             "qouteall/imm_ptl/core/compat/sable/SableServerFirstClientHandoff.class"

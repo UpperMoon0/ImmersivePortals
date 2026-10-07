@@ -45,7 +45,7 @@ public final class SableServerFirstClientHandoff {
             portal.getDestDim(), portal.getRotation(), portal.getTeleportChangesGravity()
         );
         pending = new Pending(handoffId, portal.getUUID(), null, interpolationTransform,
-            TransformationManager.capturePlayerRotationContext(), player.getXRot(), player.getYRot());
+            TransformationManager.capturePlayerRotationContext(), player.getXRot(), player.getYRot(), captureRider(player));
         return handoffId;
     }
 
@@ -76,7 +76,8 @@ public final class SableServerFirstClientHandoff {
             transform,
             TransformationManager.capturePlayerRotationContext(),
             player.getXRot(),
-            player.getYRot()
+            player.getYRot(),
+            captureRider(player)
         );
     }
 
@@ -117,6 +118,30 @@ public final class SableServerFirstClientHandoff {
         Pending current = pending;
         return (current != null && current.serverTransform() != null) || readyToApply != null;
     }
+    /** Read-only correlated lifecycle state for diagnostics and integration assertions. */
+    public static @Nullable HandoffSnapshot getActiveHandoffSnapshot() {
+        Pending current = pending;
+        if (current != null) {
+            return new HandoffSnapshot(current.handoffId(), current.rider().vehicleId(),
+                current.rider().sourceDimension(), current.interpolationTransform().destinationDimension(),
+                current.serverTransform() != null, "awaiting-authoritative-ack");
+        }
+        ReadyToApply ready = readyToApply;
+        return ready == null ? null : new HandoffSnapshot(ready.handoffId(), ready.rider().vehicleId(),
+            ready.rider().sourceDimension(), ready.destinationDimension(), ready.serverInitiated(),
+            "awaiting-destination-seat");
+    }
+
+    private static RiderIdentity captureRider(LocalPlayer player) {
+        return new RiderIdentity(player.getVehicle() == null ? null : player.getVehicle().getUUID(),
+            player.level().dimension());
+    }
+
+    public record HandoffSnapshot(
+        UUID handoffId, @Nullable UUID vehicleId, ResourceKey<Level> sourceDimension,
+        ResourceKey<Level> destinationDimension, boolean serverInitiated, String phase
+    ) {}
+
     /**
      * Apply the normal IP camera/gravity transform only for the one handoff id currently pending.
      * Server-initiated Acks are accepted only if their Prepare packet established the same id
@@ -174,7 +199,7 @@ public final class SableServerFirstClientHandoff {
         // Wait for the destination seat relation, then restore the pre-packet local look exactly.
         readyToApply = new ReadyToApply(
             handoffId, destinationDimension, rotation, teleportChangesGravity,
-            expected.rotationContext(), expected.localPitch(), expected.localYaw(), 0
+            expected.rotationContext(), expected.localPitch(), expected.localYaw(), expected.rider(), serverInitiated, 0
         );
         tryApplyReady(player);
     }
@@ -274,7 +299,8 @@ public final class SableServerFirstClientHandoff {
         PreparedTransform interpolationTransform,
         TransformationManager.PlayerRotationContext rotationContext,
         float localPitch,
-        float localYaw
+        float localYaw,
+        RiderIdentity rider
     ) {}
 
     private record ReadyToApply(
@@ -285,15 +311,19 @@ public final class SableServerFirstClientHandoff {
         TransformationManager.PlayerRotationContext rotationContext,
         float localPitch,
         float localYaw,
+        RiderIdentity rider,
+        boolean serverInitiated,
         int waitTicks
     ) {
         ReadyToApply withWaitTicks(int ticks) {
             return new ReadyToApply(
                 handoffId, destinationDimension, rotation, teleportChangesGravity,
-                rotationContext, localPitch, localYaw, ticks
+                rotationContext, localPitch, localYaw, rider, serverInitiated, ticks
             );
         }
     }
+
+    private record RiderIdentity(@Nullable UUID vehicleId, ResourceKey<Level> sourceDimension) {}
 
     private record PreparedTransform(
         ResourceKey<Level> destinationDimension,

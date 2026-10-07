@@ -33,6 +33,8 @@ configs:
       - rendertype_entity_translucent_cull
       - portal_area
       - particle
+      # Damage-overlay vertices are already camera-relative, like entity vertices.
+      - rendertype_crumbling
     transformations:
       - pattern: |-
           void ( )*main( )*\(( )*( )*\)( )*(

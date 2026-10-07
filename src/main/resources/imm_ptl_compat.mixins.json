@@ -51,6 +51,7 @@
     "sable.MixinClientboundStartTrackingSubLevelPacket_SablePortalCompat",
     "sable.MixinSableClientPacketContext_SablePortalCompat",
     "sodium.IESodiumWorldRenderer",
+    "sodium.MixinSodiumDefaultChunkRenderer",
     "sodium.MixinSodiumDefaultShaderInterface",
     "sodium.MixinSodiumFlawlessFrames",
     "sodium.MixinSodiumOcclusionCuller",

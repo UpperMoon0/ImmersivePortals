@@ -7,7 +7,7 @@ import java.util.List;
 import java.util.Map;
 
 final class PortalSmokeSupport {
-    static boolean enabled() { return "true".equals(System.getenv("IP_PORTAL_SMOKE")); }
+    static boolean enabled() { return "true".equals(System.getenv("IP_PORTAL_SMOKE")) && !"true".equals(System.getenv("IP_SHADOW_SMOKE")); }
     static Path directory() { return Path.of(System.getenv("IP_SABLE_E2E_RESULT_DIR")); }
     static boolean exists(String name) { return Files.isRegularFile(directory().resolve(name)); }
     static String read(String name) {
@@ -40,7 +40,7 @@ final class PortalSmokeSupport {
         result.add("mirror");
         if (references) result.add("create-background");
         result.addAll(List.of("create-visible", "create-clipped",
-            "create-crumbling-clean", "create-crumbling-damaged", "create-crumbling-clipped"));
+            "create-crumbling-clean", "create-crumbling-damaged", "create-crumbling-restored", "create-crumbling-clipped"));
         return result;
     }
     static int samples() { return Integer.parseInt(System.getenv().getOrDefault("IP_SMOKE_SAMPLES", "200")); }

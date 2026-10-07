@@ -32,6 +32,10 @@ import qouteall.imm_ptl.core.IPGlobal;
 import qouteall.imm_ptl.core.compat.iris_compatibility.IrisInterface;
 import qouteall.imm_ptl.core.render.context_management.RenderStates;
 import java.util.ArrayList;
+import java.util.Arrays;
+import net.minecraft.core.BlockPos;
+import net.minecraft.client.renderer.LevelRenderer;
+import net.minecraft.server.level.BlockDestructionProgress;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -49,9 +53,17 @@ public final class PortalSmokeClient {
     private static CompletableFuture<Void> reload;
     private static long frameStart;
     private static long nestedContextBaseline;
+    private static Map<String, Long> nestedViewBaseline = Map.of();
+    private static final List<String> NESTED_VIEW_COUNTERS = List.of(
+        "sameRendererViewsVerified", "nullContextsVerified", "nonNullContextsVerified", "fallbackScopesVerified");
     private static int[] previousCreatePixels;
     private static int[] previousSourcePixels;
     private static int[] crumblingBaseline;
+    private static int[] crumblingBackgroundBaseline;
+    private static long crumblingGeneration;
+    private static double[] crumblingCamera;
+    private static PortalSmokeCrumblingOracle.Measurement crumblingMeasurement;
+    private static Map<String, Object> crumblingEvidence = Map.of();
     private static int createMotionPixels, sourceMotionPixels, crumblingChangedPixels;
     private static double crumblingDarkening;
     private static double closestGeometryDistance = Double.POSITIVE_INFINITY;
@@ -161,6 +173,7 @@ public final class PortalSmokeClient {
                 if (request.endsWith(":create-nested")) {
                     Map<?, ?> flywheel = (Map<?, ?>) runtimeState().get("flywheel");
                     nestedContextBaseline = ((Number) flywheel.get("nestedContextsRestored")).longValue();
+                    nestedViewBaseline = viewContextCounters(flywheel);
                 }
                 return;
             }
@@ -224,6 +237,8 @@ public final class PortalSmokeClient {
         closestGeometryDistance = Double.POSITIVE_INFINITY;
         createMotionPixels = sourceMotionPixels = crumblingChangedPixels = 0;
         crumblingDarkening = 0;
+        crumblingMeasurement = null;
+        crumblingEvidence = Map.of();
         if (PortalSmokeSupport.scenes().get(sceneIndex).equals("create-crumbling-clean")) crumblingBaseline = null;
         previousCreateAngle = Double.NaN;
         createServerMotion = false;
@@ -255,13 +270,9 @@ public final class PortalSmokeClient {
                 int[] targetRegion = region(pixels, 0.38, 0.18, 0.64, 0.78);
                 createMotionPixels += changes(previousCreatePixels, targetRegion);
                 previousCreatePixels = targetRegion;
-                if (scene.equals("create-crumbling-clean")) crumblingBaseline = targetRegion;
-                if (scene.equals("create-crumbling-damaged") && crumblingBaseline != null) {
-                    crumblingChangedPixels = changes(crumblingBaseline, targetRegion);
-                    crumblingDarkening = meanBrightness(crumblingBaseline) - meanBrightness(targetRegion);
-                }
+                if (crumbling) observeCrumbling(pixels, scene);
             }
-            boolean positive = scene.endsWith("-visible") || scene.equals("create-nested") || scene.equals("create-crumbling-clean") || scene.equals("create-crumbling-damaged");
+            boolean positive = scene.endsWith("-visible") || scene.equals("create-nested") || scene.equals("create-crumbling-clean") || scene.equals("create-crumbling-damaged") || scene.equals("create-crumbling-restored");
             // Visible controls establish that each geometry path really draws in this camera.
             // Create uses its own textures; shader fixture programs for other paths output diagnostic red.
             boolean colors = positive ? (scene.startsWith("create-") ? green < total * 0.97 : red > total * 0.02)
@@ -375,7 +386,8 @@ public final class PortalSmokeClient {
                 && (!(scene.startsWith("nested") || scene.startsWith("create-nested")) || layers >= 2)
                 && (!scene.startsWith("create-") || !requiresSourcePixels() || sourceMotionPixels > 20)
                 && (!(scene.equals("create-visible") || scene.equals("create-nested")) || (createMotionPixels > 20 && createServerMotion))
-                && (!scene.equals("create-crumbling-damaged") || (crumblingChangedPixels > 20 && crumblingDarkening > 0.5));
+                && (!scene.equals("create-crumbling-damaged") || crumblingMeasurement != null && crumblingMeasurement.showsDamage())
+                && (!scene.equals("create-crumbling-restored") || crumblingMeasurement != null && crumblingMeasurement.restored());
             String screenshot = phase + "-" + scene + ".png";
             pixels.writeToFile(PortalSmokeSupport.directory().resolve(screenshot));
             stableFrames = colors && geometry ? stableFrames + 1 : 0;
@@ -383,7 +395,7 @@ public final class PortalSmokeClient {
                 + " green=" + green + "/" + total + " red=" + red + " layers=" + layers
                 + " targetMotion=" + createMotionPixels + " sourceMotion=" + sourceMotionPixels
                 + " crumblingChanges=" + crumblingChangedPixels + " darkening=" + crumblingDarkening
-                + " straddling=" + fragmentWitness + " reference=" + referenceWitness);
+                + " straddling=" + fragmentWitness + " reference=" + referenceWitness + " crumbling=" + crumblingEvidence);
             if (stableFrames < 3 && requirePortal) return false;
             if (!colors) throw new IllegalStateException("PORTAL_PIXELS_MISMATCH after crossing");
             int glError = GL11.glGetError();
@@ -403,13 +415,28 @@ public final class PortalSmokeClient {
             check.put("source_motion_region", List.of(0.82, 0.22, 0.98, 0.78));
             check.put("crumbling_changed_pixels", crumblingChangedPixels);
             check.put("crumbling_darkening", crumblingDarkening);
+            check.put("crumbling_oracle", crumblingEvidence);
             if (scene.startsWith("create-")) {
                 verifyFlywheel(check.get("flywheel"));
                 if (scene.equals("create-nested")) {
                     Map<?, ?> flywheel = (Map<?, ?>) check.get("flywheel");
                     long restored = ((Number) flywheel.get("nestedContextsRestored")).longValue() - nestedContextBaseline;
-                    require(restored > 0, "Same-dimension nested Flywheel context restoration never ran in this scene");
                     check.put("nested_contexts_restored_this_scene", restored);
+                    boolean deferred = check.get("renderer").equals("IrisPortalRenderer")
+                        || check.get("renderer").equals("IrisCompatibilityPortalRenderer");
+                    check.put("nested_context_verification", deferred ? "deferred-null-view" : "overlapping-live-context");
+                    if (deferred) {
+                        Map<String, Long> observed = new LinkedHashMap<>(viewContextCounters(flywheel));
+                        observed.replaceAll((key, value) -> value - nestedViewBaseline.get(key));
+                        long views = observed.get("sameRendererViewsVerified");
+                        require(views > 0 && observed.get("nullContextsVerified") == views
+                            && observed.get("nonNullContextsVerified") == 0
+                            && observed.get("fallbackScopesVerified") == views,
+                            "Deferred same-renderer Flywheel context/scope restoration was not verified in this scene: " + observed);
+                        check.put("nested_view_contexts_this_scene", observed);
+                    } else {
+                        require(restored > 0, "Same-dimension nested Flywheel context restoration never ran in this scene");
+                    }
                 }
                 check.put("create_server", createServerEvidence);
                 check.put("create_server_motion", createServerMotion);
@@ -418,6 +445,73 @@ public final class PortalSmokeClient {
             saveEvidence();
             return true;
         }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static void observeCrumbling(NativeImage image, String scene) throws ReflectiveOperationException {
+        Minecraft mc = Minecraft.getInstance();
+        Map<String, Object> control = (Map<String, Object>) createServerEvidence.get("crumbling_control");
+        int expectedStage = scene.equals("create-crumbling-damaged") || scene.equals("create-crumbling-clipped") ? 9 : -1;
+        int z = scene.endsWith("-clipped") ? 3 : -1;
+        require(control != null && ((Number) control.get("stage")).intValue() == expectedStage
+            && Boolean.TRUE.equals(control.get("packet_sent"))
+            && mc.player.getUUID().toString().equals(control.get("observer"))
+            && "create:large_cogwheel".equals(control.get("block")), "Wrong server damage control: " + control);
+        List<Number> position = (List<Number>) control.get("position");
+        require(position.get(0).intValue() == 0 && position.get(1).intValue() == 82 && position.get(2).intValue() == z,
+            "Damage packet targeted the wrong cog: " + position);
+        var field = LevelRenderer.class.getDeclaredField("destroyingBlocks");
+        field.setAccessible(true);
+        Map<?, ?> damage = (Map<?, ?>) field.get(ClientWorldLoader.getWorldRenderer(Level.NETHER));
+        Object progress = damage.get(78231);
+        int actualStage = progress instanceof BlockDestructionProgress block ? block.getProgress() : -1;
+        require(actualStage == expectedStage && (actualStage == -1
+            || ((BlockDestructionProgress) progress).getPos().equals(new BlockPos(0, 82, z))),
+            "Client did not observe the expected cog damage stage: " + actualStage);
+        long generation = ((Number) control.get("fixture_generation")).longValue();
+        Vec3 camera = mc.gameRenderer.getMainCamera().getPosition();
+        double[] pose = {camera.x, camera.y, camera.z, mc.gameRenderer.getMainCamera().getYRot(), mc.gameRenderer.getMainCamera().getXRot()};
+        int[] face = cogMask(image, false), background = cogMask(image, true);
+        if (scene.equals("create-crumbling-clean")) {
+            crumblingBaseline = face;
+            crumblingBackgroundBaseline = background;
+            crumblingGeneration = generation;
+            crumblingCamera = pose;
+        }
+        boolean followsBaseline = scene.equals("create-crumbling-damaged") || scene.equals("create-crumbling-restored");
+        boolean sameCamera = crumblingCamera != null;
+        if (sameCamera) for (int i = 0; i < pose.length; i++) sameCamera &= Math.abs(pose[i] - crumblingCamera[i]) < 0.0001;
+        if (followsBaseline) {
+            require(generation == crumblingGeneration && sameCamera, "Crumbling base fixture or camera changed");
+            require(crumblingBaseline != null && crumblingBackgroundBaseline != null, "Missing clean cog control");
+            crumblingMeasurement = PortalSmokeCrumblingOracle.compare(crumblingBaseline, face, crumblingBackgroundBaseline, background);
+            crumblingChangedPixels = crumblingMeasurement.darkenedPixels() + crumblingMeasurement.brightenedPixels();
+            crumblingDarkening = crumblingMeasurement.meanDarkening();
+        }
+        crumblingEvidence = new LinkedHashMap<>(control);
+        crumblingEvidence.put("client_stage", actualStage);
+        crumblingEvidence.put("fixture_unchanged", generation == crumblingGeneration);
+        crumblingEvidence.put("camera_unchanged", sameCamera);
+        crumblingEvidence.put("camera", pose);
+        crumblingEvidence.put("face_samples", face.length);
+        crumblingEvidence.put("background_samples", background.length);
+        crumblingEvidence.put("mask", "cog-face-r0.13h-background-annulus-r0.18h-0.23h");
+        if (crumblingMeasurement != null) crumblingEvidence.put("measurement", crumblingMeasurement);
+    }
+
+    private static int[] cogMask(NativeImage image, boolean background) {
+        int width = image.getWidth(), height = image.getHeight();
+        int[] result = new int[height * height / 4 + height * 2];
+        int count = 0;
+        int x0 = Math.max(0, (int) (width * 0.5 - height * 0.16));
+        int x1 = Math.min(width, (int) Math.ceil(width * 0.5 + height * 0.32));
+        int y0 = Math.max(0, (int) (height * 0.18)), y1 = Math.min(height, (int) Math.ceil(height * 0.66));
+        for (int y = y0; y < y1; y++) for (int x = x0; x < x1; x++) {
+            boolean selected = background ? PortalSmokeCrumblingOracle.backgroundPixel(x, y, width, height)
+                : PortalSmokeCrumblingOracle.facePixel(x, y, width, height);
+            if (selected) result[count++] = image.getPixelRGBA(x, y);
+        }
+        return Arrays.copyOf(result, count);
     }
 
     private static Map<?, ?> depthState(String key) {
@@ -667,6 +761,11 @@ public final class PortalSmokeClient {
         Map<?, ?> backend = (Map<?, ?>) evidence;
         require(Boolean.TRUE.equals(backend.get("contextAccessorsInstalled")), "Live Flywheel context accessors were not installed");
         require(Boolean.TRUE.equals(backend.get("contextClearedAfterFrame")), "Flywheel render context leaked after frame");
+        Map<?, ?> witness = (Map<?, ?>) backend.get("viewContextWitness");
+        require(((Number) witness.get("openViews")).intValue() == 0, "Flywheel view witness stack leaked after frame");
+        if (PortalSmokeSupport.activeShaders()) {
+            require(((Number) witness.get("observedViews")).longValue() > 0, "Live Flywheel view witness was not installed");
+        }
         String requested = System.getenv().getOrDefault("IP_SMOKE_FLYWHEEL_BACKEND", "default");
         if (!requested.equals("default")) {
             require(("flywheel:" + requested).equals(backend.get("actual")), "Requested Flywheel backend was not active: " + backend);
@@ -679,11 +778,18 @@ public final class PortalSmokeClient {
         require(Boolean.FALSE.equals(backend.get("fallbackActiveAfterFrame")), "Flywheel portal context leaked into main view: " + backend);
     }
 
+    private static Map<String, Long> viewContextCounters(Map<?, ?> flywheel) {
+        Map<?, ?> witness = (Map<?, ?>) flywheel.get("viewContextWitness");
+        Map<String, Long> counters = new LinkedHashMap<>();
+        for (String key : NESTED_VIEW_COUNTERS) counters.put(key, ((Number) witness.get(key)).longValue());
+        return counters;
+    }
+
     private static void toggleShaders(boolean enabled) throws ReflectiveOperationException {
         Class<?> iris = Class.forName("net.irisshaders.iris.Iris");
-        Object config = iris.getMethod("getIrisConfig").invoke(null);
-        config.getClass().getMethod("setShadersEnabled", boolean.class).invoke(config, enabled);
-        iris.getMethod("reload").invoke(null);
+        // The upstream action saves the setting before reload() re-reads it from disk.
+        // Changing the in-memory config alone would silently restore the old setting.
+        iris.getMethod("toggleShaders", Minecraft.class, boolean.class).invoke(null, Minecraft.getInstance(), enabled);
     }
 
     private static void saveEvidence() {
@@ -691,6 +797,7 @@ public final class PortalSmokeClient {
         evidence.put("checks", checks);
         evidence.put("shader_control", PortalClippingTestControl.evidence());
         evidence.put("framebuffer_copy", framebufferCopyEvidence);
+        evidence.put("flywheel_view_context_witness", PortalSmokeRenderContextWitness.LIVE.snapshot());
         evidence.put("render_mode", System.getenv().getOrDefault("IP_SMOKE_RENDER_MODE", "normal"));
         evidence.put("required_scenes", PortalSmokeSupport.scenes());
         evidence.put("toggle_disabled_verified", toggleDisabled);

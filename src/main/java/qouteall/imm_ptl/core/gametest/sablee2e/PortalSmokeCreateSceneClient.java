@@ -24,6 +24,7 @@ final class PortalSmokeCreateSceneClient {
         result.put("portalMode", "vanilla");
         result.put("portalFallbackQueries", IPFlywheelCompat.portalFallbackQueries());
         result.put("nestedContextsRestored", IPFlywheelCompat.nestedContextsRestored());
+        result.put("viewContextWitness", PortalSmokeRenderContextWitness.LIVE.snapshot());
         result.put("fallbackActiveAfterFrame", IPFlywheelCompat.useVanillaRenderer());
         var manager = VisualizationManagerImpl.get(Minecraft.getInstance().level);
         var engine = manager == null ? null : manager.getEngineImpl();

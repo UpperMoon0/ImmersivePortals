@@ -22,6 +22,11 @@ public final class FlywheelRenderScope implements AutoCloseable {
         return scope != null && scope.fallback;
     }
 
+    /** Immutable scope identity, used to verify that a recursive view restored its actual parent. */
+    public static FlywheelRenderScope currentScope() {
+        return CURRENT.get();
+    }
+
     /** IP changes the rendered world, but never the physical player's world, during a portal view. */
     public static <T> T visualizationLevel(boolean renderThread, T viewLevel, T playerLevel) {
         return renderThread || viewLevel == null || playerLevel == null ? viewLevel : playerLevel;

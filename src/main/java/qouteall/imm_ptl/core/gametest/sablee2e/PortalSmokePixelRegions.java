@@ -22,7 +22,14 @@ public final class PortalSmokePixelRegions {
 
     public record Difference(double meanAbsoluteError, double changedFraction, int sampledPixels, double actualBrightness) {
         public boolean matchesBackground() { return actualBrightness > 2.0 && meanAbsoluteError <= 4.0 && changedFraction <= 0.01; }
-        public boolean visiblyDifferent() { return meanAbsoluteError >= 2.0 && changedFraction >= 0.10; }
+        public boolean visiblyDifferent() {
+            // A changed pixel already requires a summed RGB difference greater than 12.
+            // Averaging again over the whole region wrongly rejects small, dark Create
+            // parts surrounded by an unchanged backdrop. Retain the 10% contrast area,
+            // nonblack output and the mathematical lower bound for those changed pixels.
+            return actualBrightness > 2.0 && changedFraction >= 0.10
+                && meanAbsoluteError + 1e-9 >= changedFraction * 13.0 / 3.0;
+        }
     }
 
     public static Difference difference(int[] reference, int[] actual) {

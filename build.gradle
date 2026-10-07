@@ -298,6 +298,11 @@ mixin {
 
 // Keep the NeOculus ABI contract jar isolated from official Iris's duplicate namespace.
 configurations {
+    irisContract {
+        canBeConsumed = false
+        canBeResolved = true
+        transitive = false
+    }
     neoculusContract {
         canBeConsumed = false
         canBeResolved = true
@@ -306,6 +311,7 @@ configurations {
 }
 
 dependencies {
+    irisContract "maven.modrinth:iris:1.8.14-beta.1+1.21.1-neoforge"
     neoculusContract "maven.modrinth:neoculus:ZMibIRkN"
     implementation "net.neoforged:neoforge:${neo_version}"
     compileOnly("maven.modrinth:embeddium:1.0.15+mc1.21.1") { transitive = false }
@@ -358,6 +364,7 @@ dependencies {
 tasks.named('test').configure {
     useJUnitPlatform()
     doFirst {
+        systemProperty 'ip.irisJar', configurations.irisContract.singleFile.absolutePath
         systemProperty 'ip.neoculusJar', configurations.neoculusContract.singleFile.absolutePath
     }
 }

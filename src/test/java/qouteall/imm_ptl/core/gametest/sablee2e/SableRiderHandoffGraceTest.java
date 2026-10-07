@@ -23,7 +23,7 @@ class SableRiderHandoffGraceTest {
     void genuineLostSeatWithoutHandoffFailsImmediately() {
         var error = assertThrows(IllegalStateException.class,
             () -> SableRiderHandoffGrace.verifySourceSeat(SEAT, null, false, true, 1, 120));
-        assertTrue(error.getMessage().contains("activeServerHandoff=false"));
+        assertTrue(error.getMessage().contains("correlatedHandoff=false"));
         assertTrue(error.getMessage().contains(SEAT.toString()));
         assertThrows(IllegalStateException.class,
             () -> SableRiderHandoffGrace.verifySourceSeat(SEAT, null, true, false, 1, 120));
@@ -38,4 +38,27 @@ class SableRiderHandoffGraceTest {
         assertThrows(IllegalStateException.class,
             () -> SableRiderHandoffGrace.verifySourceSeat(null, null, true, true, 1, 120));
     }
+
+    @Test
+    void onlyTheExpectedSeatAndDimensionPairAreCorrelated() {
+        assertTrue(SableRiderHandoffGrace.matchesHandoff(SEAT, SEAT, "source", "source", "target", "target"));
+        assertFalse(SableRiderHandoffGrace.matchesHandoff(SEAT, UUID.randomUUID(), "source", "source", "target", "target"));
+        assertFalse(SableRiderHandoffGrace.matchesHandoff(SEAT, SEAT, "source", "target", "target", "source"));
+        assertFalse(SableRiderHandoffGrace.matchesHandoff(SEAT, null, "source", "source", "target", "target"));
+        assertFalse(SableRiderHandoffGrace.matchesHandoff(SEAT, SEAT, null, null, "target", "target"));
+    }
+
+
+    @Test
+    void coordinateFrameAmbiguityCannotMaskAnArbitrarySpatialJump() {
+        assertDoesNotThrow(() -> SableRiderHandoffGrace.verifySpatialDistance(179.75, 2, true, 32));
+        assertDoesNotThrow(() -> SableRiderHandoffGrace.verifySpatialDistance(2, 179.75, true, 32));
+        assertThrows(IllegalStateException.class,
+            () -> SableRiderHandoffGrace.verifySpatialDistance(179.75, 180, true, 32));
+        assertThrows(IllegalStateException.class,
+            () -> SableRiderHandoffGrace.verifySpatialDistance(179.75, 2, false, 32));
+        assertThrows(IllegalStateException.class,
+            () -> SableRiderHandoffGrace.verifySpatialDistance(Double.NaN, 2, true, 32));
+    }
+
 }

@@ -36,6 +36,7 @@ public final class PortalSmokeServer {
     private static ServerPlayer player;
     private static String request = "";
     private static String scene = "";
+    private static long fixtureGeneration;
 
     @SubscribeEvent
     public static void login(PlayerEvent.PlayerLoggedInEvent event) {
@@ -52,7 +53,19 @@ public final class PortalSmokeServer {
 
     private static void setup(String token) throws Exception {
         String previousScene = scene;
-        scene = token.substring(token.indexOf(':') + 1);
+        String nextScene = token.substring(token.indexOf(':') + 1);
+        boolean sameEpoch = !request.isEmpty() && request.substring(0, request.indexOf(':')).equals(token.substring(0, token.indexOf(':')));
+        boolean damageTransition = previousScene.equals("create-crumbling-clean") && nextScene.equals("create-crumbling-damaged")
+            || previousScene.equals("create-crumbling-damaged") && nextScene.equals("create-crumbling-restored");
+        scene = nextScene;
+        if (sameEpoch && damageTransition) {
+            // Change only the damage packet. Preserve the portal, camera, blocks and BEs
+            // so an unrelated rebuild/re-teleport cannot masquerade as a crack overlay.
+            request = token;
+            PortalSmokeSupport.write("scene-ready.txt", token);
+            return;
+        }
+        fixtureGeneration++;
         fixtures.forEach(Entity::discard);
         fixtures.clear();
         ServerLevel source = player.server.getLevel(Level.OVERWORLD);
@@ -195,16 +208,19 @@ public final class PortalSmokeServer {
                 int x = scene.startsWith("create-nested") ? 28 : scene.startsWith("create-crumbling-") ? 0 : -4;
                 var describe = Class.forName("qouteall.imm_ptl.core.gametest.sablee2e.PortalSmokeCreateScene")
                     .getMethod("describeServerScene", ServerLevel.class, int.class, int.class, int.class);
-                PortalSmokeSupport.write("create-server.json", new Gson().toJson(Map.of(
-                    "scene", request,
-                    "target", describe.invoke(null, target, x, 82, z),
-                    "source", describe.invoke(null, source, 0, 82, -3))));
                 // Static target isolates the damage overlay from ordinary rotating geometry.
                 int crackStage = scene.equals("create-crumbling-damaged") || scene.equals("create-crumbling-clipped") ? 9 : -1;
                 // Vanilla only sends this packet to players physically in that dimension.
                 // Route it to the observer's remote client world, like other portal-visible effects.
                 PacketRedirection.sendRedirectedMessage(player, Level.NETHER,
                     new ClientboundBlockDestructionPacket(78231, new BlockPos(x, 82, z + 2), crackStage));
+                PortalSmokeSupport.write("create-server.json", new Gson().toJson(Map.of(
+                    "scene", request,
+                    "target", describe.invoke(null, target, x, 82, z),
+                    "source", describe.invoke(null, source, 0, 82, -3),
+                    "crumbling_control", Map.of("fixture_generation", fixtureGeneration, "stage", crackStage,
+                        "position", List.of(x, 82, z + 2), "observer", player.getUUID().toString(), "packet_sent", true,
+                        "block", net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(target.getBlockState(new BlockPos(x, 82, z + 2)).getBlock()).toString()))));
             }
             if (PortalSmokeSupport.exists("crossing-request.txt") && player.level().dimension().equals(Level.NETHER)) {
                 PortalSmokeSupport.write("crossing-server-pass.txt", "Server observed the player cross into Nether through the portal\n");

@@ -111,3 +111,21 @@ do not redistribute pack shader code as part of the regression fixture. Real-pac
 smoke runs must use their own acceptance criteria rather than the fixture's
 artificial program colors. Record actual activation, compile/link results,
 portal output and reload behavior for each renderer separately.
+
+## Vanilla and shaders-off damage overlays
+
+Vanilla `rendertype_crumbling` previously had neither a clipping transformation
+nor a late draw scope. Its buffer is flushed after the entity scope ends, allowing
+excluded Create fallback damage geometry to cover a portal. Its vertices are
+camera-relative; the added YAML rule uses `Position` and the before-model-view
+plane. A narrowly selected VertexBuffer scope populates that uniform immediately
+before apply, then restores plane/GL state and neutralizes the uniform in `finally`.
+Iris-owned Extended/Fallback shaders are explicitly excluded even if a name collides.
+
+`CrumblingClippingRegressionTest` checks the real YAML transformation, coordinate
+choice, float upload overload and finally restoration. The optional
+`verify_vanilla_crumbling_gl.py` compiles the production YAML-generated shader and
+runs actual EGL draws: the unpatched excluded triangle obscures all 256 sampled
+background pixels, the patched triangle obscures none, and retained/neutral-plane
+controls still draw. These cases passed on Mesa OpenGL 4.5 and an actual 3.3
+context. Exact-head Minecraft screenshots remain the runtime integration check.

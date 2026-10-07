@@ -40,7 +40,7 @@ public abstract class MixinFlywheelLevelRenderer {
                 lightTexture, modelMatrix, projectionMatrix);
         } finally {
             ip_setFlywheelRenderContext(previous);
-            if (previous != null) IPFlywheelCompat.recordNestedContextRestored();
+            IPFlywheelCompat.recordContextRestored(previous, ip_getFlywheelRenderContext());
         }
     }
 }

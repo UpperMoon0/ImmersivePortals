@@ -27,6 +27,10 @@ jobs:
           - { renderer: neoculus-active, sable: false }
           - { renderer: veil, sable: false }
           - { renderer: vanilla, sable: false }
+          - { renderer: iris-active, sable: true, shadow_fixture: true }
+          - { renderer: neoculus-active, sable: false, shadow_fixture: true }
+          - { renderer: iris-active, sable: true, shadow_fixture: true, negative_control: shadow-clipping-enabled }
+          - { renderer: neoculus-active, sable: false, shadow_fixture: true, negative_control: shadow-clipping-enabled }
           - { renderer: iris-active, sable: true, negative_control: pack-disabled }
           - { renderer: iris-active, sable: true, negative_control: clipping-disabled }
           - { renderer: iris-active, sable: true, negative_control: entity-clipping-disabled }
@@ -48,6 +52,7 @@ jobs:
     with:
       renderer: ${{ matrix.renderer }}
       sable: ${{ matrix.sable }}
+      shadow_fixture: ${{ matrix.shadow_fixture || false }}
       real_pack: ${{ matrix.real_pack || 'none' }}
       negative_control: ${{ matrix.negative_control || 'none' }}
       flywheel_backend: ${{ matrix.flywheel_backend || 'default' }}

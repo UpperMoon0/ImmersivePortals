@@ -12,6 +12,9 @@ on:
       sable:
         type: boolean
         default: true
+      shadow_fixture:
+        type: boolean
+        default: false
       real_pack:
         type: string
         default: none
@@ -68,6 +71,7 @@ jobs:
         run: python3 tools/fetch_shaderpack.py "$REAL_PACK" --github-output "$GITHUB_OUTPUT"
       - name: Verify portal pixels, shader reload and live timing budgets
         env:
+          SHADOW_FIXTURE: ${{ inputs.shadow_fixture }}
           RENDERER: ${{ inputs.renderer }}
           SABLE: ${{ inputs.sable }}
           SAMPLES: ${{ inputs.samples }}
@@ -80,6 +84,7 @@ jobs:
           GL_CONTEXT: ${{ inputs.gl_context }}
         run: |
           extra=()
+          if [[ "$SHADOW_FIXTURE" == true ]]; then extra+=(--shadow-fixture); fi
           if [[ "$SABLE" == false ]]; then extra+=(--no-sable); fi
           if [[ -n "$PACK_FILE" ]]; then extra+=(--shaderpack-file "$PACK_FILE" --shaderpack-profile "$PACK_PROFILE"); fi
           if [[ "$DISABLE_COPY_IMAGE" == true ]]; then extra+=(--disable-copy-image); fi
@@ -89,7 +94,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: portal-visual-${{ inputs.renderer }}-sable-${{ inputs.sable }}-${{ inputs.render_mode }}-${{ inputs.flywheel_backend }}-blit-${{ inputs.disable_copy_image }}-${{ inputs.negative_control }}-${{ inputs.real_pack }}-${{ inputs.gl_context }}
+          name: portal-visual-${{ inputs.renderer }}-sable-${{ inputs.sable }}-${{ inputs.render_mode }}-${{ inputs.flywheel_backend }}-blit-${{ inputs.disable_copy_image }}-${{ inputs.negative_control }}-${{ inputs.real_pack }}-${{ inputs.gl_context }}-shadow-${{ inputs.shadow_fixture }}
           if-no-files-found: warn
           include-hidden-files: true
           path: |
