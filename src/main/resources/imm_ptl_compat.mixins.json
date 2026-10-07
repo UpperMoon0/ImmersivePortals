@@ -46,6 +46,7 @@
     "iris.MixinIrisWorldShader",
     "neoculus.MixinNeOculusEmbeddiumShader",
     "neoculus.MixinNeOculusIris",
+    "neoculus.MixinNeOculusShaderTransformer",
     "sable.MixinClientTeleportationManager_SableServerFirstAck",
     "sable.MixinClientboundStartTrackingSubLevelPacket_SablePortalCompat",
     "sable.MixinSableClientPacketContext_SablePortalCompat",

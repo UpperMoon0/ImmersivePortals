@@ -53,12 +53,17 @@ public final class PortalSmokeClient {
     private static int[] crumblingBaseline;
     private static int createMotionPixels, sourceMotionPixels, crumblingChangedPixels;
     private static double crumblingDarkening;
+    private static double closestGeometryDistance = Double.POSITIVE_INFINITY;
     private static double previousCreateAngle = Double.NaN;
     private static boolean createServerMotion;
     private static Map<String, Object> createServerEvidence = Map.of();
     private static Object framebufferCopyEvidence = Map.of();
     private static final List<Particle> smokeParticles = new ArrayList<>();
     private static int particleTicks;
+    private static int[] previousReference;
+    private static final Map<String, int[]> backgroundReferences = new LinkedHashMap<>();
+    private static final Map<String, int[]> visibleReferences = new LinkedHashMap<>();
+    private static final Map<String, Double> backgroundDepths = new LinkedHashMap<>();
     private static final List<Double> timings = new ArrayList<>();
     private static final List<Map<String, Object>> checks = new ArrayList<>();
     private static final String[] PHASES = {"before-reload", "after-reload", "after-toggle"};
@@ -214,6 +219,8 @@ public final class PortalSmokeClient {
         particleTicks = 0;
         previousCreatePixels = null;
         previousSourcePixels = null;
+        previousReference = null;
+        closestGeometryDistance = Double.POSITIVE_INFINITY;
         createMotionPixels = sourceMotionPixels = crumblingChangedPixels = 0;
         crumblingDarkening = 0;
         if (PortalSmokeSupport.scenes().get(sceneIndex).equals("create-crumbling-clean")) crumblingBaseline = null;
@@ -240,7 +247,7 @@ public final class PortalSmokeClient {
             }
             boolean crumbling = scene.startsWith("create-crumbling-");
             if (scene.startsWith("create-")) {
-                readCreateServerEvidence(crumbling);
+                readCreateServerEvidence(crumbling, scene.endsWith("-background"));
                 int[] sourceRegion = region(pixels, 0.82, 0.22, 0.98, 0.78);
                 sourceMotionPixels += changes(previousSourcePixels, sourceRegion);
                 previousSourcePixels = sourceRegion;
@@ -258,12 +265,92 @@ public final class PortalSmokeClient {
             // Create uses its own textures; shader fixture programs for other paths output diagnostic red.
             boolean colors = positive ? (scene.startsWith("create-") ? green < total * 0.97 : red > total * 0.02)
                 : green > total * 0.80 && red < total * 0.01;
+            Map<String, Object> referenceWitness = Map.of();
+            if (PortalSmokeSupport.activeShaders() && !PortalSmokeSupport.diagnosticFixture()) {
+                String referenceScene = PortalSmokePixelRegions.referenceScene(scene);
+                if (referenceScene != null) {
+                    int[] region = region(pixels, 0.4, 0.4, 0.6, 0.6);
+                    String key = phase + ":" + referenceScene;
+                    String referenceScreenshot = phase + "-" + referenceScene + ".png";
+                    if (scene.equals("solid-visible")) visibleReferences.put(phase, region);
+                    if (scene.endsWith("-background")) {
+                        double stability = previousReference == null ? Double.POSITIVE_INFINITY
+                            : PortalSmokePixelRegions.difference(previousReference, region).meanAbsoluteError();
+                        colors = stability <= 1.0 && meanBrightness(region) > 2.0;
+                        previousReference = region;
+                        backgroundReferences.put(key, region);
+                        referenceWitness = Map.of("is_reference", true, "reference_scene", referenceScene,
+                            "reference_screenshot", referenceScreenshot, "stability_mean_error", stability,
+                            "mean_brightness", meanBrightness(region));
+                    } else {
+                        int[] background = backgroundReferences.get(key);
+                        require(background != null, "Missing same-pack background control for " + scene);
+                        PortalSmokePixelRegions.Difference difference = PortalSmokePixelRegions.difference(background, region);
+                        boolean expectedMatch = PortalSmokePixelRegions.expectsBackground(scene);
+                        colors = expectedMatch ? difference.matchesBackground() : difference.visiblyDifferent();
+                        referenceWitness = Map.of("is_reference", false, "reference_scene", referenceScene,
+                            "reference_screenshot", referenceScreenshot, "expected_match", expectedMatch,
+                            "mean_absolute_error", difference.meanAbsoluteError(), "changed_fraction", difference.changedFraction(),
+                            "sampled_pixels", difference.sampledPixels(), "actual_brightness", difference.actualBrightness());
+                    }
+                }
+                if (referenceScene != null) {
+                    PortalSmokePixelRegions.DepthTarget target = PortalSmokePixelRegions.depthTarget(referenceScene);
+                    Map<?, ?> depth = depthState(target.key());
+                    double viewDistance = depthNumber(depth, "medianViewDistance");
+                    double minimumDistance = depthNumber(depth, "minimumViewDistance");
+                    closestGeometryDistance = Math.min(closestGeometryDistance, minimumDistance);
+                    String depthKey = phase + ":" + referenceScene;
+                    if (scene.endsWith("-background")) backgroundDepths.put(depthKey, viewDistance);
+                    double backgroundDistance = backgroundDepths.getOrDefault(depthKey, Double.NaN);
+                    boolean validDepth = Double.isFinite(backgroundDistance)
+                        && Math.abs(backgroundDistance - target.backdropDistance()) <= 0.5;
+                    String expectation = PortalSmokePixelRegions.depthExpectation(scene);
+                    validDepth &= switch (expectation) {
+                        case "same" -> Math.abs(viewDistance - backgroundDistance) <= Math.max(0.1, backgroundDistance * 0.02);
+                        case "moving-nearer" -> closestGeometryDistance < backgroundDistance - 0.5;
+                        default -> viewDistance < backgroundDistance - 1.0;
+                    };
+                    colors &= validDepth;
+                    referenceWitness = new LinkedHashMap<>(referenceWitness);
+                    referenceWitness.put("depth_target", target.key());
+                    referenceWitness.put("depth_expectation", expectation);
+                    referenceWitness.put("view_distance", viewDistance);
+                    referenceWitness.put("closest_view_distance", closestGeometryDistance);
+                    referenceWitness.put("background_view_distance", backgroundDistance);
+                    referenceWitness.put("depth_samples", depthSampleCount(depth));
+                    referenceWitness.put("depth_observations", depth.get("observationCount"));
+                }
+                if (scene.equals("crossing")) {
+                    int[] backdrop = backgroundReferences.get(PHASES[epoch] + ":solid-background");
+                    int[] visible = visibleReferences.get(PHASES[epoch]);
+                    require(backdrop != null && visible != null, "Missing destination palette references before crossing");
+                    double[] backgroundColor = PortalSmokePixelRegions.meanColor(backdrop);
+                    double[] visibleColor = PortalSmokePixelRegions.meanColor(visible);
+                    double[] actualColor = PortalSmokePixelRegions.meanColor(region(pixels, 0.4, 0.4, 0.6, 0.6));
+                    colors = PortalSmokePixelRegions.matchesCrossingPalette(backgroundColor, visibleColor, actualColor);
+                    Map<?, ?> depth = depthState("minecraft:the_nether:0");
+                    double nativeDistance = depthNumber(depth, "medianViewDistance");
+                    Object camera = depth.get("camera");
+                    double cameraZ = ((Number) java.lang.reflect.Array.get(camera, 2)).doubleValue();
+                    double expectedDistance = cameraZ + 3.0; // Positive-Z face of the destination wall at block z=-4.
+                    colors &= expectedDistance > 0 && Math.abs(nativeDistance - expectedDistance) <= Math.max(0.1, expectedDistance * 0.02);
+                    referenceWitness = new LinkedHashMap<>(Map.of("crossing_palette", true,
+                        "background_color", backgroundColor, "visible_color", visibleColor, "actual_color", actualColor,
+                        "background_distance", PortalSmokePixelRegions.chromaticDistance(actualColor, backgroundColor),
+                        "visible_distance", PortalSmokePixelRegions.chromaticDistance(actualColor, visibleColor)));
+                    referenceWitness.put("native_view_distance", nativeDistance);
+                    referenceWitness.put("expected_native_distance", expectedDistance);
+                    referenceWitness.put("native_camera", camera);
+                    referenceWitness.put("depth_samples", depthSampleCount(depth));
+                    referenceWitness.put("depth_observations", depth.get("observationCount"));
+                }
+            }
             Map<String, Object> fragmentWitness = Map.of();
             if (scene.startsWith("entity-") || scene.startsWith("particle-")) {
                 boolean clipped = scene.endsWith("-clipped");
-                double[] excluded = scene.startsWith("particle-") && !clipped
-                    ? new double[]{0.65, 0.45, 0.70, 0.55} : new double[]{0.39, 0.45, 0.45, 0.55};
-                double[] retained = {0.56, 0.45, 0.62, 0.55};
+                double[] excluded = PortalSmokePixelRegions.controlRegion(scene);
+                double[] retained = PortalSmokePixelRegions.retainedRegion();
                 Map<String, Object> excludedSample = sampleColors(pixels, excluded);
                 Map<String, Object> retainedSample = sampleColors(pixels, retained);
                 colors = clipped ? ((double) excludedSample.get("green_fraction") > 0.80
@@ -284,7 +371,7 @@ public final class PortalSmokeClient {
             }
             int layers = RenderStates.portalRenderInfos.stream().mapToInt(List::size).max().orElse(0);
             boolean geometry = (!requirePortal || RenderStates.portalsRenderedThisFrame > 0)
-                && (!(scene.equals("nested") || scene.equals("create-nested")) || layers >= 2)
+                && (!(scene.startsWith("nested") || scene.startsWith("create-nested")) || layers >= 2)
                 && (!scene.startsWith("create-") || !requiresSourcePixels() || sourceMotionPixels > 20)
                 && (!(scene.equals("create-visible") || scene.equals("create-nested")) || (createMotionPixels > 20 && createServerMotion))
                 && (!scene.equals("create-crumbling-damaged") || (crumblingChangedPixels > 20 && crumblingDarkening > 0.5));
@@ -295,7 +382,7 @@ public final class PortalSmokeClient {
                 + " green=" + green + "/" + total + " red=" + red + " layers=" + layers
                 + " targetMotion=" + createMotionPixels + " sourceMotion=" + sourceMotionPixels
                 + " crumblingChanges=" + crumblingChangedPixels + " darkening=" + crumblingDarkening
-                + " straddling=" + fragmentWitness);
+                + " straddling=" + fragmentWitness + " reference=" + referenceWitness);
             if (stableFrames < 3 && requirePortal) return false;
             if (!colors) throw new IllegalStateException("PORTAL_PIXELS_MISMATCH after crossing");
             int glError = GL11.glGetError();
@@ -304,6 +391,7 @@ public final class PortalSmokeClient {
             check.putAll(Map.of("phase", phase, "scene", scene, "screenshot", screenshot,
                 "green_pixels", green, "red_pixels", red, "sampled_pixels", total,
                 "portal_layers", layers, "width", pixels.getWidth(), "height", pixels.getHeight()));
+            check.put("reference_witness", referenceWitness);
             check.put("straddling_witness", fragmentWitness);
             check.put("shader_path", PortalClippingTestControl.evidence());
             check.put("create_motion_changed_pixels", createMotionPixels);
@@ -328,6 +416,28 @@ public final class PortalSmokeClient {
             saveEvidence();
             return true;
         }
+    }
+
+    private static Map<?, ?> depthState(String key) {
+        Map<?, ?> states = (Map<?, ?>) PortalClippingTestControl.evidence().get("innerWorldDepthStates");
+        Map<?, ?> state = states == null ? null : (Map<?, ?>) states.get(key);
+        require(state != null && depthSampleCount(state) == 81
+            && state.get("observationCount") instanceof Number observations && observations.intValue() > 0,
+            "Missing fresh 9x9 depth witness for " + key);
+        return state;
+    }
+
+    private static int depthSampleCount(Map<?, ?> state) {
+        Object samples = state.get("depthSamples");
+        return samples instanceof List<?> list ? list.size()
+            : samples != null && samples.getClass().isArray() ? java.lang.reflect.Array.getLength(samples) : 0;
+    }
+
+    private static double depthNumber(Map<?, ?> state, String name) {
+        Object value = state.get(name);
+        require(value instanceof Number number && Double.isFinite(number.doubleValue()) && number.doubleValue() > 0,
+            "Invalid live depth field " + name + ": " + value);
+        return ((Number) value).doubleValue();
     }
 
     private static Map<String, Object> verifyCpuWitness(String scene) {
@@ -501,11 +611,17 @@ public final class PortalSmokeClient {
     }
 
     @SuppressWarnings("unchecked")
-    private static void readCreateServerEvidence(boolean crumbling) {
+    private static void readCreateServerEvidence(boolean crumbling, boolean background) {
         Map<String, Object> result = new Gson().fromJson(PortalSmokeSupport.read("create-server.json"), Map.class);
         require(result != null && request.equals(result.get("scene")), "Missing current Create server evidence");
         for (String side : List.of("source", "target")) {
             Map<String, Object> assembly = (Map<String, Object>) result.get(side);
+            if (background && side.equals("target")) {
+                require(((Number) assembly.get("shaftSpeed")).doubleValue() == 0
+                    && ((Number) assembly.get("contraptionCount")).intValue() == 0,
+                    "Background control unexpectedly contained Create geometry: " + assembly);
+                continue;
+            }
             if (crumbling && side.equals("target")) {
                 require(((Number) assembly.get("shaftSpeed")).doubleValue() == 0,
                     "Crumbling comparison requires a stationary target cog: " + assembly);

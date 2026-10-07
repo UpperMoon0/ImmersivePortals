@@ -44,6 +44,9 @@ NeOculus uses `compat.embeddium.impl.oculus.EmbeddiumShader`, with an Embeddium 
 `EmbeddiumPrograms.Pass`. A separate mixin obtains the clip uniform from its constructor's GL program handle
 and uploads it after `setupState`. Shadow rendering and disabled clipping upload the neutral plane.
 The superclass's null terrain-pass sentinel prevents double initialization of ordinary Embeddium uniforms.
+NeOculus terrain is compiled by `compat.embeddium.impl.monocle.ShaderTransformer`, which bypasses Iris's
+`TransformPatcher`. Its separate post-cache hook transforms the selected terrain/water program without
+mutating the name-independent upstream cache; shared Iris hooks still handle other world shaders.
 
 NeOculus 1.8.7 initializes its remembered dimension only during the first vanilla title-screen initialization.
 A NeOculus-only static initializer supplies that same Overworld default before early quick-connect/disconnect

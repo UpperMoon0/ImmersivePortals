@@ -403,11 +403,20 @@ def shader_profile_options(properties: str, requested: str | None = None) -> tup
     return selected, expand(selected)
 
 
+def pinned_shaderpack_profile(sha256: str) -> str | None:
+    manifest = json.loads((ROOT / "tools/shaderpacks/real-packs.json").read_text(encoding="utf-8"))
+    return next((pack["profile"] for pack in manifest.values() if pack["sha256"] == sha256), None)
+
+
 def visual_scene_names(renderer: str, render_mode: str = "normal", diagnostic_fixture: bool = True) -> set[str]:
     scenes = {"solid-visible", "solid-clipped", "mirror", "create-visible", "create-clipped",
               "create-crumbling-clean", "create-crumbling-damaged", "create-crumbling-clipped"}
     if render_mode == "normal":
         scenes.update(("nested", "create-nested"))
+    if renderer in ACTIVE_RENDERERS and not diagnostic_fixture:
+        scenes.update(("solid-background", "mirror-background", "mirror-visible", "create-background"))
+        if render_mode == "normal":
+            scenes.update(("nested-background", "nested-visible", "create-nested-background"))
     if renderer in ACTIVE_RENDERERS and diagnostic_fixture:
         scenes.update(f"{program}-{side}" for program in ("cutout", "translucent", "entity", "block-entity", "particle")
                       for side in ("visible", "clipped"))
@@ -443,10 +452,12 @@ def stage_shader_fixture(renderer: str, negative_control: str = "none", shaderpa
         shaderpack_file = shaderpack_file.resolve()
         if not shaderpack_file.is_file() or shaderpack_file.suffix.lower() != ".zip":
             raise RuntimeError("--shaderpack-file must be an existing .zip shaderpack")
+        pack_hash = hashlib.sha256(shaderpack_file.read_bytes()).hexdigest()
+        requested_profile = shaderpack_profile if shaderpack_profile is not None else pinned_shaderpack_profile(pack_hash)
         with zipfile.ZipFile(shaderpack_file) as archive:
             programs = sorted(name for name in archive.namelist() if name.endswith(".vsh"))
             properties = archive.read("shaders/shaders.properties").decode("utf-8-sig") if "shaders/shaders.properties" in archive.namelist() else ""
-            profile, options = shader_profile_options(properties, shaderpack_profile)
+            profile, options = shader_profile_options(properties, requested_profile)
             if not any(name.startswith("shaders/") for name in archive.namelist()):
                 raise RuntimeError("shaderpack ZIP must contain a top-level shaders directory")
         pack_name = "__ip_verify__" + shaderpack_file.name
@@ -544,6 +555,59 @@ def validate_shader_evidence(renderer: str, render_mode: str = "normal", gl_cont
         raise RuntimeError("framebuffer resize was not observed after reload")
     for check in phases:
         scene = check.get("scene", "")
+        if renderer in ACTIVE_RENDERERS and not fixture.get("diagnostic_fixture", True) and scene != "crossing":
+            witness = check.get("reference_witness", {})
+            reference = witness.get("reference_scene")
+            expected_reference = scene if scene.endswith("-background") else (
+                "solid-background" if scene.startswith("solid-") else "nested-background" if scene.startswith("nested")
+                else "mirror-background" if scene.startswith("mirror") else "create-nested-background" if scene == "create-nested"
+                else "create-background")
+            if reference != expected_reference:
+                raise RuntimeError("real-pack scene used the wrong camera/dimension backdrop")
+            if not reference or (check["phase"], reference) not in observed:
+                raise RuntimeError("missing same-pack background reference scene")
+            if not (RESULT_DIR / witness.get("reference_screenshot", "missing")).is_file():
+                raise RuntimeError("missing same-pack background reference screenshot")
+            depth_targets = {"solid-background": ("minecraft:the_nether:1", 7), "create-background": ("minecraft:the_nether:1", 7),
+                             "nested-background": ("minecraft:the_end:2", 8), "create-nested-background": ("minecraft:the_nether:2", 8),
+                             "mirror-background": ("minecraft:overworld:1", 10)}
+            target, expected = depth_targets[expected_reference]
+            distance, backdrop, closest = (witness.get(key, -1) for key in ("view_distance", "background_view_distance", "closest_view_distance"))
+            expectation = "same" if scene.endswith(("-background", "-clipped")) or scene in ("nested", "mirror", "mirror-visible") else "moving-nearer" if scene.startswith("create-") else "nearer"
+            valid = witness.get("depth_samples") == 81 and witness.get("depth_observations", 0) > 0 and witness.get("depth_target") == target
+            valid = valid and witness.get("depth_expectation") == expectation and all(math.isfinite(v) and v > 0 for v in (distance, backdrop, closest)) and abs(backdrop - expected) <= 0.5
+            valid = valid and (abs(distance - backdrop) <= max(0.1, backdrop * 0.02) if expectation == "same" else closest < backdrop - 0.5 if expectation == "moving-nearer" else distance < backdrop - 1)
+            if not valid:
+                raise RuntimeError("real-pack topology depth did not match the geometric control")
+            if witness.get("is_reference"):
+                if witness.get("stability_mean_error", float("inf")) > 1.0 or witness.get("mean_brightness", 0) <= 2.0:
+                    raise RuntimeError("same-pack background reference was unstable or black")
+            else:
+                error, fraction = witness.get("mean_absolute_error", -1), witness.get("changed_fraction", -1)
+                if not math.isfinite(error) or not math.isfinite(fraction) or error < 0 or not 0 <= fraction <= 1:
+                    raise RuntimeError("invalid same-pack pixel comparison evidence")
+                expected_match = scene.endswith("-clipped") or scene in ("nested", "mirror")
+                if witness.get("expected_match") != expected_match:
+                    raise RuntimeError("wrong same-pack comparison expectation")
+                if expected_match and (witness.get("actual_brightness", 0) <= 2.0 or error > 4.0 or fraction > 0.01):
+                    raise RuntimeError("clipped real-pack view did not match its unobstructed background")
+                if not expected_match and (error < 2.0 or fraction < 0.10):
+                    raise RuntimeError("visible real-pack geometry did not differ from its background")
+        if renderer in ACTIVE_RENDERERS and not fixture.get("diagnostic_fixture", True) and scene == "crossing":
+            witness = check.get("reference_witness", {})
+            background, visible, actual = (witness.get(name, []) for name in ("background_color", "visible_color", "actual_color"))
+            if not witness.get("crossing_palette") or any(len(color) != 3 for color in (background, visible, actual)):
+                raise RuntimeError("missing real-pack destination palette crossing evidence")
+            if any(not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0 for color in (background, visible, actual) for value in color):
+                raise RuntimeError("invalid real-pack crossing colors")
+            distance, expected = witness.get("native_view_distance", -1), witness.get("expected_native_distance", -1)
+            camera = witness.get("native_camera", [])
+            if witness.get("depth_samples") != 81 or witness.get("depth_observations", 0) <= 0 or len(camera) != 3 or not all(math.isfinite(v) for v in (*camera, distance, expected)) or expected <= 0 or abs(expected - (camera[2] + 3)) > 0.001 or abs(distance - expected) > max(0.1, expected * 0.02):
+                raise RuntimeError("native crossing depth did not prove the destination wall")
+            def chromatic_distance(left, right):
+                return sum((a / sum(left) - b / sum(right)) ** 2 for a, b in zip(left, right)) if sum(left) > 0 and sum(right) > 0 else float("inf")
+            if sum(actual) / 3 <= 2 or actual[1] / (actual[2] + 1) < 0.8 * background[1] / (background[2] + 1) or chromatic_distance(actual, background) >= 0.75 * chromatic_distance(actual, visible):
+                raise RuntimeError("crossing pixels did not match the destination's reference palette")
         if scene.startswith(("entity-", "particle-")):
             validate_target_shader_path(check.get("shader_path", {}), "entity" if scene.startswith("entity-") else "particle", True)
             witness = check.get("straddling_witness", {})

@@ -15,6 +15,26 @@ class NeOculusTargetContractTest {
     private static final String IRIS = "net/irisshaders/iris/";
 
     @Test
+    void terrainUsesItsIndependentTransformerRatherThanTheSharedIrisPatcher() throws Exception {
+        try (var jar = openJar()) {
+            String transformer = IRIS + "compat/embeddium/impl/monocle/ShaderTransformer";
+            String descriptor = "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;"
+                + "Ljava/lang/String;Ljava/lang/String;L" + IRIS + "gl/blending/AlphaTest;"
+                + "Lorg/embeddedt/embeddium/impl/render/chunk/vertex/format/ChunkVertexType;"
+                + "Lit/unimi/dsi/fastutil/objects/Object2ObjectMap;)Ljava/util/Map;";
+            method(read(jar, transformer), "transform", descriptor);
+            var programs = read(jar, IRIS + "compat/embeddium/impl/oculus/EmbeddiumPrograms");
+            var method = programs.methods.stream().filter(m -> m.name.equals("transformShaders")).findFirst().orElseThrow();
+            assertTrue(java.util.stream.StreamSupport.stream(method.instructions.spliterator(), false)
+                .anyMatch(i -> i instanceof MethodInsnNode call && call.owner.equals(transformer)
+                    && call.name.equals("transform") && call.desc.equals(descriptor)));
+            assertFalse(java.util.stream.StreamSupport.stream(method.instructions.spliterator(), false)
+                .anyMatch(i -> i instanceof MethodInsnNode call && call.owner.equals(IRIS + "pipeline/transform/TransformPatcher")),
+                "The shared Iris hook must not be mistaken for NeOculus terrain integration");
+        }
+    }
+
+    @Test
     void embeddiumShaderHasTheExactConstructorAndNoSodiumShaderAlias() throws Exception {
         try (var jar = openJar()) {
             var shader = read(jar, IRIS + "compat/embeddium/impl/oculus/EmbeddiumShader");

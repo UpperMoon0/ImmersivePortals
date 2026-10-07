@@ -6,7 +6,8 @@
     "url": "https://cdn.modrinth.com/data/izsIPI7a/versions/KkGY3RTO/MakeUp-UltraFast-9.4a.zip",
     "filename": "MakeUp-UltraFast-9.4a.zip",
     "sha256": "84cca2673de0d751e015aab57aaa5b8d07bb4c30833a1372489867301c5e1019",
-    "profile": "no_effects"
+    "profile": "shadowless_high",
+    "profile_reason": "9.4a includes bloom.glsl unconditionally but declares softLod only with BLOOM enabled; shadowless_high is the lowest shipped shadowless preset enabling BLOOM."
   },
   "complementary": {
     "name": "Complementary Reimagined",

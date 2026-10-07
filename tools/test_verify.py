@@ -364,6 +364,84 @@ class VerificationHarnessTest(unittest.TestCase):
                 with self.assertRaises(RuntimeError):
                     verify.validate_shader_evidence("iris-active")
 
+    def real_pack_evidence(self):
+        report = self.shader_evidence()
+        template = report["checks"][0]
+        checks = []
+        for phase in ("before-reload", "after-reload", "after-toggle"):
+            for scene in verify.visual_scene_names("iris-active", "normal", False):
+                check = template | {"phase": phase, "scene": scene, "width": 854 if phase == "before-reload" else 960,
+                                    "height": 480 if phase == "before-reload" else 640}
+                reference = scene if scene.endswith("-background") else (
+                    "solid-background" if scene.startswith("solid-") else "nested-background" if scene.startswith("nested")
+                    else "mirror-background" if scene.startswith("mirror") else "create-nested-background" if scene == "create-nested"
+                    else "create-background")
+                matching = scene.endswith("-clipped") or scene in ("nested", "mirror")
+                targets = {"solid-background": ("minecraft:the_nether:1", 7), "create-background": ("minecraft:the_nether:1", 7),
+                           "nested-background": ("minecraft:the_end:2", 8), "create-nested-background": ("minecraft:the_nether:2", 8),
+                           "mirror-background": ("minecraft:overworld:1", 10)}
+                target, backdrop = targets[reference]
+                expectation = "same" if scene.endswith(("-background", "-clipped")) or scene in ("nested", "mirror", "mirror-visible") else "moving-nearer" if scene.startswith("create-") else "nearer"
+                witness = {"reference_scene": reference, "reference_screenshot": "test.png",
+                           "is_reference": scene.endswith("-background"), "stability_mean_error": 0,
+                           "mean_brightness": 20, "actual_brightness": 20, "expected_match": matching,
+                           "mean_absolute_error": 0 if matching else 10, "changed_fraction": 0 if matching else 0.5,
+                           "depth_samples": 81, "depth_observations": 120, "depth_target": target, "depth_expectation": expectation,
+                           "view_distance": backdrop if expectation == "same" else backdrop - 3,
+                           "closest_view_distance": backdrop if expectation == "same" else backdrop - 3,
+                           "background_view_distance": backdrop}
+                check["reference_witness"] = witness
+                checks.append(check)
+        checks.append(template | {"phase": "after-crossing", "scene": "crossing", "reference_witness": {
+            "crossing_palette": True, "background_color": [37, 17, 4], "visible_color": [51, 5, 4], "actual_color": [60, 160, 20],
+            "native_view_distance": 2.5, "expected_native_distance": 2.5, "native_camera": [0, 82, -0.5],
+            "depth_samples": 81, "depth_observations": 120}})
+        report["checks"] = checks
+        (self.results / "fixture.json").write_text(json.dumps({"name": verify.FIXTURE_NAME, "diagnostic_fixture": False}))
+        return report
+
+    def test_real_pack_requires_matching_clipped_pixels_and_nearer_visible_depth(self):
+        report = self.real_pack_evidence()
+        self.write_shader_evidence(report)
+        verify.validate_shader_evidence("iris-active")
+        cases = (("solid-clipped", "mean_absolute_error", 10), ("solid-clipped", "changed_fraction", 0.5),
+                 ("solid-clipped", "view_distance", 2), ("solid-visible", "view_distance", 7),
+                 ("solid-visible", "mean_absolute_error", 0), ("solid-background", "mean_brightness", 0),
+                 ("mirror", "reference_scene", "solid-background"), ("mirror-background", "view_distance", 1000),
+                 ("nested-background", "depth_target", "minecraft:the_nether:1"), ("solid-clipped", "actual_brightness", 0),
+                 ("create-background", "depth_observations", 0))
+        for scene, key, value in cases:
+            with self.subTest(scene=scene, key=key):
+                bad = self.real_pack_evidence()
+                next(check for check in bad["checks"] if check["scene"] == scene)["reference_witness"][key] = value
+                self.write_shader_evidence(bad)
+                with self.assertRaises(RuntimeError):
+                    verify.validate_shader_evidence("iris-active")
+
+    def test_real_pack_crossing_rejects_red_source_or_blue_sky_palettes(self):
+        for color in ([51, 5, 4], [100, 150, 240], [0, 0, 0]):
+            report = self.real_pack_evidence()
+            report["checks"][-1]["reference_witness"]["actual_color"] = color
+            self.write_shader_evidence(report)
+            with self.assertRaisesRegex(RuntimeError, "crossing pixels"):
+                verify.validate_shader_evidence("iris-active")
+
+    def test_real_pack_reference_scenes_are_added_without_changing_fixture_scope(self):
+        fixture = verify.visual_scene_names("iris-active", "normal", True)
+        real = verify.visual_scene_names("iris-active", "normal", False)
+        self.assertFalse(any(scene.endswith("-background") for scene in fixture))
+        self.assertTrue({"solid-background", "nested-background", "mirror-background", "create-background", "create-nested-background"}.issubset(real))
+        self.assertIn("entity-clipped", fixture)
+        self.assertNotIn("entity-clipped", real)
+        self.assertNotIn("nested-background", verify.visual_scene_names("iris-active", "compatibility", False))
+
+    def test_pinned_makeup_profile_keeps_its_required_bloom_declaration(self):
+        manifest = json.loads((verify.ROOT / "tools/shaderpacks/real-packs.json").read_text())
+        makeup = manifest["makeup"]
+        self.assertEqual(makeup["profile"], "shadowless_high")
+        self.assertEqual(verify.pinned_shaderpack_profile(makeup["sha256"]), "shadowless_high")
+        self.assertIsNone(verify.pinned_shaderpack_profile("0" * 64))
+
     def test_pack_profiles_use_declared_values_and_reject_unknown_or_cyclic_presets(self):
         properties = "profile.low = !SHADOWS QUALITY=0 DEPTH:0.5\nprofile.high = profile.low SHADOWS QUALITY=2\n"
         self.assertEqual(verify.shader_profile_options(properties), ("low", {"SHADOWS": "false", "QUALITY": "0", "DEPTH": "0.5"}))

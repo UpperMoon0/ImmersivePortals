@@ -5,7 +5,9 @@
   "client": [
     "MixinPortalClipSelectionTest",
     "MixinPortalClipDrawTest",
-    "MixinIrisProgramSourceTest"
+    "MixinIrisProgramSourceTest",
+    "MixinIrisTerrainUniformTest",
+    "MixinIrisInnerDepthTest"
   ],
   "injectors": {
     "defaultRequire": 1

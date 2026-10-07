@@ -69,9 +69,9 @@ public final class PortalSmokeServer {
                 level.setBlockAndUpdate(new BlockPos(x, y, z), state);
             }
         }
-        if (scene.equals("create-nested") || previousScene.equals("create-nested")) {
+        if (scene.startsWith("create-nested") || previousScene.startsWith("create-nested")) {
             for (int x = 24; x <= 40; x++) for (int y = 76; y <= 88; y++) for (int z = -5; z <= 8; z++) {
-                target.setBlockAndUpdate(new BlockPos(x, y, z), (scene.equals("create-nested") && z == -4)
+                target.setBlockAndUpdate(new BlockPos(x, y, z), (scene.startsWith("create-nested") && z == -4)
                     ? Blocks.LIME_CONCRETE.defaultBlockState() : (scene.equals("create-nested") && z == 1)
                     ? Blocks.RED_CONCRETE.defaultBlockState() : Blocks.AIR.defaultBlockState());
             }
@@ -87,10 +87,11 @@ public final class PortalSmokeServer {
         }
         player.teleportTo(source, straddling ? 4 : 0, 80.38, 4, straddling ? 135 : 180, 0);
         boolean visible = scene.endsWith("-visible");
+        boolean background = scene.endsWith("-background");
         int z = visible ? -1 : 1;
-        if (scene.equals("mirror")) {
-            wall(source, -1, Blocks.RED_CONCRETE.defaultBlockState());
-            wall(source, 6, Blocks.LIME_CONCRETE.defaultBlockState());
+        if (scene.startsWith("mirror")) {
+            if (!background && !visible) wall(source, -1, Blocks.RED_CONCRETE.defaultBlockState());
+            wall(source, 6, (visible ? Blocks.RED_CONCRETE : Blocks.LIME_CONCRETE).defaultBlockState());
             Mirror mirror = Mirror.ENTITY_TYPE.create(source);
             configure(mirror, Level.OVERWORLD, new Vec3(0, 82, 0), new Vec3(0, 82, 0));
             add(source, mirror);
@@ -99,18 +100,18 @@ public final class PortalSmokeServer {
             configure(portal, Level.NETHER, new Vec3(0, 82, 0), new Vec3(0, 82, 0));
             if (straddling) portal.setOrientationAndSize(new Vec3(1, 0, 0), new Vec3(0, 1, 0), 12, 10);
             add(source, portal);
-            if (scene.equals("nested") || scene.equals("create-nested")) {
+            if (scene.startsWith("nested") || scene.startsWith("create-nested")) {
                 wall(target, -4, Blocks.RED_CONCRETE.defaultBlockState());
-                wall(end, 1, Blocks.RED_CONCRETE.defaultBlockState());
+                if (!background) wall(end, visible ? -1 : 1, Blocks.RED_CONCRETE.defaultBlockState());
                 Portal nested = Portal.ENTITY_TYPE.create(target);
-                configure(nested, scene.equals("create-nested") ? Level.NETHER : Level.END,
-                    new Vec3(0, 82, -1), new Vec3(scene.equals("create-nested") ? 32 : 0, 82, 0));
+                configure(nested, scene.startsWith("create-nested") ? Level.NETHER : Level.END,
+                    new Vec3(0, 82, -1), new Vec3(scene.startsWith("create-nested") ? 32 : 0, 82, 0));
                 add(target, nested);
-                if (scene.equals("create-nested")) {
+                if (scene.startsWith("create-nested")) {
                     // Re-enter the same Nether LevelRenderer to test Flywheel's per-level context restoration.
                     var setup = Class.forName("qouteall.imm_ptl.core.gametest.sablee2e.PortalSmokeCreateScene")
                         .getMethod("setup", ServerLevel.class, int.class, int.class, int.class);
-                    setup.invoke(null, target, 28, 82, -3);
+                    if (!background) setup.invoke(null, target, 28, 82, -3);
                     setup.invoke(null, source, 0, 82, -3);
                 }
             } else if (scene.startsWith("cutout-")) {
@@ -141,11 +142,11 @@ public final class PortalSmokeServer {
                 boolean crumbling = scene.startsWith("create-crumbling-");
                 int targetX = crumbling ? 0 : -4;
                 int targetZ = scene.endsWith("-clipped") ? 1 : -3;
-                helper.getMethod("setup", ServerLevel.class, int.class, int.class, int.class).invoke(null, target, targetX, 82, targetZ);
+                if (!background) helper.getMethod("setup", ServerLevel.class, int.class, int.class, int.class).invoke(null, target, targetX, 82, targetZ);
                 helper.getMethod("setup", ServerLevel.class, int.class, int.class, int.class).invoke(null, source, 0, 82, -3);
                 if (crumbling) helper.getMethod("setSpeed", ServerLevel.class, int.class, int.class, int.class, int.class)
                     .invoke(null, target, targetX, 82, targetZ, 0);
-            } else {
+            } else if (!background) {
                 wall(target, z, Blocks.RED_CONCRETE.defaultBlockState());
             }
         }
@@ -186,7 +187,7 @@ public final class PortalSmokeServer {
                 ServerLevel target = player.server.getLevel(Level.NETHER);
                 ServerLevel source = player.server.getLevel(Level.OVERWORLD);
                 int z = scene.endsWith("-clipped") ? 1 : -3;
-                int x = scene.equals("create-nested") ? 28 : scene.startsWith("create-crumbling-") ? 0 : -4;
+                int x = scene.startsWith("create-nested") ? 28 : scene.startsWith("create-crumbling-") ? 0 : -4;
                 var describe = Class.forName("qouteall.imm_ptl.core.gametest.sablee2e.PortalSmokeCreateScene")
                     .getMethod("describeServerScene", ServerLevel.class, int.class, int.class, int.class);
                 PortalSmokeSupport.write("create-server.json", new Gson().toJson(Map.of(

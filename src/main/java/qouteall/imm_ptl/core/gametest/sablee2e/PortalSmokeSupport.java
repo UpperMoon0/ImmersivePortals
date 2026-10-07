@@ -17,9 +17,13 @@ final class PortalSmokeSupport {
     static boolean activeShaders() {
         return System.getenv().getOrDefault("IP_SMOKE_RENDERER", "sodium").endsWith("-active");
     }
+    static boolean diagnosticFixture() { return !"false".equals(System.getenv("IP_SMOKE_DIAGNOSTIC_FIXTURE")); }
     static List<String> scenes() {
-        var result = new java.util.ArrayList<String>(List.of("solid-visible", "solid-clipped"));
-        if (activeShaders() && !"false".equals(System.getenv("IP_SMOKE_DIAGNOSTIC_FIXTURE"))) {
+        boolean references = activeShaders() && !diagnosticFixture();
+        var result = new java.util.ArrayList<String>();
+        if (references) result.add("solid-background");
+        result.addAll(List.of("solid-visible", "solid-clipped"));
+        if (activeShaders() && diagnosticFixture()) {
             for (String program : List.of("cutout", "translucent", "entity", "block-entity", "particle")) {
                 result.add(program + "-visible");
                 result.add(program + "-clipped");
@@ -27,10 +31,15 @@ final class PortalSmokeSupport {
         }
         // Compatibility/debug renderers deliberately support one portal layer only.
         if (System.getenv().getOrDefault("IP_SMOKE_RENDER_MODE", "normal").equals("normal")) {
+            if (references) result.addAll(List.of("nested-background", "nested-visible"));
             result.add("nested");
+            if (references) result.add("create-nested-background");
             result.add("create-nested");
         }
-        result.addAll(List.of("mirror", "create-visible", "create-clipped",
+        if (references) result.addAll(List.of("mirror-background", "mirror-visible"));
+        result.add("mirror");
+        if (references) result.add("create-background");
+        result.addAll(List.of("create-visible", "create-clipped",
             "create-crumbling-clean", "create-crumbling-damaged", "create-crumbling-clipped"));
         return result;
     }

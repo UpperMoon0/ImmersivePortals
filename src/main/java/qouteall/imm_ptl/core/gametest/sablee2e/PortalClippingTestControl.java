@@ -12,6 +12,8 @@ public final class PortalClippingTestControl {
     private static final Map<String, Integer> bypassed = new LinkedHashMap<>();
     private static final Map<String, String> sources = new LinkedHashMap<>();
     private static final Map<String, Map<String, Integer>> draws = new LinkedHashMap<>();
+    private static final Map<String, Map<String, Object>> terrainStates = new LinkedHashMap<>();
+    private static final Map<String, Map<String, Object>> innerDepthStates = new LinkedHashMap<>();
 
     private PortalClippingTestControl() {}
 
@@ -23,6 +25,8 @@ public final class PortalClippingTestControl {
         bypassed.clear();
         sources.clear();
         draws.clear();
+        terrainStates.clear();
+        innerDepthStates.clear();
         observation = "";
     }
 
@@ -30,6 +34,8 @@ public final class PortalClippingTestControl {
     public static synchronized void beginObservation(String name) {
         observation = name;
         draws.clear();
+        terrainStates.clear();
+        innerDepthStates.clear();
     }
 
     public static synchronized boolean select(String patch, String name, boolean productionSelection) {
@@ -55,6 +61,30 @@ public final class PortalClippingTestControl {
         draws.computeIfAbsent(drawName, ignored -> new LinkedHashMap<>()).merge(key, 1, Integer::sum);
     }
 
+    public static synchronized boolean observesInnerDepth() {
+        return installed && !observation.isEmpty();
+    }
+
+    public static synchronized boolean observesNativeDepth() {
+        return installed && observation.endsWith(":crossing");
+    }
+
+    public static synchronized void recordInnerDepth(String key, Map<String, Object> state) {
+        Map<String, Object> copy = new LinkedHashMap<>(state);
+        int observations = innerDepthStates.containsKey(key)
+            ? ((Number) innerDepthStates.get(key).get("observationCount")).intValue() : 0;
+        copy.put("observationCount", observations + 1);
+        innerDepthStates.put(key, copy);
+    }
+
+    public static synchronized boolean needsTerrainState(String key) {
+        return installed && !observation.isEmpty() && !terrainStates.containsKey(key) && terrainStates.size() < 48;
+    }
+
+    public static synchronized void recordTerrainState(String key, Map<String, Object> state) {
+        terrainStates.putIfAbsent(key, new LinkedHashMap<>(state));
+    }
+
     public static synchronized Map<String, Object> evidence() {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("installed", installed);
@@ -66,6 +96,8 @@ public final class PortalClippingTestControl {
         Map<String, Map<String, Integer>> drawCopy = new LinkedHashMap<>();
         draws.forEach((name, counts) -> drawCopy.put(name, new LinkedHashMap<>(counts)));
         result.put("completedDrawCounts", drawCopy);
+        result.put("terrainUniformStates", new LinkedHashMap<>(terrainStates));
+        result.put("innerWorldDepthStates", new LinkedHashMap<>(innerDepthStates));
         return result;
     }
 

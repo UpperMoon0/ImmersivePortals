@@ -6,6 +6,33 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class PortalClippingTestControlTest {
     @Test
+    void depthPixelCountIsIndependentFromCapturedFrameCount() {
+        PortalClippingTestControl.install("");
+        PortalClippingTestControl.beginObservation("before-reload:solid-background");
+        for (int frame = 0; frame < 130; frame++) {
+            PortalClippingTestControl.recordInnerDepth("minecraft:the_nether:1",
+                java.util.Map.of("sampleCount", 81, "depthSamples", new float[81]));
+        }
+        var states = (java.util.Map<?, ?>) PortalClippingTestControl.evidence().get("innerWorldDepthStates");
+        var depth = (java.util.Map<?, ?>) states.get("minecraft:the_nether:1");
+        assertEquals(81, depth.get("sampleCount"));
+        assertEquals(130, depth.get("observationCount"));
+        assertEquals(81, ((float[]) depth.get("depthSamples")).length);
+        PortalClippingTestControl.beginObservation("after-reload:solid-background");
+        assertTrue(((java.util.Map<?, ?>) PortalClippingTestControl.evidence().get("innerWorldDepthStates")).isEmpty());
+    }
+
+    @Test
+    void nativeDepthIsObservedOnlyForTheCrossingEndpoint() {
+        PortalClippingTestControl.install("");
+        assertFalse(PortalClippingTestControl.observesNativeDepth());
+        PortalClippingTestControl.beginObservation("before-reload:solid-visible");
+        assertFalse(PortalClippingTestControl.observesNativeDepth());
+        PortalClippingTestControl.beginObservation("after-crossing:crossing");
+        assertTrue(PortalClippingTestControl.observesNativeDepth());
+    }
+
+    @Test
     void entityNegativeDoesNotDisableTerrainParticlesOrBlockEntities() {
         PortalClippingTestControl.install("entity-clipping-disabled");
         assertFalse(PortalClippingTestControl.select("VANILLA", "entities_cutout_diffuse", true));

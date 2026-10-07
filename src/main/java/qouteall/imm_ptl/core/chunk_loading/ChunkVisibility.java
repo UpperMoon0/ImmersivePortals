@@ -169,10 +169,15 @@ public class ChunkVisibility {
                     new ChunkPos(BlockPos.containing(portal.getDestPos()))
                 ),
                 getCappedLoadingDistance(
-                    portal, player, loadDistance / 4
+                    portal, player, getNestedPortalLoadingDistance(loadDistance)
                 )
             );
         }
+    }
+
+    /** A portal on a chunk boundary needs its adjacent destination chunks even at low view distances. */
+    static int getNestedPortalLoadingDistance(int playerLoadDistance) {
+        return Math.max(1, playerLoadDistance / 4);
     }
     
     //includes:
