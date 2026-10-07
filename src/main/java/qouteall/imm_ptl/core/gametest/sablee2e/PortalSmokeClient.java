@@ -8,6 +8,7 @@ import net.minecraft.core.particles.DustParticleOptions;
 import org.joml.Vector3f;
 import qouteall.imm_ptl.core.ClientWorldLoader;
 import qouteall.imm_ptl.core.portal.Portal;
+import qouteall.imm_ptl.core.portal.Mirror;
 import qouteall.imm_ptl.core.render.CrossPortalEntityRenderer;
 import qouteall.imm_ptl.core.mixin.client.particle.IEParticle;
 import net.minecraft.world.entity.Entity;
@@ -394,6 +395,7 @@ public final class PortalSmokeClient {
             check.put("reference_witness", referenceWitness);
             check.put("straddling_witness", fragmentWitness);
             check.put("shader_path", PortalClippingTestControl.evidence());
+            if (scene.startsWith("mirror")) check.put("mirror_observer", verifyMirrorObserverIsolation(mc));
             check.put("create_motion_changed_pixels", createMotionPixels);
             check.put("source_motion_changed_pixels", sourceMotionPixels);
             check.put("source_visible_required", requiresSourcePixels());
@@ -504,6 +506,28 @@ public final class PortalSmokeClient {
         return Map.of("region", List.of(bounds[0], bounds[1], bounds[2], bounds[3]),
             "green_fraction", green / (double) pixels.length, "red_fraction", red / (double) pixels.length,
             "sampled_pixels", pixels.length);
+    }
+
+    private static Map<String, Object> verifyMirrorObserverIsolation(Minecraft mc) {
+        int mirrorCount = 0;
+        boolean rendersPlayers = false;
+        String mirrorId = "";
+        for (Entity entity : mc.level.entitiesForRendering()) {
+            if (entity instanceof Mirror mirror && !mirror.isRemoved()) {
+                mirrorCount++;
+                rendersPlayers |= mirror.getDoRenderPlayer();
+                mirrorId = mirror.getUUID().toString();
+            }
+        }
+        int playerCount = mc.level.players().size();
+        PortalSmokeMirrorGeometry.requireIsolatedObserver(
+            mc.player.isSpectator(), playerCount, mirrorCount, rendersPlayers
+        );
+        return Map.of("spectator", mc.player.isSpectator(), "player_count", playerCount,
+            "observer_uuid", mc.player.getUUID().toString(), "mirror_count", mirrorCount,
+            "mirror_uuid", mirrorId, "mirror_renders_players", rendersPlayers,
+            "global_render_yourself", IPGlobal.renderYourselfInPortal,
+            "scope", "disposable-mirror-only");
     }
 
     private static boolean requiresSourcePixels() {

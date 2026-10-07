@@ -326,6 +326,7 @@ dependencies {
     testImplementation "org.junit.jupiter:junit-jupiter"
     testImplementation "org.ow2.asm:asm-tree:9.7.1"
     testImplementation("maven.modrinth:embeddium:1.0.15+mc1.21.1") { transitive = false }
+    testImplementation("net.caffeinemc:sodium-neoforge-mod:0.8.12+mc1.21.1") { transitive = false }
     compileOnly "maven.modrinth:iris:1.8.14-beta.1+1.21.1-neoforge"
     // Optional compile-time API for Veil shader recompilation compatibility.
     compileOnly "foundry.veil:veil-neoforge-${minecraft_version}:4.3.2"

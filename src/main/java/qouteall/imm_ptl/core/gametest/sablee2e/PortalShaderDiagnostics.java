@@ -1,6 +1,5 @@
 package qouteall.imm_ptl.core.gametest.sablee2e;
 
-import net.irisshaders.iris.uniforms.CapturedRenderingState;
 import net.minecraft.client.Minecraft;
 import org.joml.Matrix4fc;
 import org.joml.Matrix4f;
@@ -43,8 +42,8 @@ public final class PortalShaderDiagnostics {
         state.put("planeBeforeModelView", FrontClipping.getActiveClipPlaneEquationBeforeModelView());
         state.put("planeAfterModelView", FrontClipping.getActiveClipPlaneEquationAfterModelView());
         state.put("drawModelView", drawModelView.get(new float[16]));
-        state.put("capturedGbufferModelView", matrix(CapturedRenderingState.INSTANCE.getGbufferModelView()));
-        state.put("capturedGbufferProjection", matrix(CapturedRenderingState.INSTANCE.getGbufferProjection()));
+        state.put("capturedGbufferModelView", PortalCapturedMatrices.modelView());
+        state.put("capturedGbufferProjection", PortalCapturedMatrices.projection());
         var camera = CHelper.getCurrentCameraPos();
         state.put("camera", new double[]{camera.x, camera.y, camera.z});
         if (program > 0) {
@@ -139,7 +138,4 @@ public final class PortalShaderDiagnostics {
         return Float.isFinite(distance) ? distance : "nonfinite";
     }
 
-    private static float[] matrix(Matrix4fc matrix) {
-        return matrix == null ? null : matrix.get(new float[16]);
-    }
 }

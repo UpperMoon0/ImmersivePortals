@@ -12,6 +12,8 @@ import com.mojang.blaze3d.pipeline.TextureTarget;
 import qouteall.imm_ptl.core.compat.iris_compatibility.IPIrisHelper;
 import static org.lwjgl.opengl.GL11C.*;
 import static org.lwjgl.opengl.GL30C.*;
+import static org.lwjgl.opengl.GL21C.*;
+import static org.lwjgl.opengl.GL15C.*;
 public class FramebufferCopyEglCheck {
  public static void main(String[] args) throws Exception {
   System.out.println("EGL version="+EGL10.eglQueryString(0,0x3054));
@@ -38,7 +40,13 @@ public class FramebufferCopyEglCheck {
   for(int format:new int[]{GL_DEPTH24_STENCIL8,GL_DEPTH32F_STENCIL8}) {
    for(int size:new int[]{8,13}) {
     RenderTarget from=target(size,format), to=target(size,GL_DEPTH24_STENCIL8);
+    int unpack=glGenBuffers();
+    glBindBuffer(GL_PIXEL_UNPACK_BUFFER,unpack);
+    glBufferData(GL_PIXEL_UNPACK_BUFFER,1L,GL_STATIC_DRAW);
     IPIrisHelper.matchDepthAttachment(from,to);
+    check(glGetInteger(GL_PIXEL_UNPACK_BUFFER_BINDING)==unpack,"unpack buffer restored");
+    check(glGetError()==GL_NO_ERROR,"depth allocation ignores bound unpack buffer");
+    glBindBuffer(GL_PIXEL_UNPACK_BUFFER,0);glDeleteBuffers(unpack);
     for(boolean blit:new boolean[]{false,true}) {
      System.setProperty("ip.iris.forceFramebufferBlit",Boolean.toString(blit));
      seed(from,.375f,77); seed(to,.875f,23);

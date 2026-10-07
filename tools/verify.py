@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 from contextlib import contextmanager
 import ctypes
+from datetime import datetime, timezone
 import json
 import math
 import hashlib
@@ -37,6 +38,13 @@ CLIENT_LOG = RESULT_DIR / "client.log"
 RENDERERS = ("vanilla", "sodium", "iris", "iris-active", "embeddium", "neoculus", "neoculus-active", "veil")
 ACTIVE_RENDERERS = ("iris-active", "neoculus-active")
 FIXTURE_NAME = "ip-clipping-fixture-v1"
+VISUAL_JOB_SECONDS = 120 * 60
+VISUAL_RUN_SECONDS = 112 * 60
+VISUAL_CLIENT_SECONDS = 105 * 60
+DIAGNOSTIC_COMMAND_SECONDS = 8
+DIAGNOSTIC_MAX_JVMS = 4
+DIAGNOSTIC_MAX_BYTES = 2 * 1024 * 1024
+VISUAL_CLEANUP_SECONDS = 120
 MATRIX = (("vanilla", True), ("sodium", True), ("iris", True), ("iris-active", True),
           ("embeddium", False), ("neoculus", False), ("neoculus-active", False),
           ("veil", False), ("vanilla", False))
@@ -427,7 +435,8 @@ def visual_timeout(renderer: str, samples: int, render_mode: str, diagnostic_fix
     # Software-driver budget: up to 90 seconds to build/settle/check each scene,
     # three epochs for active shaders, plus startup/crossing and consecutive frame samples.
     epochs = 3 if renderer in ACTIVE_RENDERERS else 2
-    return max(900, len(visual_scene_names(renderer, render_mode, diagnostic_fixture)) * epochs * 90 + samples / 4 + 300)
+    estimated = max(900, len(visual_scene_names(renderer, render_mode, diagnostic_fixture)) * epochs * 90 + samples / 4 + 300)
+    return min(VISUAL_CLIENT_SECONDS, estimated)
 
 
 def stage_shader_fixture(renderer: str, negative_control: str = "none", shaderpack_file: Path | None = None, shaderpack_profile: str | None = None) -> dict:
@@ -783,17 +792,181 @@ def validate_results(client_exit: int, smoke: bool = False) -> None:
             raise RuntimeError(f"missing or empty authoritative result: {name}")
 
 
+def client_progress_token() -> tuple:
+    """Only client output or authoritative scene/frame evidence counts as progress."""
+    paths = {CLIENT_LOG, CLIENT_DIR / "logs/latest.log", RESULT_DIR / "runtime-evidence.json",
+             RESULT_DIR / "scene-request.txt", RESULT_DIR / "scene-ready.txt", RESULT_DIR / "visual-pass.txt"}
+    paths.update(RESULT_DIR.glob("client-*.txt"))
+    paths.update(RESULT_DIR.glob("*.png"))
+    result = []
+    for path in sorted(paths):
+        try:
+            stat = path.stat()
+            result.append((str(path), stat.st_mtime_ns, stat.st_size))
+        except FileNotFoundError:
+            continue
+    return tuple(result)
+
+
+def process_snapshot() -> dict[int, dict]:
+    """Read process identity/ancestry without collecting arbitrary command-line secrets."""
+    if os.name == "nt":
+        command = ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+                   "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,ExecutablePath | ConvertTo-Json -Compress"]
+        output = subprocess.run(command, capture_output=True, text=True, timeout=5, check=True).stdout
+        records = json.loads(output or "[]")
+        if isinstance(records, dict):
+            records = [records]
+        return {int(record["ProcessId"]): {"ppid": int(record["ParentProcessId"]),
+                "name": record["Name"], "executable": record.get("ExecutablePath")} for record in records}
+    output = subprocess.run(["ps", "-eo", "pid=,ppid=,comm="], capture_output=True,
+                            text=True, timeout=5, check=True).stdout
+    result = {}
+    for line in output.splitlines():
+        fields = line.split(None, 2)
+        if len(fields) == 3:
+            result[int(fields[0])] = {"ppid": int(fields[1]), "name": Path(fields[2]).name, "executable": None}
+    return result
+
+
+def process_cwd(pid: int) -> Path | None:
+    try:
+        return Path(f"/proc/{pid}/cwd").resolve(strict=True)
+    except OSError:
+        return None
+
+
+def project_java_processes(roots: set[int], processes: dict[int, dict]) -> list[dict]:
+    descendants = set(roots)
+    while True:
+        added = {pid for pid, info in processes.items() if info["ppid"] in descendants}
+        if added.issubset(descendants):
+            break
+        descendants.update(added)
+    selected = []
+    for pid, info in processes.items():
+        if info["name"].lower() not in {"java", "java.exe", "javaw.exe"}:
+            continue
+        cwd = process_cwd(pid)
+        in_checkout = cwd is not None and cwd.is_relative_to(ROOT.resolve())
+        if pid not in descendants and not in_checkout:
+            continue
+        # Prioritize the actual game JVM over Gradle wrapper/daemon JVMs.
+        game = cwd is not None and cwd in {CLIENT_DIR.resolve(), SERVER_DIR.resolve()}
+        selected.append({"pid": pid, "ppid": info["ppid"], "name": info["name"],
+                         "scope": "descendant" if pid in descendants else "checkout-cwd",
+                         "game": game, "executable": info.get("executable")})
+    return sorted(selected, key=lambda info: (not info["game"], info["pid"]))[:DIAGNOSTIC_MAX_JVMS]
+
+
+def jcmd_for_process(process: dict) -> Path | None:
+    candidates = []
+    executable = process.get("executable")
+    if not executable:
+        try:
+            executable = str(Path(f"/proc/{process['pid']}/exe").resolve(strict=True))
+        except OSError:
+            pass
+    name = "jcmd.exe" if os.name == "nt" else "jcmd"
+    if executable:
+        candidates.append(Path(executable).with_name(name))
+    if os.environ.get("JAVA_HOME"):
+        candidates.append(Path(os.environ["JAVA_HOME"]) / "bin" / name)
+    found = shutil.which(name)
+    if found:
+        candidates.append(Path(found))
+    return next((path for path in candidates if path.is_file()), None)
+
+
+def collect_thread_diagnostics(server, client, reason: str) -> None:
+    """Bounded read-only thread dumps, before process-tree cleanup. Never changes JVM flags."""
+    roots = {pid for proc in (client, server) if type(pid := getattr(proc, "pid", None)) is int and pid > 1}
+    directory = RESULT_DIR / "thread-diagnostics" / reason
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        print(f"[verify] Cannot prepare thread diagnostic directory: {exc}", file=sys.stderr)
+        return
+    report = {"reason": reason, "utc": datetime.now(timezone.utc).isoformat(), "root_pids": sorted(roots), "jvms": []}
+    try:
+        if not roots:
+            report["error"] = "No verified harness process roots; no JVM attach attempted"
+            return
+        processes = project_java_processes(roots, process_snapshot())
+        if not processes:
+            report["error"] = "No scoped Java processes remained for thread diagnostics"
+        for process in processes:
+            entry = {key: process[key] for key in ("pid", "ppid", "name", "scope", "game")}
+            report["jvms"].append(entry)
+            jcmd = jcmd_for_process(process)
+            if jcmd is None:
+                entry["error"] = "jcmd is unavailable for this scoped JVM"
+                continue
+            path = directory / f"jvm-{process['pid']}-threads.txt"
+            entry["file"] = path.name
+            try:
+                with path.open("wb") as output:
+                    completed = subprocess.run([str(jcmd), str(process["pid"]), "Thread.print", "-l"],
+                        cwd=ROOT, stdout=output, stderr=subprocess.STDOUT, timeout=DIAGNOSTIC_COMMAND_SECONDS, check=False)
+                entry["returncode"] = completed.returncode
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                entry["error"] = str(exc)
+            finally:
+                if path.is_file() and path.stat().st_size > DIAGNOSTIC_MAX_BYTES:
+                    with path.open("rb") as output:
+                        head = output.read(DIAGNOSTIC_MAX_BYTES // 2)
+                        marker = b"\n... bounded thread dump: middle omitted ...\n"
+                        output.seek(-(DIAGNOSTIC_MAX_BYTES // 2 - len(marker)), os.SEEK_END)
+                        tail_bytes = output.read()
+                    path.write_bytes(head + marker + tail_bytes)
+                    entry["truncated"] = True
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        report["error"] = str(exc)
+    finally:
+        try:
+            (directory / "diagnostics.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+        except OSError as exc:
+            print(f"[verify] Cannot save thread diagnostics: {exc}", file=sys.stderr)
+
+
+def visual_run_deadline() -> float:
+    budget = float(VISUAL_RUN_SECONDS)
+    job_started = os.environ.get("IP_VERIFY_JOB_START_EPOCH")
+    if job_started:
+        try:
+            elapsed = max(0.0, time.time() - float(job_started))
+            # Leave two minutes for artifact upload even when setup consumed most of the job.
+            budget = min(budget, max(0.0, VISUAL_JOB_SECONDS - elapsed - 120))
+        except ValueError as exc:
+            raise RuntimeError("invalid IP_VERIFY_JOB_START_EPOCH") from exc
+    return time.monotonic() + budget
+
+
 def wait_for_client(server: subprocess.Popen, client: subprocess.Popen, timeout: float = 300, smoke: bool = False) -> None:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
+    started = time.monotonic()
+    deadline = started + timeout
+    last_progress = started
+    progress = client_progress_token()
+    diagnosed_stall = False
+    while True:
+        now = time.monotonic()
+        if now >= deadline:
+            collect_thread_diagnostics(server, client, "timeout")
+            raise TimeoutError(f"graphical client timed out after {timeout:.1f} seconds; thread diagnostics preserved")
         check_failures()
         if server.poll() is not None:
             raise RuntimeError(f"dedicated server exited during E2E (exit={server.returncode})")
         if client.poll() is not None:
             validate_results(client.returncode, smoke=smoke)
             return
+        current = client_progress_token()
+        if current != progress:
+            progress, last_progress = current, now
+        if not diagnosed_stall and now - last_progress >= 180:
+            print("[verify] No graphical-client progress for 180s; preserving scoped JVM thread dumps", flush=True)
+            collect_thread_diagnostics(server, client, "no-progress-180s")
+            diagnosed_stall = True
         time.sleep(0.25)
-    raise TimeoutError(f"graphical client timed out after {timeout} seconds")
 
 
 def stop_process_tree(proc: subprocess.Popen[bytes]) -> None:
@@ -864,6 +1037,7 @@ def run_e2e(smoke: bool = False, renderer: str = "sodium", sable: bool = True, s
             disable_copy_image: bool = False, shaderpack_file: Path | None = None, shaderpack_profile: str | None = None,
             gl_context: str = "default") -> None:
     print(f"[verify] {'visual ' + renderer if smoke else 'e2e'}: dedicated server + automated graphical client", flush=True)
+    run_deadline = visual_run_deadline() if smoke else None
     env = prepare_e2e()
     if smoke:
         env.update(IP_SABLE_E2E="false", IP_PORTAL_SMOKE="true", IP_SMOKE_RENDERER=renderer,
@@ -909,7 +1083,8 @@ def run_e2e(smoke: bool = False, renderer: str = "sodium", sable: bool = True, s
             stderr=subprocess.STDOUT,
             **creation,
         )
-        wait_for_server(server)
+        server_timeout = min(720, max(0, run_deadline - time.monotonic() - VISUAL_CLEANUP_SECONDS)) if smoke else 720
+        wait_for_server(server, timeout=server_timeout)
         print("[verify] e2e server ready; launching automated client", flush=True)
 
         client_command = gradle_cmd("run" + client_run, *client_properties)
@@ -921,6 +1096,9 @@ def run_e2e(smoke: bool = False, renderer: str = "sodium", sable: bool = True, s
         client, client_log = launch_graphical_client(client_command, env, creation)
         try:
             timeout = visual_timeout(renderer, samples, render_mode, fixture["diagnostic_fixture"]) if smoke else 300
+            if smoke:
+                timeout = min(timeout, max(0, run_deadline - time.monotonic() - VISUAL_CLEANUP_SECONDS))
+                print(f"[verify] Graphical client budget: {timeout:.0f}s; bounded by 120-minute job with diagnostics/cleanup reserve", flush=True)
             wait_for_client(server, client, timeout=timeout, smoke=smoke)
         finally:
             stop_process_tree(client)

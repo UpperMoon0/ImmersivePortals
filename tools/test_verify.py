@@ -2,6 +2,7 @@
 import tempfile
 import json
 import socket
+import subprocess
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -51,6 +52,70 @@ class VerificationHarnessTest(unittest.TestCase):
     def test_live_client_times_out(self):
         with self.assertRaises(TimeoutError):
             verify.wait_for_client(Mock(), Mock(), timeout=0)
+
+    def test_scoped_jvm_discovery_excludes_unrelated_java_processes(self):
+        processes = {101: {"ppid": 1, "name": "sh"}, 102: {"ppid": 101, "name": "java"},
+                     103: {"ppid": 102, "name": "java"}, 104: {"ppid": 101, "name": "Xvfb"},
+                     201: {"ppid": 1, "name": "java"}, 202: {"ppid": 1, "name": "java"}}
+        paths = {102: verify.ROOT, 103: verify.CLIENT_DIR, 201: Path("/unrelated/project"), 202: verify.SERVER_DIR}
+        with patch.object(verify, "process_cwd", side_effect=lambda pid: paths.get(pid)):
+            selected = verify.project_java_processes({101}, processes)
+        self.assertEqual({process["pid"] for process in selected}, {102, 103, 202})
+        self.assertEqual(selected[0]["pid"], 103)
+        self.assertEqual(next(process for process in selected if process["pid"] == 202)["scope"], "checkout-cwd")
+
+    def test_thread_diagnostics_are_read_only_bounded_and_preserved(self):
+        process = {"pid": 102, "ppid": 101, "name": "java", "scope": "descendant", "game": True}
+        def dump(command, **kwargs):
+            self.assertEqual(command, ["/fake/jdk/bin/jcmd", "102", "Thread.print", "-l"])
+            self.assertEqual(kwargs["timeout"], verify.DIAGNOSTIC_COMMAND_SECONDS)
+            kwargs["stdout"].write(b"A" * (verify.DIAGNOSTIC_MAX_BYTES + 1000))
+            return Mock(returncode=0)
+        with patch.object(verify, "process_snapshot", return_value={}), \
+             patch.object(verify, "project_java_processes", return_value=[process]), \
+             patch.object(verify, "jcmd_for_process", return_value=Path("/fake/jdk/bin/jcmd")), \
+             patch.object(verify.subprocess, "run", side_effect=dump):
+            verify.collect_thread_diagnostics(Mock(pid=101), Mock(pid=100), "no-progress-180s")
+        directory = self.results / "thread-diagnostics/no-progress-180s"
+        report = json.loads((directory / "diagnostics.json").read_text())
+        self.assertTrue(report["jvms"][0]["truncated"])
+        self.assertEqual((directory / "jvm-102-threads.txt").stat().st_size, verify.DIAGNOSTIC_MAX_BYTES)
+
+    def test_jcmd_timeout_does_not_hide_primary_client_timeout(self):
+        process = {"pid": 102, "ppid": 101, "name": "java", "scope": "descendant", "game": True}
+        with patch.object(verify, "process_snapshot", return_value={}), \
+             patch.object(verify, "project_java_processes", return_value=[process]), \
+             patch.object(verify, "jcmd_for_process", return_value=Path("/fake/jdk/bin/jcmd")), \
+             patch.object(verify.subprocess, "run", side_effect=subprocess.TimeoutExpired("jcmd", 8)):
+            verify.collect_thread_diagnostics(Mock(pid=101), Mock(pid=100), "timeout")
+        report = json.loads((self.results / "thread-diagnostics/timeout/diagnostics.json").read_text())
+        self.assertIn("timed out", report["jvms"][0]["error"])
+
+    def test_client_stall_captures_once_and_timeout_captures_before_cleanup(self):
+        with patch.object(verify.time, "monotonic", side_effect=[0, 181, 250, 301]), \
+             patch.object(verify.time, "sleep"), \
+             patch.object(verify, "client_progress_token", return_value=()), \
+             patch.object(verify, "collect_thread_diagnostics") as diagnostics:
+            with self.assertRaises(TimeoutError):
+                verify.wait_for_client(Mock(poll=Mock(return_value=None)), Mock(poll=Mock(return_value=None)), timeout=300)
+        self.assertEqual([call.args[2] for call in diagnostics.call_args_list], ["no-progress-180s", "timeout"])
+
+    def test_new_client_progress_resets_stall_clock_without_extending_deadline(self):
+        with patch.object(verify.time, "monotonic", side_effect=[0, 170, 340, 501]), \
+             patch.object(verify.time, "sleep"), \
+             patch.object(verify, "client_progress_token", side_effect=[(), (1,), (2,)]), \
+             patch.object(verify, "collect_thread_diagnostics") as diagnostics:
+            with self.assertRaises(TimeoutError):
+                verify.wait_for_client(Mock(poll=Mock(return_value=None)), Mock(poll=Mock(return_value=None)), timeout=500)
+        self.assertEqual([call.args[2] for call in diagnostics.call_args_list], ["timeout"])
+
+    def test_visual_budget_accounts_for_elapsed_job_and_cleanup(self):
+        with patch.dict(verify.os.environ, {"IP_VERIFY_JOB_START_EPOCH": "700"}), \
+             patch.object(verify.time, "time", return_value=2000), patch.object(verify.time, "monotonic", return_value=1000):
+            self.assertEqual(verify.visual_run_deadline(), 6780)
+        workflow = (verify.ROOT / ".github/workflows/visual.yml").read_text()
+        self.assertIn("timeout-minutes: 120", workflow)
+        self.assertIn("IP_VERIFY_JOB_START_EPOCH", workflow)
 
     def test_windows_session_selection_is_dynamic_and_prefers_current_then_console(self):
         sessions = [(0, 4, ""), (3, 0, "RdpUser"), (7, 0, "ConsoleUser")]
@@ -457,9 +522,11 @@ class VerificationHarnessTest(unittest.TestCase):
         base = verify.visual_timeout("sodium", 200, "normal", True)
         active = verify.visual_timeout("iris-active", 200, "normal", True)
         real_pack = verify.visual_timeout("iris-active", 200, "normal", False)
-        self.assertGreater(active, base)
-        self.assertGreater(active, real_pack)
-        self.assertGreater(verify.visual_timeout("iris-active", 1200, "normal", True), active)
+        self.assertGreaterEqual(active, base)
+        self.assertGreaterEqual(active, real_pack)
+        self.assertGreaterEqual(verify.visual_timeout("iris-active", 1200, "normal", True), active)
+        self.assertLessEqual(active, 105 * 60)
+        self.assertLessEqual(verify.visual_timeout("iris-active", 12000, "normal", True), 105 * 60)
 
     def test_live_shader_options_must_match_recorded_preset(self):
         (self.results / "fixture.json").write_text(json.dumps({"name": verify.FIXTURE_NAME, "options": {"SHADOWS": "false"}}))

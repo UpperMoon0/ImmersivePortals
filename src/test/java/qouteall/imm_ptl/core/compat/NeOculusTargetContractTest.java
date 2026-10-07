@@ -50,6 +50,19 @@ class NeOculusTargetContractTest {
     }
 
     @Test
+    void diagnosticCapturedMatricesUseTheConcreteNeOculusReturnDescriptor() throws Exception {
+        try (var jar = openJar()) {
+            var state = read(jar, IRIS + "uniforms/CapturedRenderingState");
+            field(state, "INSTANCE", "L" + IRIS + "uniforms/CapturedRenderingState;");
+            method(state, "getGbufferModelView", "()Lorg/joml/Matrix4f;");
+            method(state, "getGbufferProjection", "()Lorg/joml/Matrix4f;");
+            assertFalse(state.methods.stream().anyMatch(method ->
+                method.name.startsWith("getGbuffer") && method.desc.equals("()Lorg/joml/Matrix4fc;")),
+                "Do not link test diagnostics against Iris's interface-return ABI on NeOculus");
+        }
+    }
+
+    @Test
     void sharedPipelineHooksAndInterfaceCallsMatchNeOculus() throws Exception {
         try (var jar = openJar()) {
             var pipeline = read(jar, IRIS + "pipeline/IrisRenderingPipeline");

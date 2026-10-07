@@ -30,7 +30,7 @@ public class ChunkVisibility {
                 player.level().dimension(),
                 player.chunkPosition()
             ),
-            McHelper.getPlayerLoadDistance(player)
+            getChunkDataLoadingRadius(McHelper.getPlayerLoadDistance(player))
         );
     }
     
@@ -117,7 +117,7 @@ public class ChunkVisibility {
                         portal.transformPoint(player.position())
                     ))
                 ),
-                renderDistance
+                getChunkDataLoadingRadius(renderDistance)
             );
         }
         else {
@@ -134,10 +134,10 @@ public class ChunkVisibility {
                     portal.getDestDim(),
                     new ChunkPos(BlockPos.containing(portal.getDestPos()))
                 ),
-                getCappedLoadingDistance(
+                getChunkDataLoadingRadius(getCappedLoadingDistance(
                     portal, player,
                     getDirectLoadingDistance(loadDistance, distance)
-                )
+                ))
             );
         }
     }
@@ -159,7 +159,7 @@ public class ChunkVisibility {
                     portal.getDestDim(),
                     new ChunkPos(BlockPos.containing(transformedPos))
                 ),
-                renderDistance
+                getChunkDataLoadingRadius(Math.max(1, renderDistance))
             );
         }
         else {
@@ -168,9 +168,9 @@ public class ChunkVisibility {
                     portal.getDestDim(),
                     new ChunkPos(BlockPos.containing(portal.getDestPos()))
                 ),
-                getCappedLoadingDistance(
+                getChunkDataLoadingRadius(getCappedLoadingDistance(
                     portal, player, getNestedPortalLoadingDistance(loadDistance)
-                )
+                ))
             );
         }
     }
@@ -178,6 +178,20 @@ public class ChunkVisibility {
     /** A portal on a chunk boundary needs its adjacent destination chunks even at low view distances. */
     static int getNestedPortalLoadingDistance(int playerLoadDistance) {
         return Math.max(1, playerLoadDistance / 4);
+    }
+
+    /**
+     * Sodium and Embeddium build a chunk only after its entire 3x3 neighborhood has
+     * block and light data. Every visible radius must therefore have one data ring
+     * around it. Add that ring after capping: a visible radius of one at z=0
+     * includes chunk z=-1, whose mesh needs z=-2 even though that chunk is not drawn.
+     * This also restores vanilla's outer data border for the main view: CE replaces
+     * both ChunkMap.applyChunkTrackingView and PlayerChunkSender, so vanilla cannot
+     * deliver those neighbors independently. A zero radius still means a center chunk;
+     * its data prerequisites occupy radius one. Config caps apply to visible chunks.
+     */
+    static int getChunkDataLoadingRadius(int cappedVisibleRadius) {
+        return Math.addExact(Math.max(0, cappedVisibleRadius), 1);
     }
     
     //includes:

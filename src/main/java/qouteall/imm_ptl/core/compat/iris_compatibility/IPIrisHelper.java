@@ -11,6 +11,9 @@ import static org.lwjgl.opengl.GL11C.*;
 import static org.lwjgl.opengl.GL14C.GL_DEPTH_COMPONENT16;
 import static org.lwjgl.opengl.GL14C.GL_DEPTH_COMPONENT24;
 import static org.lwjgl.opengl.GL14C.GL_DEPTH_COMPONENT32;
+import static org.lwjgl.opengl.GL15C.glBindBuffer;
+import static org.lwjgl.opengl.GL21C.GL_PIXEL_UNPACK_BUFFER;
+import static org.lwjgl.opengl.GL21C.GL_PIXEL_UNPACK_BUFFER_BINDING;
 import static org.lwjgl.opengl.GL30C.*;
 
 /** Copies only like-for-like attachments. CopyImageSubData is not a format converter. */
@@ -78,12 +81,16 @@ public class IPIrisHelper {
             default -> throw unsupported("unknown depth storage format", from, to);
         }
         int texture = glGetInteger(GL_TEXTURE_BINDING_2D);
+        int unpack = glGetInteger(GL_PIXEL_UNPACK_BUFFER_BINDING);
         int read = glGetInteger(GL_READ_FRAMEBUFFER_BINDING);
         int draw = glGetInteger(GL_DRAW_FRAMEBUFFER_BINDING);
         try {
             validateFramebuffer(source.frameBufferId);
             validateFramebuffer(scratch.frameBufferId);
             glBindTexture(GL_TEXTURE_2D, scratch.getDepthTextureId());
+            // A null pixel pointer means an offset into a bound PBO, not empty storage.
+            // Texture uploads by another renderer must not influence this allocation.
+            glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
             glTexImage2D(GL_TEXTURE_2D, 0, from.format, from.width, from.height,
                 0, pixelFormat, pixelType, 0L);
             glBindFramebuffer(GL_DRAW_FRAMEBUFFER, scratch.frameBufferId);
@@ -94,6 +101,7 @@ public class IPIrisHelper {
             validateFramebuffer(scratch.frameBufferId);
         }
         finally {
+            glBindBuffer(GL_PIXEL_UNPACK_BUFFER, unpack);
             glBindTexture(GL_TEXTURE_2D, texture);
             glBindFramebuffer(GL_READ_FRAMEBUFFER, read);
             glBindFramebuffer(GL_DRAW_FRAMEBUFFER, draw);

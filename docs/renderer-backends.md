@@ -26,6 +26,12 @@ The adapter uses `org.embeddedt.embeddium.impl` and the public Embeddium sprite 
 boundary, with an independently instantiated Embeddium implementation.
 
 - Chunk arrival/removal updates the destination world's `ChunkTracker` block-data status.
+- Base chunk loaders send a one-chunk block/light-data halo beyond the visible radius. Both optimized
+  backends require a complete 3×3 neighborhood before building any visible chunk. Visibility caps still
+  apply before this prerequisite ring, including cap 1, nested destinations, and oblique views at chunk
+  boundaries. CE replaces vanilla's main-view packet tracking, so its main-view loader also restores the
+  outer ring normally supplied by vanilla. Configured indirect caps are normalized to 1–32; zero visible
+  radius means the center plus its neighbors, negative inputs are normalized, and overflow is rejected.
 - Each recursive view swaps render lists, render distance, current viewport, and portal frustum culler.
   Rebuild queues, their visibility frame and camera positions, mesh buffers and build jobs remain owned
   by the dimension renderer: Embeddium consumes previous-pass discoveries before collecting visibility

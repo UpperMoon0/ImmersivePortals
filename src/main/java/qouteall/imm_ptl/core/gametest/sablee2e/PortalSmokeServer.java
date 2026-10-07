@@ -90,9 +90,14 @@ public final class PortalSmokeServer {
         boolean background = scene.endsWith("-background");
         int z = visible ? -1 : 1;
         if (scene.startsWith("mirror")) {
-            if (!background && !visible) wall(source, -1, Blocks.RED_CONCRETE.defaultBlockState());
+            if (!background && !visible) wall(source, PortalSmokeMirrorGeometry.excludedWallZ(), Blocks.RED_CONCRETE.defaultBlockState());
             wall(source, 6, (visible ? Blocks.RED_CONCRETE : Blocks.LIME_CONCRETE).defaultBlockState());
             Mirror mirror = Mirror.ENTITY_TYPE.create(source);
+            // The spectator observer's reflected head is legitimate foreground
+            // geometry. This controlled wall/depth fixture excludes that one
+            // player through the mirror's existing, synced per-portal setting.
+            // The mirror is discarded on scene change; no global option changes.
+            mirror.setDoRenderPlayer(false);
             configure(mirror, Level.OVERWORLD, new Vec3(0, 82, 0), new Vec3(0, 82, 0));
             add(source, mirror);
         } else {
