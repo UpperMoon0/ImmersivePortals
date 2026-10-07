@@ -55,6 +55,9 @@ public class IPCompatMixinPlugin implements IMixinConfigPlugin {
 
 
         LoadingModList modList = LoadingModList.get();
+        if (mixinClassName.contains(".fabric.")) {
+            return modList.getModFileById("fabric_networking_api_v1") != null;
+        }
         if (mixinClassName.contains(".iris.") || mixinClassName.contains(".sodium.")
             || mixinClassName.contains(".embeddium.") || mixinClassName.contains(".neoculus.")) {
             boolean applies = rendererCompatibility(modList).appliesTo(mixinClassName);

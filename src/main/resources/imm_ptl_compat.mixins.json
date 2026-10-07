@@ -4,6 +4,7 @@
   "compatibilityLevel": "JAVA_21",
   "plugin": "qouteall.imm_ptl.core.compat.IPCompatMixinPlugin",
   "mixins": [
+    "fabric.MixinFabricPayloadTypeRegistry",
     "sable.AccessorSubLevel_SablePortalCompat",
     "sable.InvokerSubLevelTrackingSystem_SablePortalCompat",
     "sable.MixinEntity_SableCollisionCompat",
