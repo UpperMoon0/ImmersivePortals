@@ -64,7 +64,7 @@ public final class PortalSmokeSceneWitness {
                     Map<?, ?> sections = (Map<?, ?>) field(manager.getClass(), "sectionByPosition").get(manager);
                     state.put("backend", backend.getClass().getName());
                     state.put("sectionCount", sections.size());
-                    if (request.contains("create-nested") && dimension == Level.NETHER) {
+                    {
                         try {
                             Object tracker = world.getClass().getMethod("sodium$getTracker").invoke(world);
                             Map<?, ?> statuses = (Map<?, ?>) field(tracker.getClass(), "chunkStatus").get(tracker);
@@ -72,7 +72,7 @@ public final class PortalSmokeSceneWitness {
                             var pendingLoad = (java.util.Collection<?>) field(tracker.getClass(), "loadQueue").get(tracker);
                             var pendingUnload = (java.util.Collection<?>) field(tracker.getClass(), "unloadQueue").get(tracker);
                             Map<String, Object> chunkState = new LinkedHashMap<>();
-                            for (int x = 0; x <= 3; x++) for (int z = -2; z <= 1; z++) {
+                            for (int x = -3; x <= 3; x++) for (int z = -3; z <= 3; z++) {
                                 long key = net.minecraft.world.level.ChunkPos.asLong(x, z);
                                 Object flagsValue = statuses.get(key);
                                 int flags = flagsValue instanceof Number value ? value.intValue() : 0;
