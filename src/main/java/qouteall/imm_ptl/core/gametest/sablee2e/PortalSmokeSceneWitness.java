@@ -30,6 +30,8 @@ public final class PortalSmokeSceneWitness {
         String server = PortalSmokeSupport.read("scene-world-witness.json");
         try {
             result.put("server", server.isEmpty() ? "unavailable" : new Gson().fromJson(server, Map.class));
+            String currentServer = PortalSmokeSupport.read("scene-live-world-witness.json");
+            if (!currentServer.isEmpty()) result.put("serverCurrent", new Gson().fromJson(currentServer, Map.class));
             Map<String, Object> worlds = new LinkedHashMap<>();
             for (var dimension : List.of(Level.OVERWORLD, Level.NETHER, Level.END)) {
                 var world = ClientWorldLoader.getOptionalWorld(dimension);
@@ -37,12 +39,24 @@ public final class PortalSmokeSceneWitness {
                 Map<String, Object> state = new LinkedHashMap<>();
                 state.put("gameTime", world.getGameTime());
                 Map<String, String> blocks = new LinkedHashMap<>();
-                for (int x : new int[]{-1, 0}) for (int z : new int[]{-4, -1, 1}) {
+                int[] blockXs = request.contains("create-nested") && dimension == Level.NETHER
+                    ? new int[]{-1, 0, 28, 31, 32, 33, 40} : new int[]{-1, 0};
+                for (int x : blockXs) for (int z : new int[]{-10, -4, -1, 1}) {
                     var chunk = world.getChunkSource().getChunk(x >> 4, z >> 4, ChunkStatus.FULL, false);
                     blocks.put(x + ",82," + z, chunk == null ? "chunk absent"
                         : chunk.getBlockState(new BlockPos(x, 82, z)).toString());
                 }
                 state.put("blocks", blocks);
+                if (request.contains("create-nested") && dimension == Level.NETHER) {
+                    var entities = new java.util.ArrayList<Map<String, Object>>();
+                    for (var entity : world.entitiesForRendering()) {
+                        if (entity.getX() >= 24 && entity.getX() <= 40 && entity.getY() >= 76 && entity.getY() <= 90) {
+                            entities.add(Map.of("id", entity.getId(), "type", entity.getClass().getName(),
+                                "position", List.of(entity.getX(), entity.getY(), entity.getZ()), "removed", entity.isRemoved()));
+                        }
+                    }
+                    state.put("nestedFixtureEntities", entities);
+                }
                 try {
                     var renderer = ClientWorldLoader.getWorldRenderer(dimension);
                     Object backend = renderer.getClass().getMethod("sodium$getWorldRenderer").invoke(renderer);
@@ -50,8 +64,29 @@ public final class PortalSmokeSceneWitness {
                     Map<?, ?> sections = (Map<?, ?>) field(manager.getClass(), "sectionByPosition").get(manager);
                     state.put("backend", backend.getClass().getName());
                     state.put("sectionCount", sections.size());
+                    if (request.contains("create-nested") && dimension == Level.NETHER) {
+                        try {
+                            Object tracker = world.getClass().getMethod("sodium$getTracker").invoke(world);
+                            Map<?, ?> statuses = (Map<?, ?>) field(tracker.getClass(), "chunkStatus").get(tracker);
+                            var ready = (java.util.Collection<?>) field(tracker.getClass(), "chunkReady").get(tracker);
+                            var pendingLoad = (java.util.Collection<?>) field(tracker.getClass(), "loadQueue").get(tracker);
+                            var pendingUnload = (java.util.Collection<?>) field(tracker.getClass(), "unloadQueue").get(tracker);
+                            Map<String, Object> chunkState = new LinkedHashMap<>();
+                            for (int x = 0; x <= 3; x++) for (int z = -2; z <= 1; z++) {
+                                long key = net.minecraft.world.level.ChunkPos.asLong(x, z);
+                                Object flagsValue = statuses.get(key);
+                                int flags = flagsValue instanceof Number value ? value.intValue() : 0;
+                                chunkState.put(x + "," + z, Map.of("flags", flags, "blockData", (flags & 1) != 0,
+                                    "lightData", (flags & 2) != 0, "ready", ready.contains(key),
+                                    "pendingLoad", pendingLoad.contains(key), "pendingUnload", pendingUnload.contains(key)));
+                            }
+                            state.put("chunkTracker", chunkState);
+                        } catch (ReflectiveOperationException absent) { state.put("chunkTrackerDiagnostic", absent.toString()); }
+                    }
                     Map<String, Object> meshes = new LinkedHashMap<>();
-                    for (int x : new int[]{-1, 0}) for (int z : new int[]{-1, 0}) {
+                    int[] sectionXs = request.contains("create-nested") && dimension == Level.NETHER
+                        ? new int[]{-1, 0, 1, 2, 3} : new int[]{-1, 0};
+                    for (int x : sectionXs) for (int z : new int[]{-1, 0}) {
                         Object section = sections.get(SectionPos.asLong(x, 5, z));
                         Map<String, Object> mesh = new LinkedHashMap<>();
                         mesh.put("present", section != null);
@@ -64,6 +99,12 @@ public final class PortalSmokeSceneWitness {
                         meshes.put(x + ",5," + z, mesh);
                     }
                     state.put("meshes", meshes);
+                    Map<String, Object> managerState = new LinkedHashMap<>();
+                    for (String name : List.of("frame", "lastUpdatedFrame", "needsGraphUpdate", "cameraPosition")) {
+                        try { managerState.put(name, String.valueOf(field(manager.getClass(), name).get(manager))); }
+                        catch (NoSuchFieldException absent) { managerState.put(name, "unavailable"); }
+                    }
+                    state.put("managerState", managerState);
                 } catch (ReflectiveOperationException optionalBackend) {
                     state.put("backendDiagnostic", optionalBackend.toString());
                 }

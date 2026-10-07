@@ -176,18 +176,50 @@ public final class PortalSmokeServer {
     }
 
     private static void writeSceneWitness(String token) {
+        writeSceneWitness(token, "scene-world-witness.json");
+    }
+
+    private static void writeSceneWitness(String token, String file) {
         Map<String, Object> worlds = new java.util.LinkedHashMap<>();
         for (var dimension : List.of(Level.OVERWORLD, Level.NETHER, Level.END)) {
             ServerLevel level = player.server.getLevel(dimension);
             Map<String, String> blocks = new java.util.LinkedHashMap<>();
-            for (int x : new int[]{-1, 0}) for (int z : new int[]{-4, -1, 1}) {
+            int[] blockXs = token.contains("create-nested") && dimension == Level.NETHER
+                ? new int[]{-1, 0, 28, 31, 32, 33, 40} : new int[]{-1, 0};
+            for (int x : blockXs) for (int z : new int[]{-10, -4, -1, 1}) {
                 BlockPos pos = new BlockPos(x, 82, z);
-                blocks.put(x + ",82," + z, level.getBlockState(pos).toString());
+                var chunk = level.getChunkSource().getChunk(x >> 4, z >> 4, net.minecraft.world.level.chunk.status.ChunkStatus.FULL, false);
+                blocks.put(x + ",82," + z, chunk == null ? "chunk absent" : chunk.getBlockState(pos).toString());
             }
-            worlds.put(dimension.location().toString(), Map.of("gameTime", level.getGameTime(), "blocks", blocks));
+            Map<String, Object> state = new java.util.LinkedHashMap<>();
+            state.put("gameTime", level.getGameTime());
+            state.put("blocks", blocks);
+            if (token.contains("create-nested") && dimension == Level.NETHER) {
+                Map<String, Object> tracking = new java.util.LinkedHashMap<>();
+                for (int x : new int[]{0, 1, 2, 3}) for (int z : new int[]{-1, 0}) {
+                    var records = qouteall.imm_ptl.core.chunk_loading.ImmPtlChunkTracking.getWatchRecordForChunk(dimension, x, z);
+                    var record = records == null ? null : records.get(player);
+                    var holder = ((qouteall.imm_ptl.core.ducks.IEChunkMap) level.getChunkSource().chunkMap)
+                        .ip_getChunkHolder(net.minecraft.world.level.ChunkPos.asLong(x, z));
+                    Map<String, Object> chunk = new java.util.LinkedHashMap<>();
+                    chunk.put("watch", record == null ? "absent" : record.toString());
+                    chunk.put("lastWatchGeneration", record == null ? -1 : record.lastWatchGeneration);
+                    chunk.put("boundary", record != null && record.isBoundary);
+                    chunk.put("holder", holder == null ? "absent" : holder.getFullStatus().toString());
+                    chunk.put("tickingChunk", holder != null && holder.getTickingChunk() != null);
+                    tracking.put(x + "," + z, chunk);
+                }
+                state.put("tracking", tracking);
+            }
+            worlds.put(dimension.location().toString(), state);
         }
-        PortalSmokeSupport.write("scene-world-witness.json", new Gson().toJson(Map.of(
-            "request", token, "fixtureGeneration", fixtureGeneration, "worlds", worlds)));
+        var loaders = new ArrayList<String>();
+        qouteall.imm_ptl.core.chunk_loading.ChunkVisibility.foreachBaseChunkLoaders(player, loader -> loaders.add(loader.toString()));
+        PortalSmokeSupport.write(file, new Gson().toJson(Map.of(
+            "request", token, "fixtureGeneration", fixtureGeneration, "worlds", worlds,
+            "baseChunkLoaders", loaders,
+            "serverPerformance", qouteall.imm_ptl.core.chunk_loading.ServerPerformanceMonitor.getLevel().toString(),
+            "clientPerformance", qouteall.imm_ptl.core.chunk_loading.ImmPtlChunkTracking.getPlayerInfo(player).performanceLevel.toString())));
     }
 
     private static void wall(ServerLevel level, int z, BlockState state) {
@@ -219,6 +251,9 @@ public final class PortalSmokeServer {
         try {
             String next = PortalSmokeSupport.read("scene-request.txt");
             if (!next.isEmpty() && !next.equals(request)) setup(next);
+            if (scene.startsWith("create-nested") && player.tickCount % 20 == 0) {
+                writeSceneWitness(request, "scene-live-world-witness.json");
+            }
             if (scene.startsWith("create-")) {
                 ServerLevel target = player.server.getLevel(Level.NETHER);
                 ServerLevel source = player.server.getLevel(Level.OVERWORLD);
