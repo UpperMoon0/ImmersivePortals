@@ -24,6 +24,22 @@ This repository maintains the Minecraft 1.21.1 NeoForge build derived from [qout
 
 The Fabric project is maintained separately by the original Immersive Portals team. This repository produces the NeoForge jar only.
 
+## Renderer and shader installation
+
+Install Cloth Config API 15.0+ for NeoForge and choose one terrain renderer. The pinned compatibility targets are:
+
+| Terrain renderer | Optional shader implementation |
+| --- | --- |
+| Vanilla Minecraft 1.21.1 | None |
+| Sodium 0.8.12+mc1.21.1 | Official Iris 1.8.14-beta.1+1.21.1-neoforge |
+| Embeddium 1.0.15+mc1.21.1 | NeOculus 1.8.7 |
+
+Do not install Sodium and Embeddium together. NeOculus requires Embeddium; official Iris requires Sodium. Classic Oculus is not the pinned NeOculus implementation. See the [renderer contract](docs/renderer-backends.md) for exact artifacts and version checks. NeoForge 21.1.228 is the verification baseline.
+
+Shaderpack coverage includes MakeUp Ultra Fast 9.4a at `shadowless_high` and Complementary Reimagined r5.5.1 at `POTATO`, plus owned clipping and shadow fixtures. Other packs, presets and pack-specific shadows require separate validation. Compatibility/debug renderers retain a one-layer portal limit; normal rendering supports nesting.
+
+With Create 6.0.10-280 / Flywheel 1.0.6, portal and clipped views use a scoped vanilla block-entity fallback, and the selected Flywheel backend resumes for the main view. See the [Flywheel compatibility audit](docs/compat/flywheel-1.0.6.md) and [6.0.11 release notes](changelog/6.0.11.md).
+
 ## Sable compatibility
 
 Sable is optional. With Sable 2.0.5 installed, this build integrates moving sublevels with Immersive Portals rather than treating them as ordinary hidden-world entities. Sublevels keep one global plot identity while crossing dimensions, retain velocity and interpolation history, preserve rider/passenger relationships, and continue remote entity tracking on the opposite side of a portal. Vertical dimension stacks, rotated portals, gravity-driven recrossing, server-first rider teleports, and client camera/gravity transforms are covered by automated tests.
@@ -79,8 +95,9 @@ Visual runs measure real server tick processing and client frame rendering after
 - Every branch push: core checks.
 - PRs targeting `main`: core checks plus Sable E2E and visual checks for every non-documentation change. Unknown paths require heavy checks. Documentation-only PRs skip graphics.
 - Every push to `main` and manual CI run: core, Sable E2E and visual checks.
-- Nightly/manual extended workflow: all nine renderer/Sable lanes, both negative controls, compatibility/debug copy-path lanes, and explicit Flywheel off/instancing/indirect lanes, with 1200 runtime samples each. Compatibility/debug renderers have a documented one-layer limit, so nesting is required by normal-renderer lanes only.
-- Release: core, Sable E2E and all declared renderer, active-pack, negative-control, framebuffer-blit and Flywheel configurations must pass before publishing the jar produced by core verification.
+- Graphical PR/main/manual CI: 26 fixture/control lanes cover the nine renderer/Sable combinations, active shaders, shadow positives/negatives, clipping negatives, compatibility/debug copy paths, and Flywheel off/instancing/indirect. Four real-pack lanes test both pinned packs on Iris and NeOculus after the fixture/control matrix succeeds.
+- Nightly/manual extended workflow: the same 30 graphical configurations with 1200 runtime samples each. Compatibility/debug renderers have a one-layer limit, so nesting is required by normal-renderer lanes only.
+- Release: core, Sable E2E and all declared renderer, active-pack, shadow, negative-control, real-pack, framebuffer-blit and Flywheel configurations must pass before publishing the jar produced by core verification.
 
 Configure branch protection to require **Required verification**. This stable aggregate job fails if any selected test failed, was cancelled or unexpectedly skipped. A workflow file alone cannot configure repository branch protection.
 

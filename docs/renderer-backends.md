@@ -19,7 +19,7 @@ NeOculus's dummy `iris` mod ID never selects official Iris's `SodiumShader` mixi
 - [NeOculus 44241916](https://github.com/Happy-FZM/ForgeOculus/tree/442419165dc3a2e727892501b4f6e7cb08b5a0fa)
 - [NeOculus installable 1.8.7](https://modrinth.com/mod/neoculus/version/ZMibIRkN), SHA-1 `561550dd5a4ca05bb31b90e50bc7194c263065ff`
 
-## Embeddium-specific integration
+## Terrain renderer integration
 
 Sodium 0.8.12 additionally caches multi-draw commands per render region. The Sodium adapter tracks the
 actual render-list and batch identities per terrain pass at draw time, invalidating only when ownership
@@ -90,6 +90,27 @@ new Iris compatibility classes are not implicitly enabled there. `NeOculusTarget
 NeOculus jar separately from the official Iris test classpath, avoiding accidental ABI masking.
 
 ## Verification boundaries
+
+Normal rendering supports nested portals. Compatibility/debug renderers retain a one-layer limit.
+Create/Flywheel uses a scoped vanilla fallback for portal and clipped views; the selected main-view backend
+is restored afterward. See the [Flywheel 1.0.6 audit](compat/flywheel-1.0.6.md) for dependencies and scope.
+
+### Real shaderpack inputs
+
+The [pinned download manifest](../tools/shaderpacks/real-packs.json) defines MakeUp Ultra Fast 9.4a
+(`shadowless_high`) and Complementary Reimagined r5.5.1 (`POTATO`), each run on official Iris and NeOculus.
+Downloads are hash-checked; pack ZIPs are not bundled in releases or evidence artifacts. These preset-specific
+smoke scenes do not certify other packs/presets or arbitrary pack-specific shadows. Shadow acceptance uses
+the separate owned fixture below. See the [shader clipping audit](../misc/iris-clipping-audit.md).
+
+To reproduce with an existing, unmodified ZIP:
+
+```sh
+python tools/verify.py visual --renderer iris-active --shaderpack-file /path/to/MakeUp-UltraFast-9.4a.zip --shaderpack-profile shadowless_high
+python tools/verify.py visual --renderer neoculus-active --no-sable --shaderpack-file /path/to/ComplementaryReimagined_r5.5.1.zip --shaderpack-profile POTATO
+```
+
+### Core contracts and graphical acceptance
 
 `RendererCompatibilityTest` covers all 16 mod-ID combinations and unsupported versions.
 `EmbeddiumTargetContractTest` and `NeOculusTargetContractTest` inspect actual dependency classfiles for target

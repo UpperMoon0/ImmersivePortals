@@ -6,6 +6,28 @@ and this project tries to adhere to [Semantic Versioning](https://semver.org/spe
 
 ## [Unreleased Changes]
 
+## [6.0.11] - 2026-10-08
+
+### Added
+
+- Independent terrain-renderer and shader detection, including pinned Embeddium 1.0.15 and NeOculus 1.8.7 integration alongside Sodium 0.8.12 and official Iris 1.8.14-beta.1.
+- Active shader, shadow, real-pack, lower-capability OpenGL and Flywheel graphical regression lanes, with dependency ABI checks and failure diagnostics.
+
+### Fixed
+
+- Portal shader clipping across world programs, shader reloads and disabled-shader paths, while preserving shadow-pass clipping state.
+- Recursive terrain render lists and Sodium multi-draw batches, mesh prerequisite chunk halos, and nested destinations under server performance limits.
+- Sodium block updates arriving between initial mesh submission and upload after a resource reload.
+- NeOculus early connection initialization and framebuffer depth/stencil copying with a framebuffer-blit fallback when copy-image is unavailable.
+- Create/Flywheel portal rendering through a scoped vanilla fallback that restores the selected main-view backend.
+- Optional QIO GameTest discovery without Sable and exclusion of development verification hooks from release jars.
+
+### Changed
+
+- Documented supported renderer combinations, shaderpack coverage limits and the full CI/release acceptance matrix.
+
+See [`changelog/6.0.11.md`](changelog/6.0.11.md) for the release notes and compatibility limits.
+
 ## [6.0.10] - 2026-10-01
 
 ### Fixed
@@ -90,7 +112,9 @@ See [`changelog/6.0.9.md`](changelog/6.0.9.md) for the complete release notes.
 - Iris compatibility is not fully functional
 - Crash with SecurityCraft
 
-[Unreleased Changes]: https://github.com/UpperMoon0/ImmersivePortals/compare/v6.0.9...HEAD
+[Unreleased Changes]: https://github.com/UpperMoon0/ImmersivePortals/compare/v6.0.11...HEAD
+[6.0.11]: https://github.com/UpperMoon0/ImmersivePortals/compare/v6.0.10...v6.0.11
+[6.0.10]: https://github.com/UpperMoon0/ImmersivePortals/compare/v6.0.9...v6.0.10
 [6.0.9]: https://github.com/UpperMoon0/ImmersivePortals/compare/v6.0.8...v6.0.9
 [6.0.8]: https://github.com/UpperMoon0/ImmersivePortals/compare/v6.0.7...v6.0.8
 [6.0.7]: https://github.com/UpperMoon0/ImmersivePortals/compare/v6.0.6...v6.0.7
