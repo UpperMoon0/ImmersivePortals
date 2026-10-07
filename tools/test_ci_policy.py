@@ -1,6 +1,7 @@
 import unittest
 import itertools
 import os
+import shutil
 from pathlib import Path
 import subprocess
 from ci_policy import needs_e2e
@@ -21,6 +22,16 @@ class CIPolicyTest(unittest.TestCase):
         self.assertTrue(needs_e2e([]))
 
     def test_required_workflow_gate_rejects_skipped_or_failed_real_packs(self):
+        # Windows' bash.exe can be a WSL launcher with no installed distro.
+        # Prefer Git's bundled Bash there; this test executes GitHub's Bash gate.
+        bash = shutil.which("bash")
+        if os.name == "nt":
+            git = shutil.which("git")
+            git_bash = Path(git).resolve().parents[1] / "bin" / "bash.exe" if git else None
+            if git_bash and git_bash.is_file():
+                bash = str(git_bash)
+        if not bash or subprocess.run([bash, "-c", "exit 0"], capture_output=True).returncode != 0:
+            self.skipTest("Workflow gate execution requires a working Bash installation")
         workflow = (Path(__file__).resolve().parents[1] / ".github/workflows/ci.yml").read_text()
         gate = workflow.split("      - name: Enforce all selected checks\n", 1)[1].split("        run: |\n", 1)[1]
         script = "\n".join(line[10:] for line in gate.splitlines())
@@ -30,7 +41,7 @@ class CIPolicyTest(unittest.TestCase):
             for heavy, visual, real_packs in itertools.product(statuses, repeat=3):
                 env = dict(os.environ, SELECT="success", CORE="success", REQUIRED=required,
                            HEAVY=heavy, VISUAL=visual, REAL_PACKS=real_packs)
-                result = subprocess.run(["bash", "-e", "-c", script], env=env, capture_output=True)
+                result = subprocess.run([bash, "-e", "-c", script], env=env, capture_output=True)
                 expected = required in ("true", "false") and all(
                     value == expected_status for value in (heavy, visual, real_packs))
                 self.assertEqual(result.returncode == 0, expected, (required, heavy, visual, real_packs))
@@ -38,7 +49,7 @@ class CIPolicyTest(unittest.TestCase):
             env = dict(os.environ, SELECT="success", CORE="success", REQUIRED="true",
                        HEAVY="success", VISUAL="success", REAL_PACKS="success")
             env[key] = "failure"
-            self.assertNotEqual(subprocess.run(["bash", "-e", "-c", script], env=env).returncode, 0)
+            self.assertNotEqual(subprocess.run([bash, "-e", "-c", script], env=env).returncode, 0)
 
     def test_real_packs_wait_for_fast_checks_but_remain_required(self):
         workflow = (Path(__file__).resolve().parents[1] / ".github/workflows/ci.yml").read_text()

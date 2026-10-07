@@ -66,14 +66,15 @@ class VerificationHarnessTest(unittest.TestCase):
 
     def test_thread_diagnostics_are_read_only_bounded_and_preserved(self):
         process = {"pid": 102, "ppid": 101, "name": "java", "scope": "descendant", "game": True}
+        jcmd = Path("/fake/jdk/bin/jcmd")
         def dump(command, **kwargs):
-            self.assertEqual(command, ["/fake/jdk/bin/jcmd", "102", "Thread.print", "-l"])
+            self.assertEqual(command, [str(jcmd), "102", "Thread.print", "-l"])
             self.assertEqual(kwargs["timeout"], verify.DIAGNOSTIC_COMMAND_SECONDS)
             kwargs["stdout"].write(b"A" * (verify.DIAGNOSTIC_MAX_BYTES + 1000))
             return Mock(returncode=0)
         with patch.object(verify, "process_snapshot", return_value={}), \
              patch.object(verify, "project_java_processes", return_value=[process]), \
-             patch.object(verify, "jcmd_for_process", return_value=Path("/fake/jdk/bin/jcmd")), \
+             patch.object(verify, "jcmd_for_process", return_value=jcmd), \
              patch.object(verify.subprocess, "run", side_effect=dump):
             verify.collect_thread_diagnostics(Mock(pid=101), Mock(pid=100), "no-progress-180s")
         directory = self.results / "thread-diagnostics/no-progress-180s"

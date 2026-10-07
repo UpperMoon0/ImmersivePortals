@@ -26,6 +26,12 @@ actual render-list and batch identities per terrain pass at draw time, invalidat
 changes. This covers nested same-dimension views, resuming outer translucency, and Iris shadow-map batch
 swaps. Embeddium 1.0.15 unconditionally refills its scratch batch and does not need this extra cache hook.
 
+Sodium's initial meshes are asynchronous after a renderer/resource reload. A block update arriving after
+snapshot submission but before the first upload must schedule another rebuild. The Sodium adapter accepts
+submitted sections at the scheduler's built-section gate, preserving its normal priority/coalescing path;
+sections without a submitted snapshot keep their initial build. `SodiumInitialMeshUpdateTest` executes the
+pinned scheduler bytecode with and without that redirect to reproduce the dropped update deterministically.
+
 The adapter uses `org.embeddedt.embeddium.impl` and the public Embeddium sprite API. It never loads
 `net.caffeinemc.mods.sodium` classes. The existing `SodiumInterface.Invoker` name remains the common invocation
 boundary, with an independently instantiated Embeddium implementation.
