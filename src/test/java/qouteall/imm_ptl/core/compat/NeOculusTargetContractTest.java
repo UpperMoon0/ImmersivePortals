@@ -98,6 +98,56 @@ class NeOculusTargetContractTest {
         }
     }
 
+    @Test
+    void reusedTextureNamesCannotRetainLegacyColorOrDepthMetadata() throws Exception {
+        try (var loader = new java.net.URLClassLoader(new java.net.URL[]{
+            java.nio.file.Path.of(System.getProperty("ip.neoculusJar")).toUri().toURL()
+        }, getClass().getClassLoader())) {
+            Class<?> legacyType = loader.loadClass("net.irisshaders.iris.pbr.TextureInfoCache");
+            Class<?> activeType = loader.loadClass("net.irisshaders.iris.texture.TextureInfoCache");
+            Object legacy = legacyType.getField("INSTANCE").get(null);
+            Object active = activeType.getField("INSTANCE").get(null);
+            var getInfo = legacyType.getMethod("getInfo", int.class);
+            var entries = legacyType.getDeclaredField("cache");
+            entries.setAccessible(true);
+            var mixin = new qouteall.imm_ptl.core.compat.mixin.neoculus.MixinNeOculusTextureInfoCache();
+            var mixinCache = mixin.getClass().getDeclaredField("cache");
+            mixinCache.setAccessible(true);
+            mixinCache.set(mixin, entries.get(legacy));
+            var callback = mixin.getClass().getDeclaredMethod("ip_discardUntrackedTextureInfo", int.class,
+                org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable.class);
+            callback.setAccessible(true);
+            for (int oldFormat : new int[]{0x8058, 0x81A6, 0x88F0, 0x8CAD}) {
+                int reusedName = 37;
+                Object stale = getInfo.invoke(legacy, reusedName);
+                var format = stale.getClass().getDeclaredField("internalFormat");
+                format.setAccessible(true);
+                format.setInt(stale, oldFormat);
+                // This is the cache invalidation actually wired into NeOculus's GL hook.
+                activeType.getMethod("onDeleteTexture", int.class).invoke(active, reusedName);
+                assertSame(stale, getInfo.invoke(legacy, reusedName), "Reproduce the stale legacy entry");
+                callback.invoke(mixin, reusedName, null);
+                Object refreshed = getInfo.invoke(legacy, reusedName);
+                assertNotSame(stale, refreshed, "The reused name must query its current GL storage");
+                assertEquals(-1, format.getInt(refreshed), "No old internal format may survive");
+            }
+        }
+        try (var jar = openJar()) {
+            var pipeline = read(jar, IRIS + "pipeline/IrisRenderingPipeline");
+            assertTrue(pipeline.methods.stream().flatMap(m ->
+                java.util.stream.StreamSupport.stream(m.instructions.spliterator(), false))
+                .anyMatch(i -> i instanceof MethodInsnNode call && call.owner.equals(IRIS + "pbr/TextureInfoCache")
+                    && call.name.equals("getInfo")), "The pipeline still uses the legacy cache");
+            var lifecycle = read(jar, IRIS + "mixin/texture/MixinGlStateManager");
+            assertTrue(lifecycle.methods.stream().flatMap(m ->
+                java.util.stream.StreamSupport.stream(m.instructions.spliterator(), false))
+                .anyMatch(i -> i instanceof MethodInsnNode call && call.owner.equals(IRIS + "texture/TextureInfoCache")
+                    && call.name.equals("onDeleteTexture")), "Lifecycle hooks invalidate the other cache");
+            var legacy = read(jar, IRIS + "pbr/TextureInfoCache");
+            field(legacy, "cache", "Lit/unimi/dsi/fastutil/ints/Int2ObjectMap;");
+            method(legacy, "getInfo", "(I)L" + IRIS + "pbr/TextureInfoCache$TextureInfo;");
+        }
+    }
     private static ZipFile openJar() throws Exception {
         String path = System.getProperty("ip.neoculusJar");
         assertNotNull(path, "The test task must resolve the pinned NeOculus contract artifact separately from Iris");
