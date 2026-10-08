@@ -1,6 +1,7 @@
 package qouteall.imm_ptl.core.compat.mixin.neoculus;
 
 import it.unimi.dsi.fastutil.ints.Int2ObjectMap;
+import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Pseudo;
 import org.spongepowered.asm.mixin.Shadow;
@@ -12,7 +13,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 @Pseudo
 @Mixin(targets = "net.irisshaders.iris.pbr.TextureInfoCache", remap = false)
 public class MixinNeOculusTextureInfoCache {
-    @Shadow private Int2ObjectMap<?> cache;
+    @Shadow @Final private Int2ObjectMap<?> cache;
 
     @Inject(method = "getInfo", at = @At("HEAD"))
     private void ip_discardUntrackedTextureInfo(int texture, CallbackInfoReturnable<Object> ci) {
