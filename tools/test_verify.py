@@ -11,6 +11,28 @@ import verify
 
 
 class VerificationHarnessTest(unittest.TestCase):
+    def test_login_disconnect_fails_with_original_reason_before_timeout(self):
+        log = Path(self.temp.name) / "server.log"
+        log.write_text("Dev lost connection: Internal Exception: End size 269 is less than fixed size 270\n")
+        server, client = Mock(), Mock()
+        server.poll.return_value = client.poll.return_value = None
+        with patch.object(verify, "SERVER_LOG", log), patch.object(verify, "collect_thread_diagnostics") as diagnostics:
+            with self.assertRaisesRegex(RuntimeError, "graphical client disconnected: .*End size 269"):
+                verify.wait_for_client(server, client, timeout=6020, smoke=True)
+            diagnostics.assert_called_once_with(server, client, "disconnect")
+
+    def test_completed_client_disconnect_still_checks_real_exit_code(self):
+        log = Path(self.temp.name) / "server.log"
+        log.write_text("Dev lost connection: Disconnected\n")
+        server, client = Mock(), Mock()
+        server.poll.return_value = None
+        client.poll.return_value = 1
+        client.returncode = 1
+        with patch.object(verify, "SERVER_LOG", log), patch.object(verify, "collect_thread_diagnostics") as diagnostics:
+            with self.assertRaisesRegex(RuntimeError, "status 1"):
+                verify.wait_for_client(server, client)
+            diagnostics.assert_not_called()
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

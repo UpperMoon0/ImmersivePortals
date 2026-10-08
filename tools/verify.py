@@ -1035,6 +1035,19 @@ def wait_for_client(server: subprocess.Popen, client: subprocess.Popen, timeout:
             collect_thread_diagnostics(server, client, "timeout")
             raise TimeoutError(f"graphical client timed out after {timeout:.1f} seconds; thread diagnostics preserved")
         check_failures()
+        # A rejected login leaves the client alive on a disconnect screen indefinitely.
+        # Preserve the original server reason; negative controls must never accept it.
+        if SERVER_LOG.exists():
+            server_text = SERVER_LOG.read_text(encoding="utf-8", errors="replace")
+            disconnect = next((line for line in server_text.splitlines() if " lost connection: " in line), None)
+            if disconnect is not None:
+                try:
+                    # A successful client also disconnects while shutting down.
+                    # Still wait for its actual exit code below.
+                    validate_results(0, smoke=smoke)
+                except RuntimeError:
+                    collect_thread_diagnostics(server, client, "disconnect")
+                    raise RuntimeError(f"graphical client disconnected: {disconnect}")
         if server.poll() is not None:
             raise RuntimeError(f"dedicated server exited during E2E (exit={server.returncode})")
         if client.poll() is not None:
