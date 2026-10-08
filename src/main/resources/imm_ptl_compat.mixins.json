@@ -5,6 +5,9 @@
   "plugin": "qouteall.imm_ptl.core.compat.IPCompatMixinPlugin",
   "mixins": [
     "fabric.MixinFabricPayloadTypeRegistry",
+    "fabric.MixinFabricNeoNetworkRegistrar",
+    "fabric.AccessorNeoForgeNetworkRegistry",
+    "fabric.MixinNeoForgePayloadRegistry",
     "sable.AccessorSubLevel_SablePortalCompat",
     "sable.InvokerSubLevelTrackingSystem_SablePortalCompat",
     "sable.MixinEntity_SableCollisionCompat",
