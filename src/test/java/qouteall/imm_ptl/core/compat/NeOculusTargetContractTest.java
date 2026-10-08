@@ -102,21 +102,63 @@ class NeOculusTargetContractTest {
     void reusedTextureNamesCannotRetainLegacyColorOrDepthMetadata() throws Exception {
         try (var loader = new java.net.URLClassLoader(new java.net.URL[]{
             java.nio.file.Path.of(System.getProperty("ip.neoculusJar")).toUri().toURL()
-        }, getClass().getClassLoader())) {
+        }, getClass().getClassLoader()) {
+            @Override
+            protected Class<?> loadClass(String name, boolean resolve) throws ClassNotFoundException {
+                String mixin = "qouteall.imm_ptl.core.compat.mixin.neoculus.MixinNeOculusTextureInfoCache";
+                String accessor = "net.irisshaders.iris.mixin.GlStateManagerAccessor";
+                if (name.equals("com.mojang.blaze3d.platform.GlStateManager$TextureState")) {
+                    Class<?> loaded = findLoadedClass(name);
+                    if (loaded == null) {
+                        byte[] bytes = textureBindingState();
+                        loaded = defineClass(name, bytes, 0, bytes.length);
+                    }
+                    if (resolve) resolveClass(loaded);
+                    return loaded;
+                }
+                if (!name.equals(mixin) && !name.equals(accessor)) return super.loadClass(name, resolve);
+                Class<?> loaded = findLoadedClass(name);
+                if (loaded == null) {
+                    if (name.equals(accessor)) {
+                        byte[] bytes = textureBindingAccessor();
+                        loaded = defineClass(name, bytes, 0, bytes.length);
+                    } else {
+                        try (var input = getParent().getResourceAsStream(name.replace('.', '/') + ".class")) {
+                            byte[] bytes = input.readAllBytes();
+                            loaded = defineClass(name, bytes, 0, bytes.length);
+                        } catch (java.io.IOException e) { throw new ClassNotFoundException(name, e); }
+                    }
+                }
+                if (resolve) resolveClass(loaded);
+                return loaded;
+            }
+        }) {
             Class<?> legacyType = loader.loadClass("net.irisshaders.iris.pbr.TextureInfoCache");
             Class<?> activeType = loader.loadClass("net.irisshaders.iris.texture.TextureInfoCache");
             Object legacy = legacyType.getField("INSTANCE").get(null);
             Object active = activeType.getField("INSTANCE").get(null);
             var getInfo = legacyType.getMethod("getInfo", int.class);
-            var entries = legacyType.getDeclaredField("cache");
-            entries.setAccessible(true);
-            var mixin = new qouteall.imm_ptl.core.compat.mixin.neoculus.MixinNeOculusTextureInfoCache();
-            var mixinCache = mixin.getClass().getDeclaredField("cache");
-            mixinCache.setAccessible(true);
-            mixinCache.set(mixin, entries.get(legacy));
-            var callback = mixin.getClass().getDeclaredMethod("ip_discardUntrackedTextureInfo", int.class,
-                org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable.class);
+            Class<?> mixinType = loader.loadClass("qouteall.imm_ptl.core.compat.mixin.neoculus.MixinNeOculusTextureInfoCache");
+            Object mixin = mixinType.getConstructor().newInstance();
+            var callback = mixinType.getDeclaredMethod("ip_deleteLegacyTextureInfo", int.class,
+                org.spongepowered.asm.mixin.injection.callback.CallbackInfo.class);
             callback.setAccessible(true);
+            // Supply the binding accessor and its state carrier normally made accessible
+            // by runtime transformation (the raw Minecraft carrier is private).
+            // Allocation metadata bookkeeping itself does not call OpenGL.
+            Class<?> textureState = loader.loadClass("com.mojang.blaze3d.platform.GlStateManager$TextureState");
+            var constructor = textureState.getDeclaredConstructor();
+            constructor.setAccessible(true);
+            Object state = constructor.newInstance();
+            var binding = textureState.getDeclaredField("binding");
+            binding.setAccessible(true);
+            binding.setInt(state, 37);
+            Object textures = loader.loadClass("net.irisshaders.iris.mixin.GlStateManagerAccessor").getField("textures").get(null);
+            java.lang.reflect.Array.set(textures, 0, state);
+            var allocation = mixinType.getDeclaredMethod("ip_updateLegacyTextureInfo", int.class, int.class,
+                int.class, int.class, int.class, int.class, int.class, int.class, java.nio.IntBuffer.class,
+                org.spongepowered.asm.mixin.injection.callback.CallbackInfo.class);
+            allocation.setAccessible(true);
             for (int oldFormat : new int[]{0x8058, 0x81A6, 0x88F0, 0x8CAD}) {
                 int reusedName = 37;
                 Object stale = getInfo.invoke(legacy, reusedName);
@@ -126,10 +168,24 @@ class NeOculusTargetContractTest {
                 // This is the cache invalidation actually wired into NeOculus's GL hook.
                 activeType.getMethod("onDeleteTexture", int.class).invoke(active, reusedName);
                 assertSame(stale, getInfo.invoke(legacy, reusedName), "Reproduce the stale legacy entry");
+                assertSame(stale, getInfo.invoke(legacy, reusedName), "Repeated lookups must preserve caching");
                 callback.invoke(mixin, reusedName, null);
                 Object refreshed = getInfo.invoke(legacy, reusedName);
                 assertNotSame(stale, refreshed, "The reused name must query its current GL storage");
                 assertEquals(-1, format.getInt(refreshed), "No old internal format may survive");
+                assertSame(refreshed, getInfo.invoke(legacy, reusedName), "Refreshed metadata stays cached until mutation");
+                allocation.invoke(mixin, 0x0DE1, 0, oldFormat, 854, 480, 0, 0x1902, 0x1405, null, null);
+                assertSame(refreshed, getInfo.invoke(legacy, reusedName), "Allocation updates the cached object");
+                assertEquals(oldFormat, refreshed.getClass().getMethod("getInternalFormat").invoke(refreshed));
+                assertEquals(854, refreshed.getClass().getMethod("getWidth").invoke(refreshed));
+                assertEquals(480, refreshed.getClass().getMethod("getHeight").invoke(refreshed));
+                allocation.invoke(mixin, 0x0DE1, 0, 0x88F0, 1280, 720, 0, 0x84F9, 0x84FA, null, null);
+                assertEquals(0x88F0, refreshed.getClass().getMethod("getInternalFormat").invoke(refreshed));
+                assertEquals(1280, refreshed.getClass().getMethod("getWidth").invoke(refreshed));
+                assertEquals(720, refreshed.getClass().getMethod("getHeight").invoke(refreshed));
+                allocation.invoke(mixin, 0x0DE1, 1, 0x8058, 640, 360, 0, 0x1908, 0x1401, null, null);
+                assertEquals(1280, refreshed.getClass().getMethod("getWidth").invoke(refreshed),
+                    "Mip allocation must not replace base-level metadata");
             }
         }
         try (var jar = openJar()) {
@@ -144,9 +200,65 @@ class NeOculusTargetContractTest {
                 .anyMatch(i -> i instanceof MethodInsnNode call && call.owner.equals(IRIS + "texture/TextureInfoCache")
                     && call.name.equals("onDeleteTexture")), "Lifecycle hooks invalidate the other cache");
             var legacy = read(jar, IRIS + "pbr/TextureInfoCache");
-            field(legacy, "cache", "Lit/unimi/dsi/fastutil/ints/Int2ObjectMap;");
+            String allocation = "(IIIIIIIILjava/nio/IntBuffer;)V";
+            method(legacy, "onTexImage2D", allocation);
+            method(legacy, "onDeleteTexture", "(I)V");
+            var activeCache = read(jar, IRIS + "texture/TextureInfoCache");
+            method(activeCache, "onTexImage2D", allocation);
+            method(activeCache, "onDeleteTexture", "(I)V");
             method(legacy, "getInfo", "(I)L" + IRIS + "pbr/TextureInfoCache$TextureInfo;");
         }
+    }
+
+    private static byte[] textureBindingState() {
+        var writer = new org.objectweb.asm.ClassWriter(org.objectweb.asm.ClassWriter.COMPUTE_MAXS);
+        writer.visit(org.objectweb.asm.Opcodes.V21, org.objectweb.asm.Opcodes.ACC_PUBLIC,
+            "com/mojang/blaze3d/platform/GlStateManager$TextureState", null, "java/lang/Object", null);
+        writer.visitField(org.objectweb.asm.Opcodes.ACC_PUBLIC, "binding", "I", null, null).visitEnd();
+        var init = writer.visitMethod(org.objectweb.asm.Opcodes.ACC_PUBLIC, "<init>", "()V", null, null);
+        init.visitCode();
+        init.visitVarInsn(org.objectweb.asm.Opcodes.ALOAD, 0);
+        init.visitMethodInsn(org.objectweb.asm.Opcodes.INVOKESPECIAL, "java/lang/Object", "<init>", "()V", false);
+        init.visitInsn(org.objectweb.asm.Opcodes.RETURN);
+        init.visitMaxs(0, 0);
+        init.visitEnd();
+        writer.visitEnd();
+        return writer.toByteArray();
+    }
+
+    private static byte[] textureBindingAccessor() {
+        String name = IRIS + "mixin/GlStateManagerAccessor";
+        String textures = "[Lcom/mojang/blaze3d/platform/GlStateManager$TextureState;";
+        var writer = new org.objectweb.asm.ClassWriter(org.objectweb.asm.ClassWriter.COMPUTE_MAXS);
+        writer.visit(org.objectweb.asm.Opcodes.V21, org.objectweb.asm.Opcodes.ACC_PUBLIC
+            | org.objectweb.asm.Opcodes.ACC_INTERFACE | org.objectweb.asm.Opcodes.ACC_ABSTRACT,
+            name, null, "java/lang/Object", null);
+        writer.visitField(org.objectweb.asm.Opcodes.ACC_PUBLIC | org.objectweb.asm.Opcodes.ACC_STATIC | org.objectweb.asm.Opcodes.ACC_FINAL,
+            "textures", textures, null, null).visitEnd();
+        var init = writer.visitMethod(org.objectweb.asm.Opcodes.ACC_STATIC, "<clinit>", "()V", null, null);
+        init.visitCode();
+        init.visitInsn(org.objectweb.asm.Opcodes.ICONST_1);
+        init.visitTypeInsn(org.objectweb.asm.Opcodes.ANEWARRAY, "com/mojang/blaze3d/platform/GlStateManager$TextureState");
+        init.visitFieldInsn(org.objectweb.asm.Opcodes.PUTSTATIC, name, "textures", textures);
+        init.visitInsn(org.objectweb.asm.Opcodes.RETURN);
+        init.visitMaxs(0, 0);
+        init.visitEnd();
+        var getter = writer.visitMethod(org.objectweb.asm.Opcodes.ACC_PUBLIC | org.objectweb.asm.Opcodes.ACC_STATIC,
+            "getTEXTURES", "()" + textures, null, null);
+        getter.visitCode();
+        getter.visitFieldInsn(org.objectweb.asm.Opcodes.GETSTATIC, name, "textures", textures);
+        getter.visitInsn(org.objectweb.asm.Opcodes.ARETURN);
+        getter.visitMaxs(0, 0);
+        getter.visitEnd();
+        var active = writer.visitMethod(org.objectweb.asm.Opcodes.ACC_PUBLIC | org.objectweb.asm.Opcodes.ACC_STATIC,
+            "getActiveTexture", "()I", null, null);
+        active.visitCode();
+        active.visitInsn(org.objectweb.asm.Opcodes.ICONST_0);
+        active.visitInsn(org.objectweb.asm.Opcodes.IRETURN);
+        active.visitMaxs(0, 0);
+        active.visitEnd();
+        writer.visitEnd();
+        return writer.toByteArray();
     }
     private static ZipFile openJar() throws Exception {
         String path = System.getProperty("ip.neoculusJar");
