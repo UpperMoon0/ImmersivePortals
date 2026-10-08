@@ -2,6 +2,7 @@ package qouteall.imm_ptl.core.compat.mixin.fabric;
 
 import org.junit.jupiter.api.Test;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+import qouteall.imm_ptl.core.compat.FabricNativeRegistration;
 
 import java.util.*;
 import java.util.concurrent.*;
@@ -22,10 +23,8 @@ class NeoForgePayloadRegistrationTest {
         var protocols = (Map<Object, Map<Object, Object>>) field.get(null);
         var register = MixinNeoForgePayloadRegistry.class.getDeclaredMethod("ip$registerAtomically", Map.class, Object.class, Object.class);
         register.setAccessible(true);
-        var nativeRegister = MixinFabricNeoNetworkRegistrar.class.getDeclaredMethod("ip$registerNativeHandler", Map.class, Object.class, Function.class);
-        nativeRegister.setAccessible(true);
-        var registrars = Map.of("configuration", new MixinFabricNeoNetworkRegistrar(), "play", new MixinFabricNeoNetworkRegistrar());
         var factoryActive = new java.util.concurrent.atomic.AtomicBoolean();
+        var setup = new java.util.concurrent.atomic.AtomicBoolean(true);
         Map<String, Map<Object, Object>> handlers = Map.of("configuration", new HashMap<>(), "play", new HashMap<>());
         var barrier = new CyclicBarrier(16);
         try (var pool = Executors.newFixedThreadPool(16)) {
@@ -39,14 +38,16 @@ class NeoForgePayloadRegistrationTest {
                             String id = slot + ":" + i;
                             Function<Object, Object> factory = key -> {
                                 assertTrue(factoryActive.compareAndSet(false, true), "protocol factories must serialize the shared setup flag");
+                                assertTrue(setup.get(), "previous factory must restore setup before releasing the lock");
+                                setup.set(false);
                                 try { register.invoke(null, protocols.get(protocol), key, key); }
                                 catch (Exception error) { throw new AssertionError(error); }
                                 finally { factoryActive.set(false); }
                                 return key;
                             };
-                            assertEquals(id, nativeRegister.invoke(registrars.get(protocol), handlers.get(protocol), id, factory));
+                            assertEquals(id, FabricNativeRegistration.register(handlers.get(protocol), id, factory, setup::get, setup::set));
                             // A repeated receiver must reuse its handler without registering a duplicate payload.
-                            assertEquals(id, nativeRegister.invoke(registrars.get(protocol), handlers.get(protocol), id, factory));
+                            assertEquals(id, FabricNativeRegistration.register(handlers.get(protocol), id, factory, setup::get, setup::set));
                         }
                     }
                     return null;
@@ -65,5 +66,35 @@ class NeoForgePayloadRegistrationTest {
             () -> register.invoke(null, protocols.get("play"), "existing", "replacement"));
         assertInstanceOf(UnsupportedOperationException.class, error.getCause());
         assertEquals("codec", protocols.get("play").get("existing"));
+    }
+
+    @Test
+    void failingNativeRegistrationRestoresCompletedSetupAndDoesNotCacheHandler() {
+        verifyFailedFactoryRestoresSetup(true);
+    }
+
+    @Test
+    void failingNativeRegistrationPreservesAnOpenRegistrationPhase() {
+        verifyFailedFactoryRestoresSetup(false);
+    }
+
+    private void verifyFailedFactoryRestoresSetup(boolean originalSetup) {
+        var setup = new java.util.concurrent.atomic.AtomicBoolean(originalSetup);
+        Map<Object, Object> handlers = new HashMap<>();
+        var duplicate = new UnsupportedOperationException("duplicate payload");
+        assertSame(duplicate, assertThrows(UnsupportedOperationException.class,
+            () -> FabricNativeRegistration.register(handlers, "payload", id -> {
+                setup.set(false); // Upstream changes this before NetworkRegistry.register().
+                throw duplicate;
+            }, setup::get, setup::set)));
+        assertEquals(originalSetup, setup.get());
+        assertFalse(handlers.containsKey("payload"));
+        // A later factory must see the original phase and still be able to register normally.
+        assertEquals("handler", FabricNativeRegistration.register(handlers, "payload", id -> {
+            assertEquals(originalSetup, setup.get());
+            setup.set(false);
+            return "handler";
+        }, setup::get, setup::set));
+        assertEquals(originalSetup, setup.get());
     }
 }

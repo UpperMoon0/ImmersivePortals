@@ -11,6 +11,51 @@ import verify
 
 
 class VerificationHarnessTest(unittest.TestCase):
+    def test_log_reader_consumes_each_disconnect_once_and_preserves_partial_utf8(self):
+        log = Path(self.temp.name) / "server.log"
+        reader = verify.AppendedLogReader(log)
+        self.assertEqual([], reader.read_new_lines())
+        log.write_bytes(b"startup\nDev lost connection: first\nDev lost connection: caf\xc3")
+        self.assertEqual(["startup", "Dev lost connection: first"], reader.read_new_lines())
+        first_offset = reader.offset
+        self.assertEqual([], reader.read_new_lines())
+        self.assertEqual(first_offset, reader.offset)
+        with log.open("ab") as stream:
+            stream.write(b"\xa9\r\nDev lost connection: third\n")
+        self.assertEqual(["Dev lost connection: caf\u00e9", "Dev lost connection: third"], reader.read_new_lines())
+        self.assertEqual(log.stat().st_size, reader.offset)
+        self.assertEqual([], reader.read_new_lines())
+
+    def test_log_reader_resets_after_truncation_or_replacement(self):
+        log = Path(self.temp.name) / "server.log"
+        log.write_bytes(b"old complete line\nold partial line")
+        reader = verify.AppendedLogReader(log)
+        self.assertEqual(["old complete line"], reader.read_new_lines())
+        log.write_bytes(b"new\n")
+        self.assertEqual(["new"], reader.read_new_lines())
+        log.rename(log.with_suffix(".old"))
+        log.write_bytes(b"replacement log\n")
+        self.assertEqual(["replacement log"], reader.read_new_lines())
+
+    def test_disconnect_reports_newest_event_in_the_appended_batch(self):
+        log = Path(self.temp.name) / "server.log"
+        log.write_text("Dev lost connection: older\nDev lost connection: newer\n")
+        server, client = Mock(), Mock()
+        server.poll.return_value = client.poll.return_value = None
+        with patch.object(verify, "SERVER_LOG", log), patch.object(verify, "collect_thread_diagnostics"):
+            with self.assertRaisesRegex(RuntimeError, "graphical client disconnected: .*newer"):
+                verify.wait_for_client(server, client, smoke=True)
+
+    def test_completed_client_normal_disconnect_passes(self):
+        log = Path(self.temp.name) / "server.log"
+        log.write_text("Dev lost connection: Disconnected\n")
+        server, client = Mock(), Mock()
+        server.poll.return_value = None
+        client.poll.return_value = client.returncode = 0
+        with patch.object(verify, "SERVER_LOG", log), patch.object(verify, "collect_thread_diagnostics") as diagnostics:
+            verify.wait_for_client(server, client)
+            diagnostics.assert_not_called()
+
     def test_login_disconnect_fails_with_original_reason_before_timeout(self):
         log = Path(self.temp.name) / "server.log"
         log.write_text("Dev lost connection: Internal Exception: End size 269 is less than fixed size 270\n")

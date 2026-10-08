@@ -1023,12 +1023,43 @@ def visual_run_deadline() -> float:
     return time.monotonic() + budget
 
 
+class AppendedLogReader:
+    """Read complete newly appended lines, retaining partial UTF-8 bytes between polls."""
+
+    def __init__(self, path: Path):
+        self.path = path
+        self.offset = 0
+        self.identity = None
+        self.partial = b""
+
+    def read_new_lines(self) -> list[str]:
+        try:
+            with self.path.open("rb") as stream:
+                stat = os.fstat(stream.fileno())
+                identity = (stat.st_dev, stat.st_ino)
+                if identity != self.identity or stat.st_size < self.offset:
+                    self.offset = 0
+                    self.partial = b""
+                self.identity = identity
+                stream.seek(self.offset)
+                appended = stream.read()
+                self.offset = stream.tell()
+        except FileNotFoundError:
+            return []
+        if not appended:
+            return []
+        lines = (self.partial + appended).split(b"\n")
+        self.partial = lines.pop()
+        return [line.rstrip(b"\r").decode("utf-8", errors="replace") for line in lines]
+
+
 def wait_for_client(server: subprocess.Popen, client: subprocess.Popen, timeout: float = 300, smoke: bool = False) -> None:
     started = time.monotonic()
     deadline = started + timeout
     last_progress = started
     progress = client_progress_token()
     diagnosed_stall = False
+    server_log = AppendedLogReader(SERVER_LOG)
     while True:
         now = time.monotonic()
         if now >= deadline:
@@ -1037,17 +1068,15 @@ def wait_for_client(server: subprocess.Popen, client: subprocess.Popen, timeout:
         check_failures()
         # A rejected login leaves the client alive on a disconnect screen indefinitely.
         # Preserve the original server reason; negative controls must never accept it.
-        if SERVER_LOG.exists():
-            server_text = SERVER_LOG.read_text(encoding="utf-8", errors="replace")
-            disconnect = next((line for line in server_text.splitlines() if " lost connection: " in line), None)
-            if disconnect is not None:
-                try:
-                    # A successful client also disconnects while shutting down.
-                    # Still wait for its actual exit code below.
-                    validate_results(0, smoke=smoke)
-                except RuntimeError:
-                    collect_thread_diagnostics(server, client, "disconnect")
-                    raise RuntimeError(f"graphical client disconnected: {disconnect}")
+        disconnect = next((line for line in reversed(server_log.read_new_lines()) if " lost connection: " in line), None)
+        if disconnect is not None:
+            try:
+                # A successful client also disconnects while shutting down.
+                # Still wait for its actual exit code below.
+                validate_results(0, smoke=smoke)
+            except RuntimeError:
+                collect_thread_diagnostics(server, client, "disconnect")
+                raise RuntimeError(f"graphical client disconnected: {disconnect}")
         if server.poll() is not None:
             raise RuntimeError(f"dedicated server exited during E2E (exit={server.returncode})")
         if client.poll() is not None:
