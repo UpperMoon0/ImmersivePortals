@@ -177,6 +177,36 @@ class VerificationHarnessTest(unittest.TestCase):
                 verify.wait_for_client(Mock(poll=Mock(return_value=None)), Mock(poll=Mock(return_value=None)), timeout=500)
         self.assertEqual([call.args[2] for call in diagnostics.call_args_list], ["timeout"])
 
+    def test_progress_reports_scene_changes_and_bounded_heartbeat(self):
+        reporter = verify.ClientProgressReporter(0, 300)
+        with patch("builtins.print") as printed:
+            reporter.update(0, 0)
+            reporter.update(0.25, 0)
+            reporter.update(1, 0)
+            self.assertEqual(printed.call_count, 1)
+            (self.results / "scene-request.txt").write_text("after-reload:nested-background")
+            reporter.update(2, 2)
+            self.assertIn("after-reload:nested-background", printed.call_args.args[0])
+            (self.results / "scene-ready.txt").write_text("after-reload:nested-background")
+            reporter.update(3, 3)
+            reporter.update(62, 3)
+            self.assertEqual(printed.call_count, 3)
+            reporter.update(63, 3)
+            self.assertIn("last activity=60s ago", printed.call_args.args[0])
+            self.assertIn("remaining=237s", printed.call_args.args[0])
+            (self.results / "visual-pass.txt").write_text("passed")
+            reporter.update(64, 64)
+            self.assertIn("collecting timing samples", printed.call_args.args[0])
+        self.assertEqual(reporter.deadline, 300)
+
+    def test_progress_marker_read_errors_do_not_fail_the_graphical_session(self):
+        reporter = verify.ClientProgressReporter(0, 300)
+        with patch.object(Path, "open", side_effect=PermissionError("temporarily unavailable")), \
+             patch("builtins.print") as printed:
+            reporter.update(0, 0)
+        self.assertIn("awaiting client", printed.call_args.args[0])
+        self.assertEqual(reporter.deadline, 300)
+
     def test_visual_budget_accounts_for_elapsed_job_and_cleanup(self):
         with patch.dict(verify.os.environ, {"IP_VERIFY_JOB_START_EPOCH": "700"}), \
              patch.object(verify.time, "time", return_value=2000), patch.object(verify.time, "monotonic", return_value=1000):

@@ -55,6 +55,19 @@ jobs:
       - run: chmod +x ./gradlew
       - name: Build, JUnit, and GameTests
         run: python3 tools/verify.py core
+      - name: Record main release artifact provenance
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        id: release_bundle
+        run: python3 tools/release_evidence.py record
+      - name: Preserve exact tested main jar
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: verified-main-release-bundle
+          if-no-files-found: error
+          path: |
+            ${{ steps.release_bundle.outputs.jar_path }}
+            build/libs/ci-release-evidence.json
       - name: Upload core diagnostics
         if: always()
         uses: actions/upload-artifact@v4
@@ -171,17 +184,17 @@ jobs:
       renderer: ${{ matrix.renderer }}
       sable: ${{ matrix.sable }}
       shadow_fixture: ${{ matrix.shadow_fixture || false }}
-      real_pack: ${{ matrix.real_pack || 'none' }}
+      real_pack: none
       negative_control: ${{ matrix.negative_control || 'none' }}
       flywheel_backend: ${{ matrix.flywheel_backend || 'default' }}
       render_mode: ${{ matrix.render_mode || 'normal' }}
       disable_copy_image: ${{ matrix.disable_copy_image || false }}
       gl_context: ${{ matrix.gl_context || 'default' }}
 
-  # Real packs take substantially longer on software graphics. Preserve their
-  # required gate, but do not repeat them while an earlier regression is failing.
+  # Start slow real packs once core/login checks pass. Fixture lanes run in
+  # parallel; the aggregate still requires all 30 graphical configurations.
   real-pack-visual:
-    needs: [changes, core, graphical-e2e, portal-visual]
+    needs: [changes, core, graphical-e2e]
     if: needs.changes.outputs.e2e == 'true'
     strategy:
       fail-fast: false

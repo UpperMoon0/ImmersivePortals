@@ -1053,6 +1053,33 @@ class AppendedLogReader:
         return [line.rstrip(b"\r").decode("utf-8", errors="replace") for line in lines]
 
 
+class ClientProgressReporter:
+    """Bounded scene announcements and heartbeat; never influence pass/stall/deadline state."""
+    def __init__(self, started: float, deadline: float):
+        self.started, self.deadline = started, deadline
+        self.next_check, self.last_report = started, started
+        self.stage = None
+
+    def update(self, now: float, last_progress: float) -> None:
+        if now < self.next_check:
+            return
+        self.next_check = now + 1
+        markers = []
+        for name in ("scene-request", "scene-ready"):
+            try:
+                with (RESULT_DIR / f"{name}.txt").open(encoding="utf-8", errors="replace") as stream:
+                    markers.append(stream.read(256).strip())
+            except OSError:
+                markers.append("")
+        stage = (*markers, (RESULT_DIR / "visual-pass.txt").exists())
+        if stage == self.stage and now - self.last_report < 60:
+            return
+        self.stage, self.last_report = stage, now
+        label = "collecting timing samples" if stage[2] else f"scene={markers[0] or 'awaiting client'}, ready={markers[1] or 'pending'}"
+        print(f"[verify] Client progress: {label}; elapsed={now - self.started:.0f}s, "
+              f"remaining={max(0, self.deadline - now):.0f}s, last activity={now - last_progress:.0f}s ago", flush=True)
+
+
 def wait_for_client(server: subprocess.Popen, client: subprocess.Popen, timeout: float = 300, smoke: bool = False) -> None:
     started = time.monotonic()
     deadline = started + timeout
@@ -1060,6 +1087,7 @@ def wait_for_client(server: subprocess.Popen, client: subprocess.Popen, timeout:
     progress = client_progress_token()
     diagnosed_stall = False
     server_log = AppendedLogReader(SERVER_LOG)
+    reporter = ClientProgressReporter(started, deadline)
     while True:
         now = time.monotonic()
         if now >= deadline:
@@ -1085,6 +1113,7 @@ def wait_for_client(server: subprocess.Popen, client: subprocess.Popen, timeout:
         current = client_progress_token()
         if current != progress:
             progress, last_progress = current, now
+        reporter.update(now, last_progress)
         if not diagnosed_stall and now - last_progress >= 180:
             print("[verify] No graphical-client progress for 180s; preserving scoped JVM thread dumps", flush=True)
             collect_thread_diagnostics(server, client, "no-progress-180s")

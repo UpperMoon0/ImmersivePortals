@@ -51,12 +51,12 @@ class CIPolicyTest(unittest.TestCase):
             env[key] = "failure"
             self.assertNotEqual(subprocess.run([bash, "-e", "-c", script], env=env).returncode, 0)
 
-    def test_real_packs_wait_for_fast_checks_but_remain_required(self):
+    def test_real_packs_overlap_fixtures_but_remain_required(self):
         workflow = (Path(__file__).resolve().parents[1] / ".github/workflows/ci.yml").read_text()
         fast, slow = workflow.split("  real-pack-visual:\n", 1)
         slow, required = slow.split("  required:\n", 1)
         self.assertNotIn("real_pack: makeup", fast)
-        self.assertIn("needs: [changes, core, graphical-e2e, portal-visual]", slow)
+        self.assertIn("needs: [changes, core, graphical-e2e]", slow)
         self.assertNotIn("always()", slow)
         self.assertEqual(slow.count("real_pack: makeup"), 2)
         self.assertEqual(slow.count("real_pack: complementary"), 2)
