@@ -8,6 +8,10 @@ public final class PortalClippingTestControl {
     private static String negativeControl = "";
     private static boolean installed;
     private static String observation = "";
+    private static long frame;
+    private static boolean captureDepth;
+    private static long depthReadbacks, depthReadbackNanos;
+    private static final Map<String, Integer> depthObservationCounts = new LinkedHashMap<>();
     private static final Map<String, Integer> selected = new LinkedHashMap<>();
     private static final Map<String, Integer> bypassed = new LinkedHashMap<>();
     private static final Map<String, String> sources = new LinkedHashMap<>();
@@ -30,11 +34,18 @@ public final class PortalClippingTestControl {
         bufferedDrawStates.clear();
         innerDepthStates.clear();
         observation = "";
+        frame = 0;
+        captureDepth = false;
+        depthReadbacks = depthReadbackNanos = 0;
+        depthObservationCounts.clear();
     }
 
     /** Keep compile evidence across scenes; clear draw evidence before each observed scene. */
     public static synchronized void beginObservation(String name) {
         observation = name;
+        captureDepth = false;
+        depthReadbacks = depthReadbackNanos = 0;
+        depthObservationCounts.clear();
         draws.clear();
         terrainStates.clear();
         bufferedDrawStates.clear();
@@ -64,8 +75,20 @@ public final class PortalClippingTestControl {
         draws.computeIfAbsent(drawName, ignored -> new LinkedHashMap<>()).merge(key, 1, Integer::sum);
     }
 
+    /** Called before rendering: every accepted depth witness must come from this exact frame. */
+    public static synchronized void beginFrame(long frameNumber, boolean assertionFrame) {
+        if (frameNumber <= frame) throw new IllegalArgumentException("Render frame must advance");
+        frame = frameNumber;
+        captureDepth = assertionFrame;
+        innerDepthStates.clear();
+    }
+
+    public static boolean assertionFrame(int sceneFrame) {
+        return sceneFrame >= 120 && sceneFrame % 10 == 0;
+    }
+
     public static synchronized boolean observesInnerDepth() {
-        return installed && !observation.isEmpty();
+        return installed && captureDepth && !observation.isEmpty();
     }
 
     public static synchronized boolean observesNativeDepth() {
@@ -73,11 +96,25 @@ public final class PortalClippingTestControl {
     }
 
     public static synchronized void recordInnerDepth(String key, Map<String, Object> state) {
+        if (!observesInnerDepth()) return;
         Map<String, Object> copy = new LinkedHashMap<>(state);
-        int observations = innerDepthStates.containsKey(key)
-            ? ((Number) innerDepthStates.get(key).get("observationCount")).intValue() : 0;
-        copy.put("observationCount", observations + 1);
+        copy.put("observationCount", depthObservationCounts.merge(key, 1, Integer::sum));
+        copy.put("observation", observation);
+        copy.put("frame", frame);
         innerDepthStates.put(key, copy);
+        depthReadbacks++;
+        if (state.get("readbackNanos") instanceof Number nanos) depthReadbackNanos += nanos.longValue();
+    }
+
+    /** Refuse old scene/phase/frame data, including when a target view did not render this frame. */
+    public static synchronized Map<String, Object> requireCurrentDepth(String key) {
+        Map<String, Object> state = innerDepthStates.get(key);
+        if (!observesInnerDepth() || state == null || !observation.equals(state.get("observation"))
+            || !(state.get("frame") instanceof Number captured) || captured.longValue() != frame) {
+            throw new IllegalStateException("Missing current scene/frame depth witness for " + key
+                + " at " + observation + " frame " + frame);
+        }
+        return new LinkedHashMap<>(state);
     }
 
     public static synchronized boolean needsBufferedDrawState(String key) {
@@ -101,6 +138,9 @@ public final class PortalClippingTestControl {
         result.put("installed", installed);
         result.put("negativeControl", negativeControl);
         result.put("observation", observation);
+        result.put("frame", frame);
+        result.put("depthReadbacks", depthReadbacks);
+        result.put("depthReadbackNanos", depthReadbackNanos);
         result.put("selectedProgramCounts", new LinkedHashMap<>(selected));
         result.put("bypassedProgramCounts", new LinkedHashMap<>(bypassed));
         result.put("sourceByDrawName", new LinkedHashMap<>(sources));

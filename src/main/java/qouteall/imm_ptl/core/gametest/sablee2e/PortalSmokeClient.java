@@ -57,7 +57,9 @@ public final class PortalSmokeClient {
     private static String request = "";
     private static String observingRequest = "";
     private static CompletableFuture<Void> reload;
-    private static long frameStart;
+    private static long frameStart, renderFrame;
+    private static long sceneReadyNanos, sceneReadyMillis, firstCheckNanos;
+    private static int firstCheckFrame, assertionAttempts;
     private static long nestedContextBaseline;
     private static Map<String, Long> nestedViewBaseline = Map.of();
     private static final List<String> NESTED_VIEW_COUNTERS = List.of(
@@ -83,6 +85,7 @@ public final class PortalSmokeClient {
     private static final Map<String, int[]> backgroundReferences = new LinkedHashMap<>();
     private static final Map<String, int[]> visibleReferences = new LinkedHashMap<>();
     private static final Map<String, Double> backgroundDepths = new LinkedHashMap<>();
+    private static final List<Long> consecutiveDepthFrames = new ArrayList<>();
     private static final List<Double> timings = new ArrayList<>();
     private static final List<Map<String, Object>> checks = new ArrayList<>();
     private static final String[] PHASES = {"before-reload", "after-reload", "after-toggle"};
@@ -134,6 +137,11 @@ public final class PortalSmokeClient {
         if (!PortalSmokeSupport.enabled()) return;
         frameStart = System.nanoTime();
         stopDestinationMotion(Minecraft.getInstance(), "frame-pre");
+        // Arm before inner-world rendering, consume in this frame's post event.
+        // Keep the 120-frame warm-up and ten-frame assertion spacing unchanged.
+        PortalClippingTestControl.beginFrame(++renderFrame, !done && initialized && !crossed
+            && reload == null && !waitingToggle && observingRequest.equals(request)
+            && PortalClippingTestControl.assertionFrame(frames + 1));
         IPGlobal.renderMode = IPGlobal.RenderMode.valueOf(System.getenv().getOrDefault("IP_SMOKE_RENDER_MODE", "normal"));
         if ("true".equals(System.getenv("IP_SMOKE_DISABLE_COPY_IMAGE"))) {
             System.setProperty("ip.iris.forceFramebufferBlit", "true");
@@ -191,6 +199,11 @@ public final class PortalSmokeClient {
                 PortalClippingTestControl.beginObservation(request);
                 observingRequest = request;
                 frames = stableFrames = 0;
+                sceneReadyNanos = System.nanoTime();
+                sceneReadyMillis = System.currentTimeMillis();
+                firstCheckNanos = 0;
+                firstCheckFrame = assertionAttempts = 0;
+                com.mojang.logging.LogUtils.getLogger().info("Portal smoke ready: {} frame={}", request, renderFrame);
                 if (request.endsWith(":create-nested")) {
                     Map<?, ?> flywheel = (Map<?, ?>) runtimeState().get("flywheel");
                     nestedContextBaseline = ((Number) flywheel.get("nestedContextsRestored")).longValue();
@@ -198,7 +211,14 @@ public final class PortalSmokeClient {
                 }
                 return;
             }
-            if (++frames < 120 || frames % 10 != 0) return;
+            if (!PortalClippingTestControl.assertionFrame(++frames)) return;
+            if (firstCheckNanos == 0) {
+                firstCheckNanos = System.nanoTime();
+                firstCheckFrame = frames;
+                com.mojang.logging.LogUtils.getLogger().info("Portal smoke first check: {} sceneFrame={} readyMs={}",
+                    request, frames, (firstCheckNanos - sceneReadyNanos) / 1_000_000);
+            }
+            assertionAttempts++;
             verifyPipeline(); // Checked after every rebuild and scene, not just mod presence at startup.
             if (crossing) {
                 if (!mc.level.dimension().equals(Level.NETHER) || !PortalSmokeSupport.exists("crossing-server-pass.txt")) {
@@ -238,6 +258,7 @@ public final class PortalSmokeClient {
                 destinationStops = 0;
                 request = "after-crossing:crossing";
                 frames = 0;
+                consecutiveDepthFrames.clear();
                 PortalSmokeSupport.write("scene-request.txt", request);
                 PortalSmokeSupport.write("crossing-request.txt", "Walk through the real portal");
             }
@@ -252,6 +273,7 @@ public final class PortalSmokeClient {
 
     private static void requestScene() throws ReflectiveOperationException {
         frames = stableFrames = 0;
+        consecutiveDepthFrames.clear();
         smokeParticles.forEach(Particle::remove);
         smokeParticles.clear();
         particleTicks = 0;
@@ -356,6 +378,8 @@ public final class PortalSmokeClient {
                     referenceWitness.put("background_view_distance", backgroundDistance);
                     referenceWitness.put("depth_samples", depthSampleCount(depth));
                     referenceWitness.put("depth_observations", depth.get("observationCount"));
+                    referenceWitness.put("depth_frame", depth.get("frame"));
+                    referenceWitness.put("depth_observation", depth.get("observation"));
                 }
                 if (scene.equals("crossing")) {
                     int[] backdrop = backgroundReferences.get(PHASES[epoch] + ":solid-background");
@@ -380,6 +404,8 @@ public final class PortalSmokeClient {
                     referenceWitness.put("native_camera", camera);
                     referenceWitness.put("depth_samples", depthSampleCount(depth));
                     referenceWitness.put("depth_observations", depth.get("observationCount"));
+                    referenceWitness.put("depth_frame", depth.get("frame"));
+                    referenceWitness.put("depth_observation", depth.get("observation"));
                 }
             }
             Map<String, Object> fragmentWitness = Map.of();
@@ -417,6 +443,10 @@ public final class PortalSmokeClient {
             String screenshot = phase + "-" + scene + ".png";
             pixels.writeToFile(PortalSmokeSupport.directory().resolve(screenshot));
             stableFrames = colors && geometry ? stableFrames + 1 : 0;
+            if (stableFrames == 0) consecutiveDepthFrames.clear();
+            else if (PortalSmokeSupport.activeShaders() && !PortalSmokeSupport.diagnosticFixture()) {
+                consecutiveDepthFrames.add(renderFrame);
+            }
             if (frames > 720) throw new IllegalStateException("PORTAL_PIXELS_MISMATCH: " + phase + "/" + scene
                 + " green=" + green + "/" + total + " red=" + red + " layers=" + layers
                 + " targetMotion=" + createMotionPixels + " sourceMotion=" + sourceMotionPixels
@@ -431,6 +461,13 @@ public final class PortalSmokeClient {
             check.putAll(Map.of("phase", phase, "scene", scene, "screenshot", screenshot,
                 "green_pixels", green, "red_pixels", red, "sampled_pixels", total,
                 "portal_layers", layers, "width", pixels.getWidth(), "height", pixels.getHeight()));
+            check.put("render_frame", renderFrame);
+            check.put("consecutive_depth_frames", List.copyOf(consecutiveDepthFrames));
+            check.put("scene_timing", Map.of("ready_unix_ms", sceneReadyMillis,
+                "first_check_ms", (firstCheckNanos - sceneReadyNanos) / 1_000_000.0,
+                "pass_ms", (System.nanoTime() - sceneReadyNanos) / 1_000_000.0,
+                "first_check_frame", firstCheckFrame, "pass_frame", frames,
+                "assertion_attempts", assertionAttempts, "consecutive_passes", stableFrames));
             check.put("reference_witness", referenceWitness);
             if (scene.equals("crossing")) check.put("crossing_motion", Map.of(
                 "source", crossingSourcePose, "first_destination", firstDestinationPose,
@@ -471,6 +508,8 @@ public final class PortalSmokeClient {
                 check.put("create_server", createServerEvidence);
                 check.put("create_server_motion", createServerMotion);
             }
+            com.mojang.logging.LogUtils.getLogger().info("Portal smoke passed: {} sceneFrame={} readyMs={} attempts={}",
+                request, frames, (System.nanoTime() - sceneReadyNanos) / 1_000_000, assertionAttempts);
             checks.add(check);
             saveEvidence();
             return true;
@@ -607,8 +646,7 @@ public final class PortalSmokeClient {
     }
 
     private static Map<?, ?> depthState(String key) {
-        Map<?, ?> states = (Map<?, ?>) PortalClippingTestControl.evidence().get("innerWorldDepthStates");
-        Map<?, ?> state = states == null ? null : (Map<?, ?>) states.get(key);
+        Map<?, ?> state = PortalClippingTestControl.requireCurrentDepth(key);
         require(state != null && depthSampleCount(state) == 81
             && state.get("observationCount") instanceof Number observations && observations.intValue() > 0,
             "Missing fresh 9x9 depth witness for " + key);

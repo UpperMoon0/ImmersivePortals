@@ -9,7 +9,8 @@ class PortalClippingTestControlTest {
     void depthPixelCountIsIndependentFromCapturedFrameCount() {
         PortalClippingTestControl.install("");
         PortalClippingTestControl.beginObservation("before-reload:solid-background");
-        for (int frame = 0; frame < 130; frame++) {
+        for (int frame = 1; frame <= 130; frame++) {
+            PortalClippingTestControl.beginFrame(frame, true);
             PortalClippingTestControl.recordInnerDepth("minecraft:the_nether:1",
                 java.util.Map.of("sampleCount", 81, "depthSamples", new float[81]));
         }
@@ -20,6 +21,54 @@ class PortalClippingTestControlTest {
         assertEquals(81, ((float[]) depth.get("depthSamples")).length);
         PortalClippingTestControl.beginObservation("after-reload:solid-background");
         assertTrue(((java.util.Map<?, ?>) PortalClippingTestControl.evidence().get("innerWorldDepthStates")).isEmpty());
+    }
+
+    @Test
+    void depthReadbackIsArmedOnlyOnUnchangedAssertionCadence() {
+        PortalClippingTestControl.install("");
+        PortalClippingTestControl.beginObservation("before-reload:nested-background");
+        int captures = 0;
+        for (int frame = 1; frame <= 140; frame++) {
+            PortalClippingTestControl.beginFrame(frame, PortalClippingTestControl.assertionFrame(frame));
+            if (PortalClippingTestControl.observesInnerDepth()) {
+                captures++;
+                PortalClippingTestControl.recordInnerDepth("minecraft:the_end:2",
+                    java.util.Map.of("sampleCount", 81, "depthSamples", new float[81], "readbackNanos", 5L));
+                var state = PortalClippingTestControl.requireCurrentDepth("minecraft:the_end:2");
+                assertEquals((long) frame, state.get("frame"));
+                assertEquals("before-reload:nested-background", state.get("observation"));
+            } else {
+                assertThrows(IllegalStateException.class,
+                    () -> PortalClippingTestControl.requireCurrentDepth("minecraft:the_end:2"));
+            }
+        }
+        assertEquals(3, captures);
+        assertEquals(3L, PortalClippingTestControl.evidence().get("depthReadbacks"));
+        assertEquals(15L, PortalClippingTestControl.evidence().get("depthReadbackNanos"));
+    }
+
+    @Test
+    void oldFramesScenesAndMissingNestedViewsCannotSupplyDepth() {
+        PortalClippingTestControl.install("");
+        PortalClippingTestControl.beginObservation("before-reload:nested-background");
+        PortalClippingTestControl.beginFrame(120, true);
+        PortalClippingTestControl.recordInnerDepth("minecraft:the_end:2", java.util.Map.of("sampleCount", 81));
+        assertDoesNotThrow(() -> PortalClippingTestControl.requireCurrentDepth("minecraft:the_end:2"));
+        PortalClippingTestControl.beginFrame(130, true);
+        PortalClippingTestControl.recordInnerDepth("minecraft:the_nether:1", java.util.Map.of("sampleCount", 81));
+        assertThrows(IllegalStateException.class,
+            () -> PortalClippingTestControl.requireCurrentDepth("minecraft:the_end:2"));
+        PortalClippingTestControl.beginObservation("after-reload:nested-background");
+        assertFalse(PortalClippingTestControl.observesInnerDepth());
+        assertThrows(IllegalStateException.class,
+            () -> PortalClippingTestControl.requireCurrentDepth("minecraft:the_nether:1"));
+        PortalClippingTestControl.recordInnerDepth("minecraft:the_end:2", java.util.Map.of("sampleCount", 81));
+        assertTrue(((java.util.Map<?, ?>) PortalClippingTestControl.evidence().get("innerWorldDepthStates")).isEmpty());
+        PortalClippingTestControl.beginFrame(140, true);
+        PortalClippingTestControl.recordInnerDepth("minecraft:the_end:2", java.util.Map.of("sampleCount", 81));
+        assertEquals("after-reload:nested-background",
+            PortalClippingTestControl.requireCurrentDepth("minecraft:the_end:2").get("observation"));
+        assertThrows(IllegalArgumentException.class, () -> PortalClippingTestControl.beginFrame(140, true));
     }
 
     @Test

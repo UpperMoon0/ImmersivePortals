@@ -44,18 +44,29 @@ final class PortalSmokeSupport {
         return result;
     }
     static int samples() { return Integer.parseInt(System.getenv().getOrDefault("IP_SMOKE_SAMPLES", "200")); }
-    static void write(String name, String text) {
+    static void write(String name, String text) { write(directory(), name, text); }
+    static void write(Path directory, String name, String text) {
         try {
-            Files.createDirectories(directory());
-            Path temporary = directory().resolve(name + ".tmp");
+            Files.createDirectories(directory);
+            Path temporary = directory.resolve(name + ".tmp");
             Files.writeString(temporary, text);
-            try {
-                Files.move(temporary, directory().resolve(name), java.nio.file.StandardCopyOption.ATOMIC_MOVE,
-                    java.nio.file.StandardCopyOption.REPLACE_EXISTING);
-            } catch (java.nio.file.AtomicMoveNotSupportedException unsupported) {
-                Files.move(temporary, directory().resolve(name), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            // Windows readers may briefly deny replacement while consuming a marker.
+            // Retry only that sharing violation; retain atomic publication and surface persistent IO errors.
+            for (int attempt = 0; ; attempt++) {
+                try {
+                    try {
+                        Files.move(temporary, directory.resolve(name), java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+                            java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                    } catch (java.nio.file.AtomicMoveNotSupportedException unsupported) {
+                        Files.move(temporary, directory.resolve(name), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                    }
+                    break;
+                } catch (java.nio.file.AccessDeniedException denied) {
+                    if (attempt == 20) throw denied;
+                    Thread.sleep(10);
+                }
             }
-        } catch (Exception e) { throw new IllegalStateException("Cannot write smoke result", e); }
+        } catch (Exception e) { throw new IllegalStateException("Cannot write smoke result " + name, e); }
     }
     static void metrics(String side, List<Double> milliseconds) {
         double[] sorted = milliseconds.stream().mapToDouble(Double::doubleValue).sorted().toArray();

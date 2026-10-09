@@ -2,6 +2,11 @@ package qouteall.imm_ptl.core.mixin.common.chunk_sync;
 
 import net.minecraft.network.protocol.Packet;
 import net.minecraft.server.level.ChunkHolder;
+import net.minecraft.server.level.ChunkMap;
+import net.minecraft.server.level.ChunkLevel;
+import net.minecraft.server.level.ChunkResult;
+import net.minecraft.server.level.FullChunkStatus;
+import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.level.ChunkPos;
@@ -14,13 +19,54 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.ModifyVariable;
 import org.spongepowered.asm.mixin.injection.Redirect;
 import qouteall.imm_ptl.core.chunk_loading.ImmPtlChunkTracking;
+import qouteall.imm_ptl.core.chunk_loading.ChunkLoadingRecovery;
 import qouteall.imm_ptl.core.ducks.IEChunkHolder;
 import qouteall.imm_ptl.core.network.PacketRedirection;
 
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
 
 @Mixin(ChunkHolder.class)
-public class MixinChunkHolder implements IEChunkHolder {
+public abstract class MixinChunkHolder implements IEChunkHolder {
+    @Shadow private volatile CompletableFuture<ChunkResult<LevelChunk>> fullChunkFuture;
+    @Shadow private volatile CompletableFuture<ChunkResult<LevelChunk>> tickingChunkFuture;
+    @Shadow private volatile CompletableFuture<ChunkResult<LevelChunk>> entityTickingChunkFuture;
+    @Shadow public abstract int getTicketLevel();
+    @Shadow private void addSaveDependency(CompletableFuture<?> future) { throw new AssertionError(); }
+    @Shadow private void scheduleFullChunkPromotion(ChunkMap map, CompletableFuture<ChunkResult<LevelChunk>> future,
+                                                   Executor executor, FullChunkStatus status) { throw new AssertionError(); }
+
+    @Override
+    public void ip_retryFailedFutures(ChunkMap map, Executor executor) {
+        // Vanilla updateFutures only recreates these on ticket-level transitions.
+        // A retained portal ticket has no transition after a failed neighbor-range result.
+        FullChunkStatus status = ChunkLevel.fullStatus(getTicketLevel());
+        if (status.isOrAfter(FullChunkStatus.FULL)) {
+            var next = ChunkLoadingRecovery.retry(fullChunkFuture, () -> map.prepareAccessibleChunk((ChunkHolder) (Object) this));
+            if (next != fullChunkFuture) {
+                fullChunkFuture = next;
+                scheduleFullChunkPromotion(map, next, executor, FullChunkStatus.FULL);
+                addSaveDependency(next);
+            }
+        }
+        if (status.isOrAfter(FullChunkStatus.BLOCK_TICKING)) {
+            var next = ChunkLoadingRecovery.retry(tickingChunkFuture, () -> map.prepareTickingChunk((ChunkHolder) (Object) this));
+            if (next != tickingChunkFuture) {
+                tickingChunkFuture = next;
+                scheduleFullChunkPromotion(map, next, executor, FullChunkStatus.BLOCK_TICKING);
+                addSaveDependency(next);
+            }
+        }
+        if (status.isOrAfter(FullChunkStatus.ENTITY_TICKING)) {
+            var next = ChunkLoadingRecovery.retry(entityTickingChunkFuture, () -> map.prepareEntityTickingChunk((ChunkHolder) (Object) this));
+            if (next != entityTickingChunkFuture) {
+                entityTickingChunkFuture = next;
+                scheduleFullChunkPromotion(map, next, executor, FullChunkStatus.ENTITY_TICKING);
+                addSaveDependency(next);
+            }
+        }
+    }
     
     @Shadow
     @Final

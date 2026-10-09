@@ -10,6 +10,10 @@ on:
         description: Existing version tag to verify and publish (v<mod_version>)
         required: true
         type: string
+      source_ci_run_id:
+        description: Optional successful main CI run for the exact tagged commit; otherwise verify afresh
+        required: false
+        type: string
 
 env:
   RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
@@ -20,10 +24,42 @@ concurrency:
 
 permissions:
   contents: write
+  actions: read
 
 jobs:
+  evidence:
+    name: Select exact-commit release evidence
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      reuse: ${{ steps.select.outputs.reuse }}
+      run_id: ${{ steps.select.outputs.run_id }}
+      run_attempt: ${{ steps.select.outputs.run_attempt }}
+      artifact_id: ${{ steps.select.outputs.artifact_id }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || github.ref }}
+      - name: Validate every main CI check and artifact origin
+        id: select
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_CI_RUN_ID: ${{ inputs.source_ci_run_id }}
+        run: |
+          if [[ -f tools/release_evidence.py ]]; then
+            python3 tools/release_evidence.py resolve --run-id "$SOURCE_CI_RUN_ID"
+          else
+            # Older tags have no evidence contract; always verify them afresh.
+            echo 'reuse=false' >> "$GITHUB_OUTPUT"
+          fi
+
   core-verification:
     name: Core verification
+    needs: evidence
+    if: needs.evidence.outputs.reuse != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -57,9 +93,15 @@ jobs:
           if-no-files-found: error
 
   graphical-e2e:
-    name: Sable dedicated graphical E2E
+    name: Sable dedicated graphical E2E / ${{ matrix.transport }}
+    needs: evidence
+    if: needs.evidence.outputs.reuse != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        transport: [udp, tcp]
     steps:
       - uses: actions/checkout@v6
         with:
@@ -76,6 +118,29 @@ jobs:
             sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=2 update
             sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=2 install -y xvfb libgl1-mesa-dri
           fi
+      - name: Configure Sable transport
+        env:
+          TRANSPORT: ${{ matrix.transport }}
+        run: |
+          mkdir -p run-sable-e2e-server/config run-sable-e2e-client/config
+          if [[ "$TRANSPORT" == tcp ]]; then
+            cat > run-sable-e2e-server/config/sable-common.toml <<'EOF'
+          disable_udp_pipeline = true
+          attempt_udp_networking = false
+          EOF
+            cat > run-sable-e2e-client/config/sable-client.toml <<'EOF'
+          attempt_udp_networking = false
+          EOF
+          else
+            cat > run-sable-e2e-server/config/sable-common.toml <<'EOF'
+          disable_udp_pipeline = false
+          attempt_udp_networking = true
+          EOF
+            cat > run-sable-e2e-client/config/sable-client.toml <<'EOF'
+          attempt_udp_networking = true
+          EOF
+          fi
+          cp run-sable-e2e-server/config/sable-common.toml run-sable-e2e-client/config/sable-common.toml
       - run: chmod +x ./gradlew
       - name: Dedicated server and automated client
         run: python3 tools/verify.py e2e
@@ -83,17 +148,22 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: release-sable-dimension-stack-e2e
+          name: release-sable-dimension-stack-e2e-${{ matrix.transport }}
           if-no-files-found: warn
           path: |
             build/verification-e2e.json
             build/sable-dimension-stack-e2e/**
+            run-sable-e2e-server/config/sable-common.toml
+            run-sable-e2e-client/config/sable-common.toml
+            run-sable-e2e-client/config/sable-client.toml
             run-sable-e2e-server/crash-reports/**
             run-sable-e2e-client/crash-reports/**
             run-sable-e2e-server/logs/**
             run-sable-e2e-client/logs/**
 
   compatibility:
+    needs: evidence
+    if: needs.evidence.outputs.reuse != 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -141,12 +211,33 @@ jobs:
       disable_copy_image: ${{ matrix.disable_copy_image || false }}
       gl_context: ${{ matrix.gl_context || 'default' }}
 
+  verified:
+    name: Enforce complete release verification
+    if: always()
+    needs: [evidence, core-verification, graphical-e2e, compatibility]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Enforce reused or fresh coverage
+        env:
+          EVIDENCE: ${{ needs.evidence.result }}
+          REUSE: ${{ needs.evidence.outputs.reuse }}
+          CORE: ${{ needs.core-verification.result }}
+          E2E: ${{ needs.graphical-e2e.result }}
+          VISUAL: ${{ needs.compatibility.result }}
+        run: |
+          [[ "$EVIDENCE" == success ]]
+          if [[ "$REUSE" == true ]]; then
+            [[ "$CORE" == skipped && "$E2E" == skipped && "$VISUAL" == skipped ]]
+          else
+            [[ "$REUSE" == false && "$CORE" == success && "$E2E" == success && "$VISUAL" == success ]]
+          fi
+
   release:
     name: Publish verified release
-    needs:
-      - core-verification
-      - graphical-e2e
-      - compatibility
+    needs: [evidence, verified]
+    if: ${{ !cancelled() && needs.evidence.result == 'success' && needs.verified.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -155,10 +246,26 @@ jobs:
         with:
           ref: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || github.ref }}
       - name: Restore verified release jar
+        if: needs.evidence.outputs.reuse != 'true'
         uses: actions/download-artifact@v4
         with:
           name: verified-release-jar
           path: build/libs
+      - name: Restore exact tested main jar and provenance
+        if: needs.evidence.outputs.reuse == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ needs.evidence.outputs.artifact_id }}
+          merge-multiple: true
+          run-id: ${{ needs.evidence.outputs.run_id }}
+          github-token: ${{ github.token }}
+          path: build/libs
+      - name: Verify restored jar checksum and tag provenance
+        if: needs.evidence.outputs.reuse == 'true'
+        env:
+          SOURCE_CI_RUN_ID: ${{ needs.evidence.outputs.run_id }}
+          SOURCE_CI_RUN_ATTEMPT: ${{ needs.evidence.outputs.run_attempt }}
+        run: python3 tools/release_evidence.py verify-bundle --run-id "$SOURCE_CI_RUN_ID" --run-attempt "$SOURCE_CI_RUN_ATTEMPT"
       - name: Read mod version and locate artifacts
         id: release_file
         shell: bash

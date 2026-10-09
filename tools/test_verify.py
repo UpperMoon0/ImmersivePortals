@@ -177,6 +177,36 @@ class VerificationHarnessTest(unittest.TestCase):
                 verify.wait_for_client(Mock(poll=Mock(return_value=None)), Mock(poll=Mock(return_value=None)), timeout=500)
         self.assertEqual([call.args[2] for call in diagnostics.call_args_list], ["timeout"])
 
+    def test_progress_reports_scene_changes_and_bounded_heartbeat(self):
+        reporter = verify.ClientProgressReporter(0, 300)
+        with patch("builtins.print") as printed:
+            reporter.update(0, 0)
+            reporter.update(0.25, 0)
+            reporter.update(1, 0)
+            self.assertEqual(printed.call_count, 1)
+            (self.results / "scene-request.txt").write_text("after-reload:nested-background")
+            reporter.update(2, 2)
+            self.assertIn("after-reload:nested-background", printed.call_args.args[0])
+            (self.results / "scene-ready.txt").write_text("after-reload:nested-background")
+            reporter.update(3, 3)
+            reporter.update(62, 3)
+            self.assertEqual(printed.call_count, 3)
+            reporter.update(63, 3)
+            self.assertIn("last activity=60s ago", printed.call_args.args[0])
+            self.assertIn("remaining=237s", printed.call_args.args[0])
+            (self.results / "visual-pass.txt").write_text("passed")
+            reporter.update(64, 64)
+            self.assertIn("collecting timing samples", printed.call_args.args[0])
+        self.assertEqual(reporter.deadline, 300)
+
+    def test_progress_marker_read_errors_do_not_fail_the_graphical_session(self):
+        reporter = verify.ClientProgressReporter(0, 300)
+        with patch.object(Path, "open", side_effect=PermissionError("temporarily unavailable")), \
+             patch("builtins.print") as printed:
+            reporter.update(0, 0)
+        self.assertIn("awaiting client", printed.call_args.args[0])
+        self.assertEqual(reporter.deadline, 300)
+
     def test_visual_budget_accounts_for_elapsed_job_and_cleanup(self):
         with patch.dict(verify.os.environ, {"IP_VERIFY_JOB_START_EPOCH": "700"}), \
              patch.object(verify.time, "time", return_value=2000), patch.object(verify.time, "monotonic", return_value=1000):
@@ -578,9 +608,62 @@ class VerificationHarnessTest(unittest.TestCase):
             "crossing_palette": True, "background_color": [37, 17, 4], "visible_color": [51, 5, 4], "actual_color": [60, 160, 20],
             "native_view_distance": 2.5, "expected_native_distance": 2.5, "native_camera": [0, 82, -0.5],
             "depth_samples": 81, "depth_observations": 120}})
+        for index, check in enumerate(checks):
+            frame = 140 * (index + 1)
+            observation = f"{check['phase']}:{check['scene']}"
+            witness = check["reference_witness"]
+            witness.update(depth_frame=frame, depth_observation=observation)
+            target = witness.get("depth_target", "minecraft:the_nether:0")
+            check["render_frame"] = frame
+            check["consecutive_depth_frames"] = [frame] if check["scene"] == "crossing" else [frame - 20, frame - 10, frame]
+            check["shader_path"] = dict(check.get("shader_path", {}), frame=frame, observation=observation,
+                innerWorldDepthStates={target: dict(frame=frame, observation=observation, sampleCount=81,
+                    depthSamples=[0.5] * 81, observationCount=witness["depth_observations"])})
         report["checks"] = checks
         (self.results / "fixture.json").write_text(json.dumps({"name": verify.FIXTURE_NAME, "diagnostic_fixture": False}))
+        (self.results / "chunk-recovery-evidence.json").write_text(json.dumps(dict(
+            scene="after-reload:nested-background", dimension="minecraft:the_end", chunk=[0, -1],
+            injected_failures=2, client_unload_sent=True, ticking_recovered=True,
+            entity_ticking_recovered=True, pending_chunk_resent=True)))
         return report
+
+    def test_real_pack_depth_rejects_stale_scene_frame_and_incomplete_convergence(self):
+        for scene in ("solid-background", "nested-background", "create-nested", "crossing"):
+            for mutation in ("old-frame", "old-scene", "missing-depth", "old-witness", "too-few", "same-frame"):
+                with self.subTest(scene=scene, mutation=mutation):
+                    report = self.real_pack_evidence()
+                    check = next(item for item in report["checks"] if item["scene"] == scene)
+                    states = check["shader_path"]["innerWorldDepthStates"]
+                    state = next(iter(states.values()))
+                    if mutation == "old-frame": state["frame"] -= 10
+                    elif mutation == "old-scene": state["observation"] = "old:solid-background"
+                    elif mutation == "missing-depth": states.clear()
+                    elif mutation == "old-witness": check["reference_witness"]["depth_frame"] -= 10
+                    elif mutation == "too-few": check["consecutive_depth_frames"] = []
+                    else: check["consecutive_depth_frames"] = [check["render_frame"]] * 3
+                    self.write_shader_evidence(report)
+                    with self.assertRaisesRegex(RuntimeError, "current scene and assertion frame"):
+                        verify.validate_shader_evidence("iris-active")
+
+    def test_real_pack_rejects_missing_or_incomplete_failed_chunk_recovery(self):
+        self.real_pack_evidence()
+        path = self.results / "chunk-recovery-evidence.json"
+        original = json.loads(path.read_text())
+        for key in original:
+            bad = dict(original)
+            del bad[key]
+            path.write_text(json.dumps(bad))
+            with self.assertRaisesRegex(RuntimeError, "recovery"):
+                verify.validate_chunk_recovery_evidence()
+        for key in ("client_unload_sent", "ticking_recovered", "entity_ticking_recovered", "pending_chunk_resent"):
+            for value in (False, 1, "true"):
+                bad = dict(original, **{key: value})
+                path.write_text(json.dumps(bad))
+                with self.assertRaisesRegex(RuntimeError, "recovery"):
+                    verify.validate_chunk_recovery_evidence()
+        path.unlink()
+        with self.assertRaises(FileNotFoundError):
+            verify.validate_chunk_recovery_evidence()
 
     def test_real_pack_requires_matching_clipped_pixels_and_nearer_visible_depth(self):
         report = self.real_pack_evidence()

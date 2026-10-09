@@ -32,7 +32,7 @@ public final class PortalShadowSmokeClient {
     private static final String[] SCENES = {"lit", "caster", "restored"};
     private static boolean connecting, initialized, done, visualDone;
     private static int phase, scene, frames, stable;
-    private static long frameStart;
+    private static long frameStart, renderFrame;
     private static String request = "", observing = "";
     private static CompletableFuture<Void> reload;
     private static final List<Map<String, Object>> checks = new ArrayList<>();
@@ -52,6 +52,9 @@ public final class PortalShadowSmokeClient {
     @SubscribeEvent public static void beforeFrame(RenderFrameEvent.Pre event) {
         if (!PortalShadowTestControl.enabled()) return;
         frameStart = System.nanoTime();
+        PortalClippingTestControl.beginFrame(++renderFrame, !done && initialized && !visualDone
+            && reload == null && observing.equals(request)
+            && PortalClippingTestControl.assertionFrame(frames + 1));
         IPGlobal.renderMode = IPGlobal.RenderMode.normal;
     }
     @SubscribeEvent public static void afterFrame(RenderFrameEvent.Post event) {
@@ -89,7 +92,7 @@ public final class PortalShadowSmokeClient {
                 PortalClippingTestControl.beginObservation(request);
                 return;
             }
-            if (++frames < 120 || frames % 10 != 0) return;
+            if (!PortalClippingTestControl.assertionFrame(++frames)) return;
             verifyRuntime();
             if (!capture(mc)) return;
             if (++scene < SCENES.length) requestScene();
@@ -130,8 +133,7 @@ public final class PortalShadowSmokeClient {
     }
     private static boolean capture(Minecraft mc) throws Exception {
         Map<String, Object> shadow = PortalShadowTestControl.evidence();
-        Map<?, ?> depths = (Map<?, ?>) PortalClippingTestControl.evidence().get("innerWorldDepthStates");
-        Map<?, ?> receiver = (Map<?, ?>) depths.get("minecraft:the_nether:1");
+        Map<?, ?> receiver = PortalClippingTestControl.requireCurrentDepth("minecraft:the_nether:1");
         require(request.equals(shadow.get("observation")) && ((Number) shadow.getOrDefault("observations", 0)).longValue() > 0,
             "No actual shadow pass captured for " + request);
         require(((Number) shadow.get("sample_count")).intValue() == 25 && ((Number) shadow.get("resolution")).intValue() == 256,
@@ -153,6 +155,7 @@ public final class PortalShadowSmokeClient {
             check.put("width", pixels.getWidth()); check.put("height", pixels.getHeight());
             check.put("center_green", center[0]); check.put("center_blue", center[1]); check.put("center_red", center[2]);
             check.put("side_green", side[0]); check.put("receiver_distance", distance);
+            check.put("render_frame", renderFrame); check.put("receiver_depth", receiver);
             check.put("shadow", shadow); check.put("accepted", accepted);
             lastProbe = check;
             stable = accepted ? stable + 1 : 0;

@@ -22,7 +22,9 @@ class ShadowEvidenceTest(unittest.TestCase):
         (self.root / filename).write_bytes(b'fixture')
         return dict(phase=phase, scene=scene, screenshot=filename, width=800 if phase == 'before-reload' else 960,
                     height=600, center_green=0 if caster else 1, center_blue=1 if caster else 0,
-                    center_red=0, side_green=1, receiver_distance=7, accepted=True,
+                    center_red=0, side_green=1, receiver_distance=7, accepted=True, render_frame=140,
+                    receiver_depth=dict(frame=140, observation=f'{phase}:{scene}', sampleCount=81,
+                                        depthSamples=[0.5]*81, observationCount=3),
                     shadow=dict(observation=f'{phase}:{scene}', observations=5, resolution=256, sample_count=25,
                                 samples=[value]*25, inherited_clipping_restored=True, negative_control=False,
                                 terrain_region_setups=5, terrain_draw_states={"draw": {"clipDistanceEnabled": False, "probeOutput": 1}}))
@@ -57,6 +59,14 @@ class ShadowEvidenceTest(unittest.TestCase):
             self.write(altered)
             with self.subTest(change=change), self.assertRaises(RuntimeError):
                 validate_shadow_evidence(self.root, 'iris-active')
+
+    def test_receiver_depth_cannot_come_from_an_old_frame_or_scene(self):
+        for field, value in (("frame", 130), ("observation", "old:caster"), ("depthSamples", [])):
+            altered = copy.deepcopy(self.checks)
+            altered[1]["receiver_depth"][field] = value
+            self.write(altered)
+            with self.subTest(field=field), self.assertRaisesRegex(RuntimeError, "current scene/frame"):
+                validate_shadow_evidence(self.root, "iris-active")
 
     def test_negative_requires_lit_control_and_removed_shadow_only(self):
         failed = copy.deepcopy(self.checks[1])

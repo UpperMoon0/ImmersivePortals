@@ -48,6 +48,7 @@ public final class PortalSmokeServer {
             player = joined;
             player.setGameMode(GameType.SPECTATOR);
         } catch (Throwable e) {
+            com.mojang.logging.LogUtils.getLogger().error("Portal smoke server failed", e);
             PortalSmokeSupport.write("server-fail.txt", e.toString());
         }
     }
@@ -171,8 +172,9 @@ public final class PortalSmokeServer {
             }
         }
         request = token;
+        boolean testingRecovery = PortalSmokeChunkRecoveryProbe.begin(token, player);
         writeSceneWitness(token);
-        PortalSmokeSupport.write("scene-ready.txt", token);
+        PortalSmokeSupport.write("scene-ready.txt", testingRecovery ? "" : token);
     }
 
     private static void writeSceneWitness(String token) {
@@ -251,6 +253,7 @@ public final class PortalSmokeServer {
         try {
             String next = PortalSmokeSupport.read("scene-request.txt");
             if (!next.isEmpty() && !next.equals(request)) setup(next);
+            PortalSmokeChunkRecoveryProbe.tick(player);
             if (scene.startsWith("create-nested") && player.tickCount % 20 == 0) {
                 writeSceneWitness(request, "scene-live-world-witness.json");
             }
@@ -291,6 +294,7 @@ public final class PortalSmokeServer {
                 PortalSmokeSupport.write("server-pass.txt", "Live portal server tick measurements complete\n");
             }
         } catch (Throwable e) {
+            com.mojang.logging.LogUtils.getLogger().error("Portal smoke server failed", e);
             PortalSmokeSupport.write("server-fail.txt", e.toString());
         }
     }

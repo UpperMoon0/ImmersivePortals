@@ -26,6 +26,7 @@ import org.apache.commons.lang3.Validate;
 import org.slf4j.Logger;
 import qouteall.imm_ptl.core.IPGlobal;
 import qouteall.imm_ptl.core.ducks.IEChunkMap;
+import qouteall.imm_ptl.core.ducks.IEChunkHolder;
 import qouteall.imm_ptl.core.ducks.IEDistanceManager;
 import qouteall.imm_ptl.core.ducks.IEServerChunkCache;
 import qouteall.imm_ptl.core.ducks.IEWorld;
@@ -38,6 +39,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.WeakHashMap;
 import java.util.concurrent.Executor;
+import java.util.function.IntConsumer;
 
 /**
  * Each {@link ImmPtlChunkTickets} manages ImmPtl chunk ticket for one dimension.
@@ -60,6 +62,12 @@ import java.util.concurrent.Executor;
 @SuppressWarnings("JavadocReference")
 public class ImmPtlChunkTickets {
     private static final Logger LOGGER = LogUtils.getLogger();
+    // Prevent one missing holder from occupying a throttle slot indefinitely.
+    private static final long MISSING_HOLDER_WAIT_TICKS = 200;
+    // Minecraft 1.21.1 ChunkLevel: FULL=33, BLOCK_TICKING=32, ENTITY_TICKING=31.
+    // Keep this arithmetic independent of ChunkLevel's registry-heavy static initialization
+    // so these ticket-state invariants can also be verified in standalone JUnit.
+    private static final int FULL_CHUNK_TICKET_LEVEL = 33;
     
     public static final TicketType<ChunkPos> TICKET_TYPE =
         TicketType.create("imm_ptl", Comparator.comparingLong(ChunkPos::toLong));
@@ -82,6 +90,11 @@ public class ImmPtlChunkTickets {
     public static class ChunkTicketInfo {
         public int lastUpdateGeneration;
         public int distanceToSource;
+        public boolean ticketAdded;
+        // Radius passed to addRegionTicket (1 = block-ticking, 2 = entity-ticking), not ticket level.
+        public int installedTicketRadius;
+        public long lastTicketAttemptGameTime;
+        public final ChunkLoadingRecovery.Retry retry = new ChunkLoadingRecovery.Retry();
         
         public ChunkTicketInfo(int lastUpdateGeneration, int distanceToSource) {
             this.lastUpdateGeneration = lastUpdateGeneration;
@@ -94,8 +107,16 @@ public class ImmPtlChunkTickets {
     private final ArrayList<LongLinkedOpenHashSet> chunksToAddTicketByDistance = new ArrayList<>();
     
     private final LongOpenHashSet waitingForLoading = new LongOpenHashSet();
+
+    // A radius 1 -> 2 change also upgrades chunks that were already sent to the
+    // player and left waitingForLoading. Observe their *new* entity futures
+    // independently; a retry here must never resend an already-delivered chunk.
+    private final Long2ObjectOpenHashMap<ChunkLoadingRecovery.DeliveredEntityPromotion>
+        deliveredEntityUpgrades = new Long2ObjectOpenHashMap<>();
     
     private boolean isValid = true;
+    // Avoid scanning every tracked chunk on each tick; tickets are added only in flushThrottling.
+    private int lastSyncedTicketRadius = -1;
     
     public final int throttlingLimit = 4;
     
@@ -146,6 +167,129 @@ public class ImmPtlChunkTickets {
             LongLinkedOpenHashSet::new
         );
     }
+
+    /**
+     * Only an installed ticket can occupy a throttle slot. Retain a request
+     * when custom ticket loading was disabled during registration.
+     */
+    static boolean recordTicketAttempt(
+        LongLinkedOpenHashSet queue, LongOpenHashSet waiting, long chunkPos,
+        ChunkTicketInfo info, boolean added, int radius, long gameTime
+    ) {
+        if (!added) {
+            queue.add(chunkPos);
+            return false;
+        }
+        Validate.isTrue(radius > 0);
+        info.ticketAdded = true;
+        info.installedTicketRadius = radius;
+        info.lastTicketAttemptGameTime = gameTime;
+        waiting.add(chunkPos);
+        return true;
+    }
+
+    /**
+     * Swap an existing region ticket to the new radius without a gap in coverage.
+     * Ticket identity includes its level, so a different radius must be removed explicitly.
+     */
+    static boolean reconcileTicketRadius(
+        ChunkTicketInfo info, int desiredRadius, long gameTime,
+        IntConsumer add, IntConsumer remove
+    ) {
+        if (!info.ticketAdded || info.installedTicketRadius == desiredRadius) return false;
+        Validate.isTrue(info.installedTicketRadius > 0 && desiredRadius > 0);
+        int oldRadius = info.installedTicketRadius;
+        add.accept(desiredRadius);
+        remove.accept(oldRadius);
+        info.installedTicketRadius = desiredRadius;
+        // A holder may still report the old level until DistanceManager runs its updates.
+        info.lastTicketAttemptGameTime = gameTime;
+        return true;
+    }
+
+    static void trackDeliveredEntityUpgrade(
+        Long2ObjectOpenHashMap<ChunkLoadingRecovery.DeliveredEntityPromotion> promotions,
+        long chunkPos, int previousRadius, int newRadius, boolean pendingLoading
+    ) {
+        if (newRadius != 2) {
+            promotions.remove(chunkPos);
+        }
+        else if (previousRadius == 1 && !pendingLoading) {
+            promotions.putIfAbsent(chunkPos, new ChunkLoadingRecovery.DeliveredEntityPromotion());
+        }
+    }
+
+    private void reconcileInstalledTicketRadii(DistanceManager distanceManager, int desiredRadius, long gameTime) {
+        if (lastSyncedTicketRadius == desiredRadius) return;
+        if (desiredRadius != 2) deliveredEntityUpgrades.clear();
+        for (var entry : chunkPosToTicketInfo.long2ObjectEntrySet()) {
+            ChunkTicketInfo info = entry.getValue();
+            if (!info.ticketAdded || info.installedTicketRadius == desiredRadius) continue;
+            long chunkPos = entry.getLongKey();
+            int previousRadius = info.installedTicketRadius;
+            ChunkPos pos = new ChunkPos(chunkPos);
+            if (reconcileTicketRadius(info, desiredRadius, gameTime,
+                radius -> distanceManager.addRegionTicket(TICKET_TYPE, pos, radius, pos),
+                radius -> distanceManager.removeRegionTicket(TICKET_TYPE, pos, radius, pos))) {
+                trackDeliveredEntityUpgrade(deliveredEntityUpgrades, chunkPos, previousRadius, desiredRadius,
+                    waitingForLoading.contains(chunkPos) || info.retry.scheduled());
+            }
+        }
+        lastSyncedTicketRadius = desiredRadius;
+    }
+
+    private void recoverDeliveredEntityUpgrades(ServerLevel world, Executor mainThreadExecutor) {
+        ChunkMap chunkMap = world.getChunkSource().chunkMap;
+        IEChunkMap chunkAccess = (IEChunkMap) chunkMap;
+        long gameTime = world.getGameTime();
+        deliveredEntityUpgrades.long2ObjectEntrySet().removeIf(entry -> {
+            long chunkPos = entry.getLongKey();
+            ChunkTicketInfo info = chunkPosToTicketInfo.get(chunkPos);
+            if (info == null || !info.ticketAdded || info.installedTicketRadius != 2
+                || waitingForLoading.contains(chunkPos) || info.retry.scheduled()) {
+                return true;
+            }
+            ChunkHolder holder = chunkAccess.ip_getUpdatingChunkIfPresent(chunkPos);
+            // Ticket propagation and vanilla's 32 -> 31 updateFutures may not have run yet.
+            if (holder == null || !hasRequiredTicketLevel(holder.getTicketLevel(), 2)) return false;
+
+            return entry.getValue().tick(holder.getEntityTickingChunkFuture(), gameTime, () -> {
+                // Retry the failed entity promotion without entering the packet-send queue.
+                ((IEChunkHolder) holder).ip_retryFailedFutures(chunkMap, mainThreadExecutor);
+                LOGGER.warn("Retrying failed entity-ticking upgrade of delivered portal chunk {} {}",
+                    world, new ChunkPos(chunkPos));
+            });
+        });
+    }
+
+    static int ticketLevelForRadius(int radius) {
+        Validate.isTrue(radius > 0);
+        return FULL_CHUNK_TICKET_LEVEL - radius;
+    }
+
+    static boolean hasRequiredTicketLevel(int holderTicketLevel, int requiredRadius) {
+        return holderTicketLevel <= ticketLevelForRadius(requiredRadius);
+    }
+
+    static int radiusFromTicketLevel(int ticketLevel) {
+        return FULL_CHUNK_TICKET_LEVEL - ticketLevel;
+    }
+
+    static boolean missingHolderWaitExpired(ChunkTicketInfo info, long gameTime) {
+        return gameTime - info.lastTicketAttemptGameTime >= MISSING_HOLDER_WAIT_TICKS;
+    }
+
+    private void queueRetry(long chunkPos, ChunkTicketInfo info, long gameTime) {
+        if (info.retry.schedule(gameTime)) getQueueByDistance(info.distanceToSource).add(chunkPos);
+    }
+
+    /** A pending send can discover a failure after its initial throttle slot was released. */
+    public void requestRetry(long chunkPos, long gameTime) {
+        ChunkTicketInfo info = chunkPosToTicketInfo.get(chunkPos);
+        if (info == null || !isValid) return;
+        waitingForLoading.remove(chunkPos);
+        queueRetry(chunkPos, info, gameTime);
+    }
     
     public void tick(ServerLevel world) {
         flushThrottling(world);
@@ -184,17 +328,52 @@ public class ImmPtlChunkTickets {
             return;
         }
         
+        if (!IPConfig.getConfig().enableImmPtlChunkLoading) {
+            // Return the outstanding throttle slots to the queue so enabling
+            // the custom loader again does not silently strand those chunks.
+            for (long chunkPos : waitingForLoading) {
+                ChunkTicketInfo info = chunkPosToTicketInfo.get(chunkPos);
+                if (info != null) getQueueByDistance(info.distanceToSource).add(chunkPos);
+            }
+            waitingForLoading.clear();
+            return;
+        }
+
         DistanceManager distanceManager = getDistanceManager(world);
+        int loadingRadius = getLoadingRadius();
+        boolean entityTickingRequired = loadingRadius == 2;
+        reconcileInstalledTicketRadii(distanceManager, loadingRadius, world.getGameTime());
         Executor mainThreadExecutor = ((qouteall.imm_ptl.core.mixin.common.chunk_sync.IEDistanceManager) distanceManager).ip_getMainThreadExecutor();
-        
+        // Do not tie these post-delivery promotions to the four pending-chunk slots.
+        recoverDeliveredEntityUpgrades(world, mainThreadExecutor);
+
         // clear the already loaded chunks
         waitingForLoading.removeIf((long chunkPos) -> {
-            ChunkHolder chunkHolder = getChunkHolder(world, chunkPos);
+            ChunkTicketInfo info = chunkPosToTicketInfo.get(chunkPos);
+            if (info == null) return true;
+            ChunkHolder chunkHolder = ((IEChunkMap) world.getChunkSource().chunkMap).ip_getUpdatingChunkIfPresent(chunkPos);
             if (chunkHolder == null) {
-                return true;
+                if (missingHolderWaitExpired(info, world.getGameTime())) {
+                    queueRetry(chunkPos, info, world.getGameTime());
+                    LOGGER.warn("Requeueing portal chunk {} {} after waiting {} ticks for a holder",
+                        world, new ChunkPos(chunkPos), MISSING_HOLDER_WAIT_TICKS);
+                    return true;
+                }
+                return false; // Ticket propagation may still publish the holder.
             }
-            
-            ChunkResult<LevelChunk> resultNow = chunkHolder.getEntityTickingChunkFuture()
+            if (!hasRequiredTicketLevel(chunkHolder.getTicketLevel(), loadingRadius)) {
+                if (missingHolderWaitExpired(info, world.getGameTime())) {
+                    queueRetry(chunkPos, info, world.getGameTime());
+                    LOGGER.warn("Requeueing portal chunk {} {}: holder ticket level {} did not reach required level {} within {} ticks",
+                        world, new ChunkPos(chunkPos), chunkHolder.getTicketLevel(),
+                        ticketLevelForRadius(loadingRadius), MISSING_HOLDER_WAIT_TICKS);
+                    return true; // A stale holder must not occupy a throttle slot forever.
+                }
+                return false;
+            }
+
+            ChunkResult<LevelChunk> resultNow = (entityTickingRequired ? chunkHolder.getEntityTickingChunkFuture()
+                : chunkHolder.getTickingChunkFuture())
                 .getNow(null);
             
             if (resultNow == null) {
@@ -202,10 +381,8 @@ public class ImmPtlChunkTickets {
             }
             
             if (!resultNow.isSuccess()) {
-                LOGGER.error(
-                    "Chunk loading failure {} {} {}",
-                    world, new ChunkPos(chunkPos)
-                );
+                queueRetry(chunkPos, info, world.getGameTime());
+                LOGGER.warn("Requeueing failed portal chunk promotion {} {}", world, new ChunkPos(chunkPos));
             }
             
             return true;
@@ -214,16 +391,28 @@ public class ImmPtlChunkTickets {
         // flush the pending-add-ticket queues
         for (LongLinkedOpenHashSet queue : chunksToAddTicketByDistance) {
             if (queue != null) {
-                while (!queue.isEmpty()) {
+                int queued = queue.size();
+                while (queued-- > 0 && !queue.isEmpty()) {
                     if (waitingForLoading.size() >= throttlingLimit) {
                         return;
                     }
                     
                     long chunkPos = queue.removeFirstLong();
-                    if (chunkPosToTicketInfo.containsKey(chunkPos)) {
-                        addTicket(distanceManager, chunkPos);
-                        
-                        waitingForLoading.add(chunkPos);
+                    ChunkTicketInfo info = chunkPosToTicketInfo.get(chunkPos);
+                    if (info != null) {
+                        if (!info.retry.ready(world.getGameTime())) {
+                            queue.add(chunkPos);
+                            continue;
+                        }
+                        if (!recordTicketAttempt(queue, waitingForLoading, chunkPos, info,
+                            addTicket(distanceManager, chunkPos, loadingRadius), loadingRadius, world.getGameTime())) {
+                            continue;
+                        }
+                        if (info.retry.scheduled()) {
+                            ChunkHolder holder = ((IEChunkMap) world.getChunkSource().chunkMap).ip_getUpdatingChunkIfPresent(chunkPos);
+                            if (holder != null) ((IEChunkHolder) holder).ip_retryFailedFutures(world.getChunkSource().chunkMap, mainThreadExecutor);
+                            info.retry.started();
+                        }
                     }
                     else {
                         LOGGER.warn("Chunk {} is not in the queue", new ChunkPos(chunkPos));
@@ -233,19 +422,20 @@ public class ImmPtlChunkTickets {
         }
     }
     
-    private static void addTicket(DistanceManager distanceManager, long chunkPos) {
+    private static boolean addTicket(DistanceManager distanceManager, long chunkPos, int radius) {
         if (!IPConfig.getConfig().enableImmPtlChunkLoading) {
-            return;
+            return false;
         }
         
         ChunkPos chunkPosObj = new ChunkPos(chunkPos);
         distanceManager.addRegionTicket(
-            TICKET_TYPE, chunkPosObj, getLoadingRadius(), chunkPosObj
+            TICKET_TYPE, chunkPosObj, radius, chunkPosObj
         );
         
         if (enableDebugRateStat) {
             debugRateStat.hit();
         }
+        return true;
     }
     
     public void purge(
@@ -262,14 +452,13 @@ public class ImmPtlChunkTickets {
             
             if (!keepLoading) {
                 waitingForLoading.remove(chunkPos);
-                
-                boolean pendingTicketAdding = getQueueByDistance(ticketInfo.distanceToSource)
-                    .remove(chunkPos);
-                
-                if (!pendingTicketAdding) {
+                deliveredEntityUpgrades.remove(chunkPos);
+
+                getQueueByDistance(ticketInfo.distanceToSource).remove(chunkPos);
+                if (ticketInfo.ticketAdded) {
                     ChunkPos chunkPosObj = new ChunkPos(chunkPos);
                     distanceManager.removeRegionTicket(
-                        TICKET_TYPE, chunkPosObj, getLoadingRadius(), chunkPosObj
+                        TICKET_TYPE, chunkPosObj, ticketInfo.installedTicketRadius, chunkPosObj
                     );
                 }
                 return true;
@@ -307,10 +496,11 @@ public class ImmPtlChunkTickets {
             
             ChunkPos chunkPos = new ChunkPos(pos);
             for (Ticket<?> ticket : toRemove) {
-                ticketManager.removeRegionTicket(TICKET_TYPE, chunkPos, ticket.getTicketLevel(), chunkPos);
+                ticketManager.removeRegionTicket(TICKET_TYPE, chunkPos, radiusFromTicketLevel(ticket.getTicketLevel()), chunkPos);
             }
         });
         
+        dimTicketManager.deliveredEntityUpgrades.clear();
         dimTicketManager.isValid = false;
     }
     
@@ -334,6 +524,7 @@ public class ImmPtlChunkTickets {
     private static void cleanup(ServerCleanupEvent event) {
         MinecraftServer server = event.server;
         for (ImmPtlChunkTickets immPtlChunkTickets : BY_DIMENSION.values()) {
+            immPtlChunkTickets.deliveredEntityUpgrades.clear();
             immPtlChunkTickets.isValid = false;
         }
         BY_DIMENSION.clear();

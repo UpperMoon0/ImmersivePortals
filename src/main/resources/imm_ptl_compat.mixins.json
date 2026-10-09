@@ -6,6 +6,7 @@
   "mixins": [
     "fabric.MixinFabricPayloadTypeRegistry",
     "fabric.MixinFabricNeoNetworkRegistrar",
+    "fabric.MixinFabricNeoPayloadHandler",
     "fabric.AccessorNeoForgeNetworkRegistry",
     "fabric.MixinNeoForgePayloadRegistry",
     "sable.AccessorSubLevel_SablePortalCompat",

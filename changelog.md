@@ -6,6 +6,20 @@ and this project tries to adhere to [Semantic Versioning](https://semver.org/spe
 
 ## [Unreleased Changes]
 
+## [6.0.13] - 2026-10-09
+
+### Fixed
+
+- Requeue failed portal chunk promotions with a bounded cooldown and recreate failed vanilla futures under retained tickets; pending chunks remain queued for real block/light delivery.
+- Make Forgified Fabric native-handler and receiver maps safe for concurrent reads, registration and removal. Preserve duplicate-return and replacement semantics for both packet flows and local listeners.
+
+### Changed
+
+- Overlap independent shader-pack and fixture checks, preserve exact main-tested release artifacts, and reuse only complete same-commit verification evidence before publication.
+- Require fault-injected End chunk recovery and resend in every real-pack lane; report scene progress and heartbeat diagnostics.
+
+See [`changelog/6.0.13.md`](changelog/6.0.13.md) and the [issue acceptance map](docs/issue-resolution-6.0.13.md).
+
 ## [6.0.12] - 2026-10-09
 
 ### Fixed
@@ -126,7 +140,8 @@ See [`changelog/6.0.9.md`](changelog/6.0.9.md) for the complete release notes.
 - Iris compatibility is not fully functional
 - Crash with SecurityCraft
 
-[Unreleased Changes]: https://github.com/UpperMoon0/ImmersivePortals/compare/v6.0.12...HEAD
+[Unreleased Changes]: https://github.com/UpperMoon0/ImmersivePortals/compare/v6.0.13...HEAD
+[6.0.13]: https://github.com/UpperMoon0/ImmersivePortals/compare/v6.0.12...v6.0.13
 [6.0.12]: https://github.com/UpperMoon0/ImmersivePortals/compare/v6.0.11...v6.0.12
 [6.0.11]: https://github.com/UpperMoon0/ImmersivePortals/compare/v6.0.10...v6.0.11
 [6.0.10]: https://github.com/UpperMoon0/ImmersivePortals/compare/v6.0.9...v6.0.10

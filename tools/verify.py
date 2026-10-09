@@ -561,6 +561,27 @@ def validate_crossing_motion(check: dict) -> None:
         raise RuntimeError("authoritative server crossing pose disagreed with client")
 
 
+def validate_current_depth(check, target):
+    """Bind each real-pack acceptance to this scene, phase and rendered frame."""
+    frame = check.get("render_frame")
+    observation = f"{check.get('phase')}:{check.get('scene')}"
+    path = check.get("shader_path", {})
+    depth = path.get("innerWorldDepthStates", {}).get(target, {})
+    witness = check.get("reference_witness", {})
+    samples = check.get("consecutive_depth_frames", [])
+    expected_samples = 1 if check.get("scene") == "crossing" else 3
+    if (type(frame) is not int or frame <= 0 or path.get("frame") != frame
+            or path.get("observation") != observation or depth.get("frame") != frame
+            or depth.get("observation") != observation or witness.get("depth_frame") != frame
+            or witness.get("depth_observation") != observation
+            or depth.get("sampleCount") != 81 or len(depth.get("depthSamples", [])) != 81
+            or depth.get("observationCount", 0) <= 0
+            or depth.get("observationCount") != witness.get("depth_observations")
+            or len(samples) != expected_samples or any(type(value) is not int or value <= 0 for value in samples)
+            or samples[-1] != frame or any(b - a < 10 for a, b in zip(samples, samples[1:]))):
+        raise RuntimeError("real-pack depth witness is not from the current scene and assertion frame")
+
+
 def validate_shader_evidence(renderer: str, render_mode: str = "normal", gl_context: str = "default") -> None:
     """A green screenshot alone cannot establish active-shader compatibility."""
     fixture_path = RESULT_DIR / "fixture.json"
@@ -583,6 +604,8 @@ def validate_shader_evidence(renderer: str, render_mode: str = "normal", gl_cont
         raise RuntimeError("runtime evidence is missing per-program positive/clipping scenes")
     if ("after-crossing", "crossing") not in observed or not (RESULT_DIR / "crossing-server-pass.txt").is_file():
         raise RuntimeError("cross-dimension player crossing was not verified")
+    if renderer in ACTIVE_RENDERERS and not fixture.get("diagnostic_fixture", True) and render_mode == "normal":
+        validate_chunk_recovery_evidence()
     for check in phases:
         if gl_context == "no-copy-image":
             if check.get("copy_image_available") is not False or not check.get("gl_version", "").startswith("3.3"):
@@ -644,6 +667,7 @@ def validate_shader_evidence(renderer: str, render_mode: str = "normal", gl_cont
                              "nested-background": ("minecraft:the_end:2", 8), "create-nested-background": ("minecraft:the_nether:2", 8),
                              "mirror-background": ("minecraft:overworld:1", 10)}
             target, expected = depth_targets[expected_reference]
+            validate_current_depth(check, target)
             distance, backdrop, closest = (witness.get(key, -1) for key in ("view_distance", "background_view_distance", "closest_view_distance"))
             expectation = "same" if scene.endswith(("-background", "-clipped")) or scene in ("nested", "mirror", "mirror-visible") else "moving-nearer" if scene.startswith("create-") else "nearer"
             valid = witness.get("depth_samples") == 81 and witness.get("depth_observations", 0) > 0 and witness.get("depth_target") == target
@@ -669,6 +693,7 @@ def validate_shader_evidence(renderer: str, render_mode: str = "normal", gl_cont
                                            or fraction < 0.10 or error + 1e-9 < fraction * 13 / 3):
                     raise RuntimeError("visible real-pack geometry did not differ from its background")
         if renderer in ACTIVE_RENDERERS and not fixture.get("diagnostic_fixture", True) and scene == "crossing":
+            validate_current_depth(check, "minecraft:the_nether:0")
             witness = check.get("reference_witness", {})
             background, visible, actual = (witness.get(name, []) for name in ("background_color", "visible_color", "actual_color"))
             if not witness.get("crossing_palette") or any(len(color) != 3 for color in (background, visible, actual)):
@@ -1053,6 +1078,33 @@ class AppendedLogReader:
         return [line.rstrip(b"\r").decode("utf-8", errors="replace") for line in lines]
 
 
+class ClientProgressReporter:
+    """Bounded scene announcements and heartbeat; never influence pass/stall/deadline state."""
+    def __init__(self, started: float, deadline: float):
+        self.started, self.deadline = started, deadline
+        self.next_check, self.last_report = started, started
+        self.stage = None
+
+    def update(self, now: float, last_progress: float) -> None:
+        if now < self.next_check:
+            return
+        self.next_check = now + 1
+        markers = []
+        for name in ("scene-request", "scene-ready"):
+            try:
+                with (RESULT_DIR / f"{name}.txt").open(encoding="utf-8", errors="replace") as stream:
+                    markers.append(stream.read(256).strip())
+            except OSError:
+                markers.append("")
+        stage = (*markers, (RESULT_DIR / "visual-pass.txt").exists())
+        if stage == self.stage and now - self.last_report < 60:
+            return
+        self.stage, self.last_report = stage, now
+        label = "collecting timing samples" if stage[2] else f"scene={markers[0] or 'awaiting client'}, ready={markers[1] or 'pending'}"
+        print(f"[verify] Client progress: {label}; elapsed={now - self.started:.0f}s, "
+              f"remaining={max(0, self.deadline - now):.0f}s, last activity={now - last_progress:.0f}s ago", flush=True)
+
+
 def wait_for_client(server: subprocess.Popen, client: subprocess.Popen, timeout: float = 300, smoke: bool = False) -> None:
     started = time.monotonic()
     deadline = started + timeout
@@ -1060,6 +1112,7 @@ def wait_for_client(server: subprocess.Popen, client: subprocess.Popen, timeout:
     progress = client_progress_token()
     diagnosed_stall = False
     server_log = AppendedLogReader(SERVER_LOG)
+    reporter = ClientProgressReporter(started, deadline)
     while True:
         now = time.monotonic()
         if now >= deadline:
@@ -1085,6 +1138,7 @@ def wait_for_client(server: subprocess.Popen, client: subprocess.Popen, timeout:
         current = client_progress_token()
         if current != progress:
             progress, last_progress = current, now
+        reporter.update(now, last_progress)
         if not diagnosed_stall and now - last_progress >= 180:
             print("[verify] No graphical-client progress for 180s; preserving scoped JVM thread dumps", flush=True)
             collect_thread_diagnostics(server, client, "no-progress-180s")
@@ -1141,6 +1195,16 @@ def validate_log_health() -> None:
                 bad.append(f"{path.name}: {token}")
     if bad:
         raise RuntimeError("critical runtime errors found after E2E pass: " + ", ".join(bad))
+
+
+def validate_chunk_recovery_evidence() -> None:
+    report = json.loads((RESULT_DIR / "chunk-recovery-evidence.json").read_text(encoding="utf-8"))
+    expected = dict(scene="after-reload:nested-background", dimension="minecraft:the_end", chunk=[0, -1],
+                    injected_failures=2, client_unload_sent=True, ticking_recovered=True,
+                    entity_ticking_recovered=True, pending_chunk_resent=True)
+    if any(type(report.get(key)) is not type(value) or report.get(key) != value
+           for key, value in expected.items()):
+        raise RuntimeError("failed End chunk recovery and pending resend were not verified")
 
 
 def validate_metrics(samples: int) -> None:

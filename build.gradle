@@ -331,6 +331,8 @@ dependencies {
     testImplementation platform("org.junit:junit-bom:5.11.4")
     testImplementation "org.junit.jupiter:junit-jupiter"
     testImplementation "org.ow2.asm:asm-tree:9.7.1"
+    // Execute the actual owo-lib bundled receiver handler in concurrency regressions.
+    testImplementation("org.sinytra.forgified-fabric-api:fabric-networking-api-v1:4.2.2+a92978fd19") { transitive = false }
     testImplementation("maven.modrinth:embeddium:1.0.15+mc1.21.1") { transitive = false }
     testImplementation("net.caffeinemc:sodium-neoforge-mod:0.8.12+mc1.21.1") { transitive = false }
     compileOnly "maven.modrinth:iris:1.8.14-beta.1+1.21.1-neoforge"

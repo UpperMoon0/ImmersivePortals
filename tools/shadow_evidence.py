@@ -4,7 +4,18 @@ import math
 from pathlib import Path
 
 
+def validate_receiver_depth(check: dict) -> None:
+    frame = check.get("render_frame")
+    depth = check.get("receiver_depth", {})
+    if (type(frame) is not int or frame <= 0 or depth.get("frame") != frame
+            or depth.get("observation") != f"{check.get('phase')}:{check.get('scene')}"
+            or depth.get("sampleCount") != 81 or len(depth.get("depthSamples", [])) != 81
+            or depth.get("observationCount", 0) <= 0):
+        raise RuntimeError("missing current scene/frame shadow receiver depth")
+
+
 def validate_probe(check: dict, result_dir: Path, *, expect_caster: bool) -> None:
+    validate_receiver_depth(check)
     shadow = check.get("shadow", {})
     observation = f"{check.get('phase')}:{check.get('scene')}"
     if shadow.get("observation") != observation or shadow.get("observations", 0) < 1:
@@ -60,6 +71,7 @@ def validate_shadow_negative(result_dir: Path) -> None:
         raise RuntimeError("shadow negative never passed its real lit control")
     validate_probe(lit[0], result_dir, expect_caster=False)
     failed = report.get("last_probe", {})
+    validate_receiver_depth(failed)
     state = failed.get("shadow", {})
     if failed.get("phase") != "before-reload" or failed.get("scene") != "caster" or failed.get("accepted") is not False:
         raise RuntimeError("shadow negative did not fail its exact caster scene")
