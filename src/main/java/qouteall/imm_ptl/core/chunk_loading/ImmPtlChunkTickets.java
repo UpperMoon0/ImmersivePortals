@@ -15,6 +15,7 @@ import net.minecraft.server.level.ChunkResult;
 import net.minecraft.server.level.ChunkTaskPriorityQueue;
 import net.minecraft.server.level.ChunkTaskPriorityQueueSorter;
 import net.minecraft.server.level.DistanceManager;
+import net.minecraft.server.level.FullChunkStatus;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.Ticket;
 import net.minecraft.server.level.TicketType;
@@ -40,6 +41,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.WeakHashMap;
 import java.util.concurrent.Executor;
+import java.util.function.IntConsumer;
 
 /**
  * Each {@link ImmPtlChunkTickets} manages ImmPtl chunk ticket for one dimension.
@@ -87,6 +89,8 @@ public class ImmPtlChunkTickets {
         public int lastUpdateGeneration;
         public int distanceToSource;
         public boolean ticketAdded;
+        // Radius passed to addRegionTicket (1 = block-ticking, 2 = entity-ticking), not ticket level.
+        public int installedTicketRadius;
         public long lastTicketAttemptGameTime;
         public final ChunkLoadingRecovery.Retry retry = new ChunkLoadingRecovery.Retry();
         
@@ -103,6 +107,8 @@ public class ImmPtlChunkTickets {
     private final LongOpenHashSet waitingForLoading = new LongOpenHashSet();
     
     private boolean isValid = true;
+    // Avoid scanning every tracked chunk on each tick; tickets are added only in flushThrottling.
+    private int lastSyncedTicketRadius = -1;
     
     public final int throttlingLimit = 4;
     
@@ -160,16 +166,58 @@ public class ImmPtlChunkTickets {
      */
     static boolean recordTicketAttempt(
         LongLinkedOpenHashSet queue, LongOpenHashSet waiting, long chunkPos,
-        ChunkTicketInfo info, boolean added, long gameTime
+        ChunkTicketInfo info, boolean added, int radius, long gameTime
     ) {
         if (!added) {
             queue.add(chunkPos);
             return false;
         }
+        Validate.isTrue(radius > 0);
         info.ticketAdded = true;
+        info.installedTicketRadius = radius;
         info.lastTicketAttemptGameTime = gameTime;
         waiting.add(chunkPos);
         return true;
+    }
+
+    /**
+     * Swap an existing region ticket to the new radius without a gap in coverage.
+     * Ticket identity includes its level, so a different radius must be removed explicitly.
+     */
+    static boolean reconcileTicketRadius(
+        ChunkTicketInfo info, int desiredRadius, long gameTime,
+        IntConsumer add, IntConsumer remove
+    ) {
+        if (!info.ticketAdded || info.installedTicketRadius == desiredRadius) return false;
+        Validate.isTrue(info.installedTicketRadius > 0 && desiredRadius > 0);
+        int oldRadius = info.installedTicketRadius;
+        add.accept(desiredRadius);
+        remove.accept(oldRadius);
+        info.installedTicketRadius = desiredRadius;
+        // A holder may still report the old level until DistanceManager runs its updates.
+        info.lastTicketAttemptGameTime = gameTime;
+        return true;
+    }
+
+    private void reconcileInstalledTicketRadii(DistanceManager distanceManager, int desiredRadius, long gameTime) {
+        if (lastSyncedTicketRadius == desiredRadius) return;
+        for (var entry : chunkPosToTicketInfo.long2ObjectEntrySet()) {
+            ChunkTicketInfo info = entry.getValue();
+            if (!info.ticketAdded || info.installedTicketRadius == desiredRadius) continue;
+            ChunkPos pos = new ChunkPos(entry.getLongKey());
+            reconcileTicketRadius(info, desiredRadius, gameTime,
+                radius -> distanceManager.addRegionTicket(TICKET_TYPE, pos, radius, pos),
+                radius -> distanceManager.removeRegionTicket(TICKET_TYPE, pos, radius, pos));
+        }
+        lastSyncedTicketRadius = desiredRadius;
+    }
+
+    static boolean hasRequiredTicketLevel(int ticketLevel, boolean entityTickingRequired) {
+        return entityTickingRequired ? ChunkLevel.isEntityTicking(ticketLevel) : ChunkLevel.isBlockTicking(ticketLevel);
+    }
+
+    static int radiusFromTicketLevel(int ticketLevel) {
+        return ChunkLevel.byStatus(FullChunkStatus.FULL) - ticketLevel;
     }
 
     static boolean missingHolderWaitExpired(ChunkTicketInfo info, long gameTime) {
@@ -237,6 +285,9 @@ public class ImmPtlChunkTickets {
         }
 
         DistanceManager distanceManager = getDistanceManager(world);
+        int loadingRadius = getLoadingRadius();
+        boolean entityTickingRequired = loadingRadius == 2;
+        reconcileInstalledTicketRadii(distanceManager, loadingRadius, world.getGameTime());
         Executor mainThreadExecutor = ((qouteall.imm_ptl.core.mixin.common.chunk_sync.IEDistanceManager) distanceManager).ip_getMainThreadExecutor();
         
         // clear the already loaded chunks
@@ -253,10 +304,18 @@ public class ImmPtlChunkTickets {
                 }
                 return false; // Ticket propagation may still publish the holder.
             }
-            if (IPGlobal.activeLoading ? !ChunkLevel.isEntityTicking(chunkHolder.getTicketLevel())
-                : !ChunkLevel.isBlockTicking(chunkHolder.getTicketLevel())) return false;
+            if (!hasRequiredTicketLevel(chunkHolder.getTicketLevel(), entityTickingRequired)) {
+                if (missingHolderWaitExpired(info, world.getGameTime())) {
+                    queueRetry(chunkPos, info, world.getGameTime());
+                    LOGGER.warn("Requeueing portal chunk {} {}: holder ticket level {} did not reach required level {} within {} ticks",
+                        world, new ChunkPos(chunkPos), chunkHolder.getTicketLevel(),
+                        ChunkLevel.byStatus(FullChunkStatus.FULL) - loadingRadius, MISSING_HOLDER_WAIT_TICKS);
+                    return true; // A stale holder must not occupy a throttle slot forever.
+                }
+                return false;
+            }
 
-            ChunkResult<LevelChunk> resultNow = (IPGlobal.activeLoading ? chunkHolder.getEntityTickingChunkFuture()
+            ChunkResult<LevelChunk> resultNow = (entityTickingRequired ? chunkHolder.getEntityTickingChunkFuture()
                 : chunkHolder.getTickingChunkFuture())
                 .getNow(null);
             
@@ -289,7 +348,7 @@ public class ImmPtlChunkTickets {
                             continue;
                         }
                         if (!recordTicketAttempt(queue, waitingForLoading, chunkPos, info,
-                            addTicket(distanceManager, chunkPos), world.getGameTime())) {
+                            addTicket(distanceManager, chunkPos, loadingRadius), loadingRadius, world.getGameTime())) {
                             continue;
                         }
                         if (info.retry.scheduled()) {
@@ -306,14 +365,14 @@ public class ImmPtlChunkTickets {
         }
     }
     
-    private static boolean addTicket(DistanceManager distanceManager, long chunkPos) {
+    private static boolean addTicket(DistanceManager distanceManager, long chunkPos, int radius) {
         if (!IPConfig.getConfig().enableImmPtlChunkLoading) {
             return false;
         }
         
         ChunkPos chunkPosObj = new ChunkPos(chunkPos);
         distanceManager.addRegionTicket(
-            TICKET_TYPE, chunkPosObj, getLoadingRadius(), chunkPosObj
+            TICKET_TYPE, chunkPosObj, radius, chunkPosObj
         );
         
         if (enableDebugRateStat) {
@@ -341,7 +400,7 @@ public class ImmPtlChunkTickets {
                 if (ticketInfo.ticketAdded) {
                     ChunkPos chunkPosObj = new ChunkPos(chunkPos);
                     distanceManager.removeRegionTicket(
-                        TICKET_TYPE, chunkPosObj, getLoadingRadius(), chunkPosObj
+                        TICKET_TYPE, chunkPosObj, ticketInfo.installedTicketRadius, chunkPosObj
                     );
                 }
                 return true;
@@ -379,7 +438,7 @@ public class ImmPtlChunkTickets {
             
             ChunkPos chunkPos = new ChunkPos(pos);
             for (Ticket<?> ticket : toRemove) {
-                ticketManager.removeRegionTicket(TICKET_TYPE, chunkPos, ticket.getTicketLevel(), chunkPos);
+                ticketManager.removeRegionTicket(TICKET_TYPE, chunkPos, radiusFromTicketLevel(ticket.getTicketLevel()), chunkPos);
             }
         });
         
