@@ -608,6 +608,17 @@ class VerificationHarnessTest(unittest.TestCase):
             "crossing_palette": True, "background_color": [37, 17, 4], "visible_color": [51, 5, 4], "actual_color": [60, 160, 20],
             "native_view_distance": 2.5, "expected_native_distance": 2.5, "native_camera": [0, 82, -0.5],
             "depth_samples": 81, "depth_observations": 120}})
+        for index, check in enumerate(checks):
+            frame = 140 * (index + 1)
+            observation = f"{check['phase']}:{check['scene']}"
+            witness = check["reference_witness"]
+            witness.update(depth_frame=frame, depth_observation=observation)
+            target = witness.get("depth_target", "minecraft:the_nether:0")
+            check["render_frame"] = frame
+            check["consecutive_depth_frames"] = [frame] if check["scene"] == "crossing" else [frame - 20, frame - 10, frame]
+            check["shader_path"] = dict(check.get("shader_path", {}), frame=frame, observation=observation,
+                innerWorldDepthStates={target: dict(frame=frame, observation=observation, sampleCount=81,
+                    depthSamples=[0.5] * 81, observationCount=witness["depth_observations"])})
         report["checks"] = checks
         (self.results / "fixture.json").write_text(json.dumps({"name": verify.FIXTURE_NAME, "diagnostic_fixture": False}))
         (self.results / "chunk-recovery-evidence.json").write_text(json.dumps(dict(
@@ -615,6 +626,24 @@ class VerificationHarnessTest(unittest.TestCase):
             injected_failures=2, client_unload_sent=True, ticking_recovered=True,
             entity_ticking_recovered=True, pending_chunk_resent=True)))
         return report
+
+    def test_real_pack_depth_rejects_stale_scene_frame_and_incomplete_convergence(self):
+        for scene in ("solid-background", "nested-background", "create-nested", "crossing"):
+            for mutation in ("old-frame", "old-scene", "missing-depth", "old-witness", "too-few", "same-frame"):
+                with self.subTest(scene=scene, mutation=mutation):
+                    report = self.real_pack_evidence()
+                    check = next(item for item in report["checks"] if item["scene"] == scene)
+                    states = check["shader_path"]["innerWorldDepthStates"]
+                    state = next(iter(states.values()))
+                    if mutation == "old-frame": state["frame"] -= 10
+                    elif mutation == "old-scene": state["observation"] = "old:solid-background"
+                    elif mutation == "missing-depth": states.clear()
+                    elif mutation == "old-witness": check["reference_witness"]["depth_frame"] -= 10
+                    elif mutation == "too-few": check["consecutive_depth_frames"] = []
+                    else: check["consecutive_depth_frames"] = [check["render_frame"]] * 3
+                    self.write_shader_evidence(report)
+                    with self.assertRaisesRegex(RuntimeError, "current scene and assertion frame"):
+                        verify.validate_shader_evidence("iris-active")
 
     def test_real_pack_rejects_missing_or_incomplete_failed_chunk_recovery(self):
         self.real_pack_evidence()

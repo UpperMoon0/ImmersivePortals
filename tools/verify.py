@@ -561,6 +561,27 @@ def validate_crossing_motion(check: dict) -> None:
         raise RuntimeError("authoritative server crossing pose disagreed with client")
 
 
+def validate_current_depth(check, target):
+    """Bind each real-pack acceptance to this scene, phase and rendered frame."""
+    frame = check.get("render_frame")
+    observation = f"{check.get('phase')}:{check.get('scene')}"
+    path = check.get("shader_path", {})
+    depth = path.get("innerWorldDepthStates", {}).get(target, {})
+    witness = check.get("reference_witness", {})
+    samples = check.get("consecutive_depth_frames", [])
+    expected_samples = 1 if check.get("scene") == "crossing" else 3
+    if (type(frame) is not int or frame <= 0 or path.get("frame") != frame
+            or path.get("observation") != observation or depth.get("frame") != frame
+            or depth.get("observation") != observation or witness.get("depth_frame") != frame
+            or witness.get("depth_observation") != observation
+            or depth.get("sampleCount") != 81 or len(depth.get("depthSamples", [])) != 81
+            or depth.get("observationCount", 0) <= 0
+            or depth.get("observationCount") != witness.get("depth_observations")
+            or len(samples) != expected_samples or any(type(value) is not int or value <= 0 for value in samples)
+            or samples[-1] != frame or any(b - a < 10 for a, b in zip(samples, samples[1:]))):
+        raise RuntimeError("real-pack depth witness is not from the current scene and assertion frame")
+
+
 def validate_shader_evidence(renderer: str, render_mode: str = "normal", gl_context: str = "default") -> None:
     """A green screenshot alone cannot establish active-shader compatibility."""
     fixture_path = RESULT_DIR / "fixture.json"
@@ -646,6 +667,7 @@ def validate_shader_evidence(renderer: str, render_mode: str = "normal", gl_cont
                              "nested-background": ("minecraft:the_end:2", 8), "create-nested-background": ("minecraft:the_nether:2", 8),
                              "mirror-background": ("minecraft:overworld:1", 10)}
             target, expected = depth_targets[expected_reference]
+            validate_current_depth(check, target)
             distance, backdrop, closest = (witness.get(key, -1) for key in ("view_distance", "background_view_distance", "closest_view_distance"))
             expectation = "same" if scene.endswith(("-background", "-clipped")) or scene in ("nested", "mirror", "mirror-visible") else "moving-nearer" if scene.startswith("create-") else "nearer"
             valid = witness.get("depth_samples") == 81 and witness.get("depth_observations", 0) > 0 and witness.get("depth_target") == target
@@ -671,6 +693,7 @@ def validate_shader_evidence(renderer: str, render_mode: str = "normal", gl_cont
                                            or fraction < 0.10 or error + 1e-9 < fraction * 13 / 3):
                     raise RuntimeError("visible real-pack geometry did not differ from its background")
         if renderer in ACTIVE_RENDERERS and not fixture.get("diagnostic_fixture", True) and scene == "crossing":
+            validate_current_depth(check, "minecraft:the_nether:0")
             witness = check.get("reference_witness", {})
             background, visible, actual = (witness.get(name, []) for name in ("background_color", "visible_color", "actual_color"))
             if not witness.get("crossing_palette") or any(len(color) != 3 for color in (background, visible, actual)):

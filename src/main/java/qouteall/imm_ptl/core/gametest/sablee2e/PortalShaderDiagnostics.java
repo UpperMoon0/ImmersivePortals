@@ -158,6 +158,7 @@ public final class PortalShaderDiagnostics {
         int skipPixels = GL11.glGetInteger(GL11.GL_PACK_SKIP_PIXELS);
         int swapBytes = GL11.glGetInteger(GL11.GL_PACK_SWAP_BYTES);
         float[] depth = new float[81];
+        long readbackStart = System.nanoTime();
         try {
             GL30.glBindFramebuffer(GL30.GL_READ_FRAMEBUFFER, framebuffer.frameBufferId);
             GL15.glBindBuffer(GL21.GL_PIXEL_PACK_BUFFER, 0);
@@ -205,6 +206,7 @@ public final class PortalShaderDiagnostics {
         state.put("projection", projection.get(new float[16]));
         state.put("depthSamples", depth);
         state.put("sampleCount", depth.length);
+        state.put("readbackNanos", System.nanoTime() - readbackStart);
         PortalClippingTestControl.recordInnerDepth(dimension + ":" + layer, state);
     }
 

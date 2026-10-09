@@ -191,10 +191,11 @@ jobs:
       disable_copy_image: ${{ matrix.disable_copy_image || false }}
       gl_context: ${{ matrix.gl_context || 'default' }}
 
-  # Start slow real packs once core/login checks pass. Fixture lanes run in
-  # parallel; the aggregate still requires all 30 graphical configurations.
+  # Start the measured critical path immediately after selection. Each lane
+  # owns its runtime; the aggregate still requires core, both transports and
+  # every one of the 30 graphical configurations, even when a fast check fails.
   real-pack-visual:
-    needs: [changes, core, graphical-e2e]
+    needs: changes
     if: needs.changes.outputs.e2e == 'true'
     strategy:
       fail-fast: false
