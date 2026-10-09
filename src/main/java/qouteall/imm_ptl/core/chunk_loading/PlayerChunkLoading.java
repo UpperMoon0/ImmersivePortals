@@ -154,6 +154,9 @@ public class PlayerChunkLoading {
                 
                 // skip that chunk if not yet loaded
                 if (tickingChunk == null) {
+                    if (ChunkLoadingRecovery.failed(chunkHolder.getTickingChunkFuture())) {
+                        ImmPtlChunkTickets.get(world).requestRetry(record.chunkPos, world.getGameTime());
+                    }
                     return false;
                 }
                 

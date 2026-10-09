@@ -171,8 +171,9 @@ public final class PortalSmokeServer {
             }
         }
         request = token;
+        boolean testingRecovery = PortalSmokeChunkRecoveryProbe.begin(token, player);
         writeSceneWitness(token);
-        PortalSmokeSupport.write("scene-ready.txt", token);
+        PortalSmokeSupport.write("scene-ready.txt", testingRecovery ? "" : token);
     }
 
     private static void writeSceneWitness(String token) {
@@ -251,6 +252,7 @@ public final class PortalSmokeServer {
         try {
             String next = PortalSmokeSupport.read("scene-request.txt");
             if (!next.isEmpty() && !next.equals(request)) setup(next);
+            PortalSmokeChunkRecoveryProbe.tick(player);
             if (scene.startsWith("create-nested") && player.tickCount % 20 == 0) {
                 writeSceneWitness(request, "scene-live-world-witness.json");
             }

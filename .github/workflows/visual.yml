@@ -91,28 +91,6 @@ jobs:
           if [[ "$DISABLE_COPY_IMAGE" == true ]]; then extra+=(--disable-copy-image); fi
           command=(python3 tools/verify.py visual --renderer "$RENDERER" --samples "$SAMPLES"
             --gl-context "$GL_CONTEXT" --negative-control "$NEGATIVE" --flywheel-backend "$FLYWHEEL" --render-mode "$RENDER_MODE" "${extra[@]}")
-          if "${command[@]}"; then
-            exit 0
-          fi
-
-          # A transient remote End chunk delivery failure can leave a real-pack
-          # nested backdrop displaying sky instead of the server's loaded wall.
-          # Never waive the pixel/depth checks: retry the entire session once.
-          if [[ "$REAL_PACK" == none ]] ||
-             ! grep -qF 'PORTAL_PIXELS_MISMATCH: after-reload/nested-background' build/portal-visual-*/client-fail.txt ||
-             ! grep -qF 'Chunk loading failure ServerWorld minecraft:the_end' build/portal-visual-*/server.log; then
-            exit 1
-          fi
-          echo "::warning::Remote End chunk delivery stalled; retrying full real-pack verification once."
-          mkdir -p build/visual-first-attempt
-          for report in build/portal-visual-*; do
-            if [[ -d "$report" ]]; then
-              cp -a "$report" "build/visual-first-attempt/$(basename "$report")"
-            fi
-          done
-          if [[ -f build/verification-visual.json ]]; then
-            cp build/verification-visual.json build/visual-first-attempt/verification-visual.json
-          fi
           "${command[@]}"
       - name: Preserve images, timings and runtime diagnostics
         if: always()
@@ -123,7 +101,6 @@ jobs:
           include-hidden-files: true
           path: |
             build/verification-visual.json
-            build/visual-first-attempt/**
             build/portal-visual-*/**
             run-sable-e2e-server/logs/**
             run-sable-e2e-server/crash-reports/**

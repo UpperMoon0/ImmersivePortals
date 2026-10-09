@@ -30,3 +30,29 @@ lines, retaining partial UTF-8 bytes across polls and resetting on truncation or
 replacement. Successive events are consumed once; the latest disconnect in a
 new batch supplies the failure reason. Normal shutdown still requires all result
 markers and a successful client exit code.
+
+## Receiver registration and publication (issue #21)
+
+The exact supported module is `fabric-networking-api-v1` **4.2.2+a92978fd19**,
+embedded in owo-lib 0.12.15-beta.12. The compatibility plugin rejects other
+versions before applying these optional mixins and checks that each target exists.
+The required mixin signatures target `NeoNetworkRegistrar.registeredPayloads`
+and its `NeoPayloadHandler` inner class: `globalReceivers`/`localReceivers` are
+`Map` fields; `registerGlobalHandler(PacketFlow,Object,Function,TriConsumer)` and
+`registerLocalReceiver(ICommonPacketListener,Object,Function,TriConsumer)` return
+boolean. These contracts were checked against the pinned module bytecode.
+
+All three maps use concurrent storage. Registration alone locks its particular
+receiver map while running upstream's contains-key/construct/put operation;
+the global and local maps have independent monitors. Packet dispatch, lookup and
+unregistration retain the upstream methods and use atomic concurrent-map reads
+and removal, with no registration monitor on packet handling. Duplicate calls
+return false without replacing the winner; unregister returns the removed
+handler and permits subsequent replacement. Already-enqueued packets retain the
+receiver snapshot captured by the original handler.
+
+`FabricReceiverRegistrationTest` executes the actual pinned handler's dispatch,
+lookup and unregister methods through the production registration wrappers.
+Synchronized-start workers register both flows of one payload, race duplicate
+flows/listeners, and register/dispatch/remove distinct local listeners concurrently.
+The earlier native-factory/NeoForge channel-enumeration regressions remain required.

@@ -38,7 +38,7 @@ Do not install Sodium and Embeddium together. NeOculus requires Embeddium; offic
 
 Shaderpack coverage includes MakeUp Ultra Fast 9.4a at `shadowless_high` and Complementary Reimagined r5.5.1 at `POTATO`, plus owned clipping and shadow fixtures. Other packs, presets and pack-specific shadows require separate validation. Compatibility/debug renderers retain a one-layer portal limit; normal rendering supports nesting.
 
-With Create 6.0.10-280 / Flywheel 1.0.6, portal and clipped views use a scoped vanilla block-entity fallback, and the selected Flywheel backend resumes for the main view. See the [Flywheel compatibility audit](docs/compat/flywheel-1.0.6.md) and [6.0.12 release notes](changelog/6.0.12.md).
+With Create 6.0.10-280 / Flywheel 1.0.6, portal and clipped views use a scoped vanilla block-entity fallback, and the selected Flywheel backend resumes for the main view. See the [Flywheel compatibility audit](docs/compat/flywheel-1.0.6.md) and [6.0.13 release notes](changelog/6.0.13.md).
 
 ## Sable compatibility
 

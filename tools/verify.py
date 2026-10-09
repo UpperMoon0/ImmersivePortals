@@ -583,6 +583,8 @@ def validate_shader_evidence(renderer: str, render_mode: str = "normal", gl_cont
         raise RuntimeError("runtime evidence is missing per-program positive/clipping scenes")
     if ("after-crossing", "crossing") not in observed or not (RESULT_DIR / "crossing-server-pass.txt").is_file():
         raise RuntimeError("cross-dimension player crossing was not verified")
+    if renderer in ACTIVE_RENDERERS and not fixture.get("diagnostic_fixture", True) and render_mode == "normal":
+        validate_chunk_recovery_evidence()
     for check in phases:
         if gl_context == "no-copy-image":
             if check.get("copy_image_available") is not False or not check.get("gl_version", "").startswith("3.3"):
@@ -1170,6 +1172,16 @@ def validate_log_health() -> None:
                 bad.append(f"{path.name}: {token}")
     if bad:
         raise RuntimeError("critical runtime errors found after E2E pass: " + ", ".join(bad))
+
+
+def validate_chunk_recovery_evidence() -> None:
+    report = json.loads((RESULT_DIR / "chunk-recovery-evidence.json").read_text(encoding="utf-8"))
+    expected = dict(scene="after-reload:nested-background", dimension="minecraft:the_end", chunk=[0, -1],
+                    injected_failures=2, client_unload_sent=True, ticking_recovered=True,
+                    entity_ticking_recovered=True, pending_chunk_resent=True)
+    if any(type(report.get(key)) is not type(value) or report.get(key) != value
+           for key, value in expected.items()):
+        raise RuntimeError("failed End chunk recovery and pending resend were not verified")
 
 
 def validate_metrics(samples: int) -> None:

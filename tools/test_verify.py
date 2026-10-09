@@ -610,7 +610,31 @@ class VerificationHarnessTest(unittest.TestCase):
             "depth_samples": 81, "depth_observations": 120}})
         report["checks"] = checks
         (self.results / "fixture.json").write_text(json.dumps({"name": verify.FIXTURE_NAME, "diagnostic_fixture": False}))
+        (self.results / "chunk-recovery-evidence.json").write_text(json.dumps(dict(
+            scene="after-reload:nested-background", dimension="minecraft:the_end", chunk=[0, -1],
+            injected_failures=2, client_unload_sent=True, ticking_recovered=True,
+            entity_ticking_recovered=True, pending_chunk_resent=True)))
         return report
+
+    def test_real_pack_rejects_missing_or_incomplete_failed_chunk_recovery(self):
+        self.real_pack_evidence()
+        path = self.results / "chunk-recovery-evidence.json"
+        original = json.loads(path.read_text())
+        for key in original:
+            bad = dict(original)
+            del bad[key]
+            path.write_text(json.dumps(bad))
+            with self.assertRaisesRegex(RuntimeError, "recovery"):
+                verify.validate_chunk_recovery_evidence()
+        for key in ("client_unload_sent", "ticking_recovered", "entity_ticking_recovered", "pending_chunk_resent"):
+            for value in (False, 1, "true"):
+                bad = dict(original, **{key: value})
+                path.write_text(json.dumps(bad))
+                with self.assertRaisesRegex(RuntimeError, "recovery"):
+                    verify.validate_chunk_recovery_evidence()
+        path.unlink()
+        with self.assertRaises(FileNotFoundError):
+            verify.validate_chunk_recovery_evidence()
 
     def test_real_pack_requires_matching_clipped_pixels_and_nearer_visible_depth(self):
         report = self.real_pack_evidence()
