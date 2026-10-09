@@ -236,7 +236,8 @@ public class ImmPtlChunkTickets {
             return;
         }
 
-$1
+        DistanceManager distanceManager = getDistanceManager(world);
+        Executor mainThreadExecutor = ((qouteall.imm_ptl.core.mixin.common.chunk_sync.IEDistanceManager) distanceManager).ip_getMainThreadExecutor();
         
         // clear the already loaded chunks
         waitingForLoading.removeIf((long chunkPos) -> {
