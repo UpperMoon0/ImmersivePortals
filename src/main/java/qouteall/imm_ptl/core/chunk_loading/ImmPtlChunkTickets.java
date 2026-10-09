@@ -9,13 +9,11 @@ import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import it.unimi.dsi.fastutil.longs.LongPredicate;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ChunkHolder;
-import net.minecraft.server.level.ChunkLevel;
 import net.minecraft.server.level.ChunkMap;
 import net.minecraft.server.level.ChunkResult;
 import net.minecraft.server.level.ChunkTaskPriorityQueue;
 import net.minecraft.server.level.ChunkTaskPriorityQueueSorter;
 import net.minecraft.server.level.DistanceManager;
-import net.minecraft.server.level.FullChunkStatus;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.Ticket;
 import net.minecraft.server.level.TicketType;
@@ -66,6 +64,10 @@ public class ImmPtlChunkTickets {
     private static final Logger LOGGER = LogUtils.getLogger();
     // Prevent one missing holder from occupying a throttle slot indefinitely.
     private static final long MISSING_HOLDER_WAIT_TICKS = 200;
+    // Minecraft 1.21.1 ChunkLevel: FULL=33, BLOCK_TICKING=32, ENTITY_TICKING=31.
+    // Keep this arithmetic independent of ChunkLevel's registry-heavy static initialization
+    // so these ticket-state invariants can also be verified in standalone JUnit.
+    private static final int FULL_CHUNK_TICKET_LEVEL = 33;
     
     public static final TicketType<ChunkPos> TICKET_TYPE =
         TicketType.create("imm_ptl", Comparator.comparingLong(ChunkPos::toLong));
@@ -212,12 +214,17 @@ public class ImmPtlChunkTickets {
         lastSyncedTicketRadius = desiredRadius;
     }
 
-    static boolean hasRequiredTicketLevel(int ticketLevel, boolean entityTickingRequired) {
-        return entityTickingRequired ? ChunkLevel.isEntityTicking(ticketLevel) : ChunkLevel.isBlockTicking(ticketLevel);
+    static int ticketLevelForRadius(int radius) {
+        Validate.isTrue(radius > 0);
+        return FULL_CHUNK_TICKET_LEVEL - radius;
+    }
+
+    static boolean hasRequiredTicketLevel(int holderTicketLevel, int requiredRadius) {
+        return holderTicketLevel <= ticketLevelForRadius(requiredRadius);
     }
 
     static int radiusFromTicketLevel(int ticketLevel) {
-        return ChunkLevel.byStatus(FullChunkStatus.FULL) - ticketLevel;
+        return FULL_CHUNK_TICKET_LEVEL - ticketLevel;
     }
 
     static boolean missingHolderWaitExpired(ChunkTicketInfo info, long gameTime) {
@@ -304,12 +311,12 @@ public class ImmPtlChunkTickets {
                 }
                 return false; // Ticket propagation may still publish the holder.
             }
-            if (!hasRequiredTicketLevel(chunkHolder.getTicketLevel(), entityTickingRequired)) {
+            if (!hasRequiredTicketLevel(chunkHolder.getTicketLevel(), loadingRadius)) {
                 if (missingHolderWaitExpired(info, world.getGameTime())) {
                     queueRetry(chunkPos, info, world.getGameTime());
                     LOGGER.warn("Requeueing portal chunk {} {}: holder ticket level {} did not reach required level {} within {} ticks",
                         world, new ChunkPos(chunkPos), chunkHolder.getTicketLevel(),
-                        ChunkLevel.byStatus(FullChunkStatus.FULL) - loadingRadius, MISSING_HOLDER_WAIT_TICKS);
+                        ticketLevelForRadius(loadingRadius), MISSING_HOLDER_WAIT_TICKS);
                     return true; // A stale holder must not occupy a throttle slot forever.
                 }
                 return false;
