@@ -48,6 +48,7 @@ public final class PortalSmokeServer {
             player = joined;
             player.setGameMode(GameType.SPECTATOR);
         } catch (Throwable e) {
+            com.mojang.logging.LogUtils.getLogger().error("Portal smoke server failed", e);
             PortalSmokeSupport.write("server-fail.txt", e.toString());
         }
     }
@@ -293,6 +294,7 @@ public final class PortalSmokeServer {
                 PortalSmokeSupport.write("server-pass.txt", "Live portal server tick measurements complete\n");
             }
         } catch (Throwable e) {
+            com.mojang.logging.LogUtils.getLogger().error("Portal smoke server failed", e);
             PortalSmokeSupport.write("server-fail.txt", e.toString());
         }
     }
