@@ -166,6 +166,47 @@ class ReleaseEvidenceTest(unittest.TestCase):
         self.assertEqual(len(members(ci)), 30)
         self.assertCountEqual(members(ci), members(release))
 
+
+    def test_fresh_release_sable_transport_parity_and_aggregate_gate(self):
+        """Both CI transports must run in fallback releases; neither may silently disappear."""
+        ci = (evidence.ROOT / ".github/workflows/ci.yml").read_text()
+        release = (evidence.ROOT / ".github/workflows/release.yml").read_text()
+        ci_job = ci.split("\n  graphical-e2e:\n", 1)[1].split("\n  portal-visual:\n", 1)[0]
+        release_job = release.split("\n  graphical-e2e:\n", 1)[1].split("\n  compatibility:\n", 1)[0]
+
+        def transports(job):
+            entries = re.findall(r"(?m)^\s*transport:\s*\[([^]]+)\]\s*$", job)
+            self.assertEqual(len(entries), 1, "a single explicit transport matrix is required")
+            return [value.strip() for value in entries[0].split(",")]
+
+        self.assertEqual(transports(ci_job), ["udp", "tcp"])
+        self.assertEqual(transports(release_job), transports(ci_job))
+        self.assertIn("fail-fast: false", release_job)
+        self.assertIn("Sable dedicated graphical E2E / ${{ matrix.transport }}", release_job)
+
+        def config_step(job):
+            return job.split("      - name: Configure Sable transport\n", 1)[1].split(
+                "      - run: chmod +x ./gradlew\n", 1)[0]
+
+        self.assertEqual(config_step(release_job), config_step(ci_job))
+        self.assertIn("disable_udp_pipeline = true", config_step(release_job))
+        self.assertIn("attempt_udp_networking = false", config_step(release_job))
+        self.assertIn("disable_udp_pipeline = false", config_step(release_job))
+        self.assertIn("attempt_udp_networking = true", config_step(release_job))
+        self.assertIn("name: release-sable-dimension-stack-e2e-${{ matrix.transport }}", release_job)
+        for path in ("run-sable-e2e-server/config/sable-common.toml",
+                     "run-sable-e2e-client/config/sable-common.toml",
+                     "run-sable-e2e-client/config/sable-client.toml"):
+            self.assertIn(path, release_job)
+
+        # A matrix needs-result is successful only when BOTH transport jobs succeed.
+        # The existing executable gate regression enumerates skipped/failed/cancelled E2E.
+        gate = release.split("      - name: Enforce reused or fresh coverage\n", 1)[1].split(
+            "\n  release:\n", 1)[0]
+        self.assertIn("graphical-e2e", release.split("\n  verified:\n", 1)[1].split("\n  release:\n", 1)[0])
+        self.assertIn("E2E: ${{ needs.graphical-e2e.result }}", gate)
+        self.assertIn('"$E2E" == success', gate)
+
     def test_release_gate_rejects_missing_skipped_failed_or_cancelled_coverage(self):
         bash = shutil.which("bash")
         if os.name == "nt":
