@@ -62,6 +62,8 @@ import java.util.concurrent.Executor;
 @SuppressWarnings("JavadocReference")
 public class ImmPtlChunkTickets {
     private static final Logger LOGGER = LogUtils.getLogger();
+    // Prevent one missing holder from occupying a throttle slot indefinitely.
+    private static final long MISSING_HOLDER_WAIT_TICKS = 200;
     
     public static final TicketType<ChunkPos> TICKET_TYPE =
         TicketType.create("imm_ptl", Comparator.comparingLong(ChunkPos::toLong));
@@ -85,6 +87,7 @@ public class ImmPtlChunkTickets {
         public int lastUpdateGeneration;
         public int distanceToSource;
         public boolean ticketAdded;
+        public long lastTicketAttemptGameTime;
         public final ChunkLoadingRecovery.Retry retry = new ChunkLoadingRecovery.Retry();
         
         public ChunkTicketInfo(int lastUpdateGeneration, int distanceToSource) {
@@ -151,6 +154,28 @@ public class ImmPtlChunkTickets {
         );
     }
 
+    /**
+     * Only an installed ticket can occupy a throttle slot. Retain a request
+     * when custom ticket loading was disabled during registration.
+     */
+    static boolean recordTicketAttempt(
+        LongLinkedOpenHashSet queue, LongOpenHashSet waiting, long chunkPos,
+        ChunkTicketInfo info, boolean added, long gameTime
+    ) {
+        if (!added) {
+            queue.add(chunkPos);
+            return false;
+        }
+        info.ticketAdded = true;
+        info.lastTicketAttemptGameTime = gameTime;
+        waiting.add(chunkPos);
+        return true;
+    }
+
+    static boolean missingHolderWaitExpired(ChunkTicketInfo info, long gameTime) {
+        return gameTime - info.lastTicketAttemptGameTime >= MISSING_HOLDER_WAIT_TICKS;
+    }
+
     private void queueRetry(long chunkPos, ChunkTicketInfo info, long gameTime) {
         if (info.retry.schedule(gameTime)) getQueueByDistance(info.distanceToSource).add(chunkPos);
     }
@@ -200,8 +225,18 @@ public class ImmPtlChunkTickets {
             return;
         }
         
-        DistanceManager distanceManager = getDistanceManager(world);
-        Executor mainThreadExecutor = ((qouteall.imm_ptl.core.mixin.common.chunk_sync.IEDistanceManager) distanceManager).ip_getMainThreadExecutor();
+        if (!IPConfig.getConfig().enableImmPtlChunkLoading) {
+            // Return the outstanding throttle slots to the queue so enabling
+            // the custom loader again does not silently strand those chunks.
+            for (long chunkPos : waitingForLoading) {
+                ChunkTicketInfo info = chunkPosToTicketInfo.get(chunkPos);
+                if (info != null) getQueueByDistance(info.distanceToSource).add(chunkPos);
+            }
+            waitingForLoading.clear();
+            return;
+        }
+
+$1
         
         // clear the already loaded chunks
         waitingForLoading.removeIf((long chunkPos) -> {
@@ -209,7 +244,13 @@ public class ImmPtlChunkTickets {
             if (info == null) return true;
             ChunkHolder chunkHolder = ((IEChunkMap) world.getChunkSource().chunkMap).ip_getUpdatingChunkIfPresent(chunkPos);
             if (chunkHolder == null) {
-                return false; // Ticket propagation has not published a holder yet.
+                if (missingHolderWaitExpired(info, world.getGameTime())) {
+                    queueRetry(chunkPos, info, world.getGameTime());
+                    LOGGER.warn("Requeueing portal chunk {} {} after waiting {} ticks for a holder",
+                        world, new ChunkPos(chunkPos), MISSING_HOLDER_WAIT_TICKS);
+                    return true;
+                }
+                return false; // Ticket propagation may still publish the holder.
             }
             if (IPGlobal.activeLoading ? !ChunkLevel.isEntityTicking(chunkHolder.getTicketLevel())
                 : !ChunkLevel.isBlockTicking(chunkHolder.getTicketLevel())) return false;
@@ -246,14 +287,15 @@ public class ImmPtlChunkTickets {
                             queue.add(chunkPos);
                             continue;
                         }
-                        addTicket(distanceManager, chunkPos);
-                        info.ticketAdded = true;
+                        if (!recordTicketAttempt(queue, waitingForLoading, chunkPos, info,
+                            addTicket(distanceManager, chunkPos), world.getGameTime())) {
+                            continue;
+                        }
                         if (info.retry.scheduled()) {
                             ChunkHolder holder = ((IEChunkMap) world.getChunkSource().chunkMap).ip_getUpdatingChunkIfPresent(chunkPos);
                             if (holder != null) ((IEChunkHolder) holder).ip_retryFailedFutures(world.getChunkSource().chunkMap, mainThreadExecutor);
                             info.retry.started();
                         }
-                        waitingForLoading.add(chunkPos);
                     }
                     else {
                         LOGGER.warn("Chunk {} is not in the queue", new ChunkPos(chunkPos));
@@ -263,9 +305,9 @@ public class ImmPtlChunkTickets {
         }
     }
     
-    private static void addTicket(DistanceManager distanceManager, long chunkPos) {
+    private static boolean addTicket(DistanceManager distanceManager, long chunkPos) {
         if (!IPConfig.getConfig().enableImmPtlChunkLoading) {
-            return;
+            return false;
         }
         
         ChunkPos chunkPosObj = new ChunkPos(chunkPos);
@@ -276,6 +318,7 @@ public class ImmPtlChunkTickets {
         if (enableDebugRateStat) {
             debugRateStat.hit();
         }
+        return true;
     }
     
     public void purge(

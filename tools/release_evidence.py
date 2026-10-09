@@ -60,8 +60,13 @@ def required_jobs() -> list[str]:
 
 def validate_run(run: dict, jobs: list[dict], artifacts: list[dict], repository: str, commit: str) -> dict:
     expected = dict(status="completed", conclusion="success", event="push", head_branch="main",
-                    head_sha=commit, path=".github/workflows/ci.yml")
-    if any(run.get(key) != value for key, value in expected.items()) or run.get("repository", {}).get("full_name") != repository:
+                    head_sha=commit)
+    # GitHub Actions may append the workflow ref to path (e.g. ci.yml@main).
+    # Do not accept other branch refs, even if the commit happens to match.
+    allowed_workflow_paths = {".github/workflows/ci.yml", ".github/workflows/ci.yml@main"}
+    if (any(run.get(key) != value for key, value in expected.items())
+            or run.get("path") not in allowed_workflow_paths
+            or run.get("repository", {}).get("full_name") != repository):
         raise ValueError("Only successful main push CI for the exact tagged commit may be reused")
     if run.get("head_repository", {}).get("full_name") != repository:
         raise ValueError("CI head repository does not match the release repository")

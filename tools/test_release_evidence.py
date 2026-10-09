@@ -32,6 +32,27 @@ class ReleaseEvidenceTest(unittest.TestCase):
     def test_complete_exact_commit_main_ci_is_eligible(self):
         self.assertEqual(self.validate()["id"], 456)
 
+    def test_ref_suffixed_main_ci_is_eligible_for_real_resolution(self):
+        # Actions REST reports workflow_run.path with this suffix.
+        self.run["path"] = ".github/workflows/ci.yml@main"
+        self.assertEqual(self.validate()["id"], 456)
+        with patch.object(evidence, "api", return_value=self.run), \
+             patch.object(evidence, "pages", side_effect=[self.jobs, self.artifacts]):
+            self.assertEqual(evidence.resolve(self.repo, self.commit, "123"),
+                             dict(reuse="true", run_id="123", run_attempt="2", artifact_id="456"))
+
+    def test_only_exact_main_ref_suffix_is_accepted(self):
+        for path in (".github/workflows/ci.yml@feature",
+                     ".github/workflows/ci.yml@refs/pull/23/merge",
+                     ".github/workflows/ci.yml@main/extra",
+                     ".github/workflows/ci.yml@main@feature",
+                     ".github/workflows/other.yml@main",
+                     ".github/workflows/ci.yml@"):
+            with self.subTest(path=path):
+                self.run["path"] = path
+                with self.assertRaises(ValueError):
+                    self.validate()
+
     def test_wrong_commit_pr_branch_workflow_repository_or_non_success_cannot_be_reused(self):
         cases = {"head_sha": "b" * 40, "event": "pull_request", "head_branch": "feature",
                  "path": ".github/workflows/nightly.yml", "status": "in_progress", "conclusion": "failure",
