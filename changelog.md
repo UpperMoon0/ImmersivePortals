@@ -6,6 +6,20 @@ and this project tries to adhere to [Semantic Versioning](https://semver.org/spe
 
 ## [Unreleased Changes]
 
+## [6.0.12] - 2026-10-09
+
+### Fixed
+
+- Synchronized NeOculus texture metadata with texture allocation and deletion, fixing stale depth dimensions after shader reload while preserving cached lookups.
+- Prevented parallel Forgified Fabric native receiver registration from corrupting NeoForge payload registries or leaving the network setup phase open after a registration failure.
+- Graphical verification now reports unexpected disconnects immediately and reads newly appended server-log data, preserving incomplete lines and normal shutdown behavior.
+
+### Changed
+
+- Prepared a fresh release version containing the renderer compatibility improvements from 6.0.11 and the follow-up reload and login fixes.
+
+See [`changelog/6.0.12.md`](changelog/6.0.12.md) for the complete release notes and compatibility limits.
+
 ## [6.0.11] - 2026-10-08
 
 ### Added
@@ -112,7 +126,8 @@ See [`changelog/6.0.9.md`](changelog/6.0.9.md) for the complete release notes.
 - Iris compatibility is not fully functional
 - Crash with SecurityCraft
 
-[Unreleased Changes]: https://github.com/UpperMoon0/ImmersivePortals/compare/v6.0.11...HEAD
+[Unreleased Changes]: https://github.com/UpperMoon0/ImmersivePortals/compare/v6.0.12...HEAD
+[6.0.12]: https://github.com/UpperMoon0/ImmersivePortals/compare/v6.0.11...v6.0.12
 [6.0.11]: https://github.com/UpperMoon0/ImmersivePortals/compare/v6.0.10...v6.0.11
 [6.0.10]: https://github.com/UpperMoon0/ImmersivePortals/compare/v6.0.9...v6.0.10
 [6.0.9]: https://github.com/UpperMoon0/ImmersivePortals/compare/v6.0.8...v6.0.9
