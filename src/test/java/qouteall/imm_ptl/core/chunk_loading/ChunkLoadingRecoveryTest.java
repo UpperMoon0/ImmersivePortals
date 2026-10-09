@@ -172,8 +172,10 @@ class ChunkLoadingRecoveryTest {
         assertEquals(1, prepareCalls.get());
         assertFalse(monitor.tick(entityFuture.get(), 171, retryPromotion));
         assertFalse(monitor.tick(entityFuture.get(), 190, retryPromotion));
+        assertEquals(1, prepareCalls.get(), "second failed promotion still needs its 20-tick cooldown");
+        assertFalse(monitor.tick(entityFuture.get(), 191, retryPromotion));
         assertEquals(2, prepareCalls.get(), "failure must retry again at the same ticket level");
-        assertTrue(monitor.tick(entityFuture.get(), 191, retryPromotion),
+        assertTrue(monitor.tick(entityFuture.get(), 192, retryPromotion),
             "successful entity future must complete monitoring");
         upgrades.remove(pos);
         assertTrue(upgrades.isEmpty());
