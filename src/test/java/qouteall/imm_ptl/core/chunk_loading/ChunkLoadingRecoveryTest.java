@@ -2,6 +2,7 @@ package qouteall.imm_ptl.core.chunk_loading;
 
 import net.minecraft.server.level.ChunkResult;
 import it.unimi.dsi.fastutil.longs.LongLinkedOpenHashSet;
+import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import org.junit.jupiter.api.Test;
 import java.util.concurrent.*;
@@ -10,6 +11,7 @@ import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import static org.junit.jupiter.api.Assertions.*;
 
 class ChunkLoadingRecoveryTest {
@@ -129,6 +131,80 @@ class ChunkLoadingRecoveryTest {
             info, 2, 100, radius -> fail("no ticket exists"), radius -> fail("no ticket exists")));
         assertEquals(0, info.installedTicketRadius);
         assertFalse(info.ticketAdded);
+    }
+
+
+    @Test void alreadyDeliveredRadiusUpgradeRetriesFailedEntityPromotionWithoutResending() {
+        var queue = new LongLinkedOpenHashSet();
+        var waiting = new LongOpenHashSet();
+        var info = new ImmPtlChunkTickets.ChunkTicketInfo(1, 0);
+        long pos = 42L;
+
+        // The player already received the radius-1 block-ticking chunk.
+        assertTrue(ImmPtlChunkTickets.recordTicketAttempt(queue, waiting, pos, info, true, 1, 100));
+        assertTrue(waiting.remove(pos));
+        assertFalse(info.retry.scheduled());
+
+        var installed = new HashSet<>(Set.of(1));
+        assertTrue(ImmPtlChunkTickets.reconcileTicketRadius(info, 2, 150,
+            installed::add, radius -> assertTrue(installed.remove(radius))));
+        assertEquals(Set.of(2), installed);
+        assertEquals(31, ImmPtlChunkTickets.ticketLevelForRadius(info.installedTicketRadius));
+
+        var upgrades = new Long2ObjectOpenHashMap<ChunkLoadingRecovery.DeliveredEntityPromotion>();
+        ImmPtlChunkTickets.trackDeliveredEntityUpgrade(upgrades, pos, 1, 2, waiting.contains(pos));
+        assertEquals(1, upgrades.size(), "a delivered chunk must be tracked independently of the send queue");
+
+        // Vanilla 32->31 created the entity future, but the 5x5 neighbor range failed.
+        var entityFuture = new AtomicReference<CompletableFuture<ChunkResult<String>>>(
+            CompletableFuture.completedFuture(ChunkResult.error("unloaded neighbor range")));
+        var prepareCalls = new AtomicInteger();
+        Runnable retryPromotion = () -> entityFuture.set(ChunkLoadingRecovery.retry(entityFuture.get(),
+            () -> CompletableFuture.completedFuture(
+                prepareCalls.incrementAndGet() == 1
+                    ? ChunkResult.error("still unavailable") : ChunkResult.of("entity ready"))));
+
+        var monitor = upgrades.get(pos);
+        assertFalse(monitor.tick(entityFuture.get(), 150, retryPromotion));
+        assertFalse(monitor.tick(entityFuture.get(), 169, retryPromotion));
+        assertEquals(0, prepareCalls.get(), "failed promotion must respect the retry cooldown");
+        assertFalse(monitor.tick(entityFuture.get(), 170, retryPromotion));
+        assertEquals(1, prepareCalls.get());
+        assertFalse(monitor.tick(entityFuture.get(), 171, retryPromotion));
+        assertFalse(monitor.tick(entityFuture.get(), 190, retryPromotion));
+        assertEquals(2, prepareCalls.get(), "failure must retry again at the same ticket level");
+        assertTrue(monitor.tick(entityFuture.get(), 191, retryPromotion),
+            "successful entity future must complete monitoring");
+        upgrades.remove(pos);
+        assertTrue(upgrades.isEmpty());
+        assertFalse(waiting.contains(pos), "upgrading entities must not reacquire a chunk-send slot");
+        assertTrue(queue.isEmpty(), "the delivered chunk must not enter the resend queue");
+        assertEquals(2, info.installedTicketRadius);
+    }
+
+    @Test void deliveredUpgradeTrackerIgnoresPendingAndDropsDowngradedChunks() {
+        var upgrades = new Long2ObjectOpenHashMap<ChunkLoadingRecovery.DeliveredEntityPromotion>();
+        ImmPtlChunkTickets.trackDeliveredEntityUpgrade(upgrades, 1, 1, 2, true);
+        assertTrue(upgrades.isEmpty(), "pending chunks use the existing throttle retry");
+        ImmPtlChunkTickets.trackDeliveredEntityUpgrade(upgrades, 2, 1, 2, false);
+        assertEquals(1, upgrades.size());
+        var same = upgrades.get(2);
+        ImmPtlChunkTickets.trackDeliveredEntityUpgrade(upgrades, 2, 1, 2, false);
+        assertSame(same, upgrades.get(2), "duplicate tracking must preserve the retry cooldown");
+        ImmPtlChunkTickets.trackDeliveredEntityUpgrade(upgrades, 2, 2, 1, false);
+        assertTrue(upgrades.isEmpty(), "downgrades must not retain obsolete entity work");
+    }
+
+    @Test void deliveredUpgradePreservesPendingSuccessAndExceptionalEntityFutures() {
+        var monitor = new ChunkLoadingRecovery.DeliveredEntityPromotion();
+        var pending = new CompletableFuture<ChunkResult<String>>();
+        assertFalse(monitor.tick(pending, 100, () -> fail("pending work must not be replaced")));
+        assertTrue(monitor.tick(CompletableFuture.completedFuture(ChunkResult.of("ok")), 120,
+            () -> fail("successful entity promotion must never restart")));
+        var exceptional = CompletableFuture.<ChunkResult<String>>failedFuture(new IllegalStateException("disk error"));
+        var error = assertThrows(CompletionException.class,
+            () -> monitor.tick(exceptional, 140, () -> fail("exceptional I/O must remain visible")));
+        assertEquals("disk error", error.getCause().getMessage());
     }
 
     @Test void repeatedPendingSendsCannotPostponeRetryAndFailuresRespectCooldown() {
