@@ -1,7 +1,6 @@
 package qouteall.imm_ptl.core.chunk_loading;
 
 import net.minecraft.server.level.ChunkResult;
-import net.minecraft.server.level.ChunkLevel;
 import it.unimi.dsi.fastutil.longs.LongLinkedOpenHashSet;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import org.junit.jupiter.api.Test;
@@ -75,9 +74,11 @@ class ChunkLoadingRecoveryTest {
         Map<Long, Set<Integer>> installed = new HashMap<>();
 
         // Radius 1 -> ticket level 32 (BLOCK_TICKING). All four throttle slots are occupied.
-        assertTrue(ChunkLevel.isBlockTicking(32));
-        assertFalse(ChunkLevel.isEntityTicking(32));
-        assertTrue(ChunkLevel.isEntityTicking(31));
+        assertEquals(32, ImmPtlChunkTickets.ticketLevelForRadius(1));
+        assertEquals(31, ImmPtlChunkTickets.ticketLevelForRadius(2));
+        assertTrue(ImmPtlChunkTickets.hasRequiredTicketLevel(32, 1));
+        assertFalse(ImmPtlChunkTickets.hasRequiredTicketLevel(32, 2));
+        assertTrue(ImmPtlChunkTickets.hasRequiredTicketLevel(31, 2));
         assertEquals(1, ImmPtlChunkTickets.radiusFromTicketLevel(32));
         assertEquals(2, ImmPtlChunkTickets.radiusFromTicketLevel(31));
         for (long pos = 1; pos <= 4; pos++) {
@@ -99,10 +100,10 @@ class ChunkLoadingRecoveryTest {
             assertEquals(Set.of(2), liveTickets, "old ticket must not remain installed");
             assertEquals(2, info.installedTicketRadius);
             assertEquals(150, info.lastTicketAttemptGameTime);
-            assertFalse(ImmPtlChunkTickets.hasRequiredTicketLevel(32, true));
+            assertFalse(ImmPtlChunkTickets.hasRequiredTicketLevel(32, 2));
             assertFalse(ImmPtlChunkTickets.missingHolderWaitExpired(info, 349));
             assertTrue(ImmPtlChunkTickets.missingHolderWaitExpired(info, 350));
-            assertTrue(ImmPtlChunkTickets.hasRequiredTicketLevel(31, true));
+            assertTrue(ImmPtlChunkTickets.hasRequiredTicketLevel(31, 2));
             assertFalse(ImmPtlChunkTickets.reconcileTicketRadius(
                 info, 2, 151, radius -> fail("no redundant add"), radius -> fail("no redundant remove")));
         }
@@ -115,7 +116,7 @@ class ChunkLoadingRecoveryTest {
             assertTrue(ImmPtlChunkTickets.reconcileTicketRadius(
                 info, 1, 400, liveTickets::add, radius -> assertTrue(liveTickets.remove(radius))));
             assertEquals(Set.of(1), liveTickets);
-            assertTrue(ImmPtlChunkTickets.hasRequiredTicketLevel(32, false));
+            assertTrue(ImmPtlChunkTickets.hasRequiredTicketLevel(32, 1));
             assertTrue(liveTickets.remove(info.installedTicketRadius),
                 "purge must remove the installed ticket radius, not the new global radius");
             assertTrue(liveTickets.isEmpty());
