@@ -38,6 +38,12 @@ final class SableShipObservationCamera {
         return new View(new Point(high.eye().x(), height + 2.5, high.eye().z()), high.target());
     }
 
+    /** Outbound broadside travel leaves the reverse vertical seam on the local +X side. */
+    static View overviewAfterBroadsideCrossing(double width, double height, double length) {
+        View view = overviewAfterCrossing(width, height, length);
+        return new View(new Point(2 * view.target().x() - view.eye().x(), view.eye().y(), view.eye().z()), view.target());
+    }
+
     /** A previous or cross-portal-remapped camera cannot certify this requested view. */
     static boolean matchesObservedView(View requested, View observed) {
         double dx = requested.eye().x() - observed.eye().x();

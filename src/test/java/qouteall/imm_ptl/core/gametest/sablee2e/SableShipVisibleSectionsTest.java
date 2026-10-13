@@ -79,7 +79,8 @@ class SableShipVisibleSectionsTest {
             var relative = layout.blocks().keySet().stream().map(p -> new Point(p.x(), p.y(), p.z())).toList();
             for (var view : new View[] {
                 SableShipObservationCamera.overview(layout.width(), layout.height(), layout.length()),
-                SableShipObservationCamera.overviewAfterCrossing(layout.width(), layout.height(), layout.length())
+                SableShipObservationCamera.overviewAfterCrossing(layout.width(), layout.height(), layout.length()),
+                SableShipObservationCamera.overviewAfterBroadsideCrossing(layout.width(), layout.height(), layout.length())
             }) {
                 for (int offset : new int[] {20_481_024, 20_481_032, -20_481_024, -20_481_032, 1_900_000_000, -1_900_000_000}) {
                     var blocks = relative.stream().map(p -> p.inPlot(offset, 128, -offset)).toList();

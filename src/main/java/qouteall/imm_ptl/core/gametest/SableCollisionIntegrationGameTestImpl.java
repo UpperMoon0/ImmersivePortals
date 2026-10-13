@@ -79,7 +79,11 @@ final class SableCollisionIntegrationGameTestImpl {
     static void firstItemMoveThroughPortalHole(GameTestHelper helper) {
         var level = helper.getLevel();
         BlockPos ceiling = helper.absolutePos(new BlockPos(2, 6, 2));
-        Vec3 source = new Vec3(ceiling.getX() + 0.5, ceiling.getY(), ceiling.getZ() + 0.5);
+        // IP's existing rectangular-portal collision filter excludes only
+        // shapes strictly behind its clipping plane (dot < 0). A plane exactly
+        // on the block face deliberately retains that block, even without
+        // Sable. Put the portal just outside the ceiling to make a real hole.
+        Vec3 source = new Vec3(ceiling.getX() + 0.5, ceiling.getY() - 0.01, ceiling.getZ() + 0.5);
         Map<BlockPos, BlockState> originalBlocks = new LinkedHashMap<>();
         Portal portal = Portal.ENTITY_TYPE.create(level);
         if (portal == null) throw new IllegalStateException("Portal entity type is unavailable");
@@ -105,15 +109,25 @@ final class SableCollisionIntegrationGameTestImpl {
             helper.assertTrue(level.addFreshEntity(item), "Fresh mushroom must enter the real entity lookup");
             var movement = (EntityMovementExtension) (Object) item;
             helper.assertTrue(movement.sable$getCollisionInfo() == null, "Fixture must exercise the first-ever movement");
-            helper.assertTrue(((EntityExtension) (Object) item).sable$vanillaCollide(attemptedMove).y < 0.10,
-                "Without portal clipping, the solid ceiling must obstruct this move");
+            Vec3 vanillaMove = ((EntityExtension) (Object) item).sable$vanillaCollide(attemptedMove);
+            helper.assertTrue(vanillaMove.y < 0.10,
+                "Without portal clipping, the solid ceiling must obstruct this move: " + vanillaMove);
             ((IEEntity) item).ip_notifyCollidingWithPortal(portal);
-            helper.assertTrue(((IEEntity) item).ip_getPortalCollisionHandler().hasCollisionEntry(), "Real portal entry missing");
+            PortalCollisionHandler handler = ((IEEntity) item).ip_getPortalCollisionHandler();
+            helper.assertTrue(handler.hasCollisionEntry(), "Real portal entry missing");
+            Vec3 portalMove = handler.handleCollision(item, attemptedMove);
+            helper.assertTrue(portalMove.distanceTo(attemptedMove) < 1e-7,
+                "Fixture must provide an unobstructed portal hole before Sable composition: vanilla="
+                    + vanillaMove + ", portal=" + portalMove + ", plane=" + source);
+            helper.assertTrue(movement.sable$getCollisionInfo() == null,
+                "Fixture validation must not prime Sable's first-move collision state");
             Vec3 before = item.position();
             item.setDeltaMovement(attemptedMove);
             item.move(MoverType.SELF, attemptedMove);
             helper.assertTrue(item.position().distanceTo(before.add(attemptedMove)) < 1e-7,
-                "Sable composition must preserve the portal hole instead of clipping against the ceiling");
+                "Sable composition must preserve the portal hole instead of clipping against the ceiling: expected="
+                    + attemptedMove + ", actual=" + item.position().subtract(before)
+                    + ", vanilla=" + vanillaMove + ", portal=" + portalMove);
             CollisionInfo first = movement.sable$getCollisionInfo();
             helper.assertTrue(first != null && !item.verticalCollision && !item.horizontalCollision,
                 "First portal movement must publish fresh, unobstructed Sable state");

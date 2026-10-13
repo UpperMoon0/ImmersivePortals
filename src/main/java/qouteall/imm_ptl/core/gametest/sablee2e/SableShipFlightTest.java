@@ -9,6 +9,7 @@ import dev.ryanhcode.sable.api.sublevel.ticket.SubLevelLoadingTicketType;
 import dev.ryanhcode.sable.companion.math.Pose3d;
 import dev.ryanhcode.sable.companion.math.Pose3dc;
 import dev.ryanhcode.sable.sublevel.ServerSubLevel;
+import dev.ryanhcode.sable.physics.config.dimension_physics.DimensionPhysicsData;
 import dev.ryanhcode.sable.sublevel.storage.SubLevelRemovalReason;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
@@ -27,6 +28,7 @@ import net.neoforged.neoforge.event.entity.player.PlayerEvent;
 import net.neoforged.neoforge.event.tick.ServerTickEvent;
 import org.joml.Quaterniond;
 import org.joml.Vector3d;
+import org.joml.Vector3dc;
 import qouteall.imm_ptl.core.portal.Portal;
 import qouteall.imm_ptl.core.portal.PortalManipulation;
 import qouteall.imm_ptl.core.portal.global_portals.GlobalPortalStorage;
@@ -64,10 +66,17 @@ public final class SableShipFlightTest {
     private static int corridorVisited, corridorChanged, corridorTicks;
     private static long corridorStartedNanos, corridorMaxTickNanos;
     private static Map<String,Object> corridorReceipt;
+    private static Map<String,Object> sourceCorridorReceipt;
+    private static boolean preparingSourceCorridor;
     private static Map<String, Object> caseReport, crossing;
     private static final List<Map<String, Object>> cases = new ArrayList<>();
     private static final List<Map<String, Object>> crossings = new ArrayList<>();
     private static final List<Map<String, Object>> stoppedAnimationTrace = new ArrayList<>();
+    private static final List<Map<String,Object>> broadsideSamples = new ArrayList<>();
+    private static final Map<String,Map<String,Object>> broadsideStages = new LinkedHashMap<>();
+    private static Map<String,Object> broadsideLaunch;
+    private static int broadsideTicks;
+    private static boolean broadsideInFlight;
     private static String token;
     private static Portal stoppedAnimationPortal;
     private static String stoppedAnimationStage;
@@ -82,13 +91,27 @@ public final class SableShipFlightTest {
     static boolean aeronautics() { return "true".equalsIgnoreCase(System.getenv("IP_SABLE_SHIPS_AERONAUTICS")); }
     static Map<String,String> addonVersions() { return Map.of("aeronautics","1.3.1","simulated","1.3.1","offroad","1.3.1"); }
     static String selectedSize() { return System.getenv().getOrDefault("IP_SABLE_SHIPS_SIZE", "all"); }
-    static int expectedCases() { return (selectedSize().equals("all") ? 2 : 1) * (aeronautics() ? 1 : 2); }
-    private static int lastCaseExclusive() { return selectedSize().equals("control") ? 2 : 4; }
+    static List<Integer> selectedCaseIndices() {
+        var result = new ArrayList<Integer>();
+        if (!selectedSize().equals("large")) { result.add(0); if (!aeronautics()) result.add(1); }
+        if (!selectedSize().equals("control")) { result.add(2); if (!aeronautics()) result.add(3); }
+        if (!aeronautics()) {
+            if (!selectedSize().equals("large")) result.add(4);
+            if (!selectedSize().equals("control")) result.add(5);
+        }
+        return List.copyOf(result);
+    }
+    static int expectedCases() { return selectedCaseIndices().size(); }
+    static int expectedCrossingsForRoute(String route) { return route.equals("vertical-broadside") ? 2 : 4; }
+    static int expectedCrossings() { return (selectedSize().equals("all") ? 2 : 1) * (aeronautics() ? 4 : 10); }
+    private static boolean broadside() { return caseIndex >= 4; }
+    private static boolean large() { return caseIndex == 2 || caseIndex == 3 || caseIndex == 5; }
+    private static String route() { return broadside() ? "vertical-broadside" : stack() ? "dimension-stack" : "ordinary"; }
     static boolean enabled() { return "true".equalsIgnoreCase(System.getenv("IP_SABLE_SHIPS")); }
     public static void onPlayerLogin(PlayerEvent.PlayerLoggedInEvent event) {
         if (!enabled() || !(event.getEntity() instanceof ServerPlayer joined)) return;
         require(List.of("all", "control", "large").contains(selectedSize()), "invalid ship size filter");
-        caseIndex = selectedSize().equals("large") ? 2 : 0;
+        caseIndex = selectedCaseIndices().getFirst();
         player = joined;
         source = joined.server.getLevel(Level.OVERWORLD);
         destination = joined.server.getLevel(Level.NETHER);
@@ -121,7 +144,7 @@ public final class SableShipFlightTest {
         }
     }
     private static void phase(Phase next) { phase = next; phaseTicks = 0; }
-    private static boolean stack() { return caseIndex % 2 == 1; }
+    private static boolean stack() { return !broadside() && caseIndex % 2 == 1; }
     private static void setup() {
         crossings.clear(); leg = -1;
         current = source;
@@ -140,24 +163,30 @@ public final class SableShipFlightTest {
                         destination.setBlock(position, Blocks.AIR.defaultBlockState(), 2);
                 }
         }
-        if (aeronautics()) {
-            // Natural atmosphere requires the low route. Clear its entire 160-wide aperture
-            // plus the largest rotated hull (radius <45), before any portal or ship exists.
-            corridorVisited=0; corridorChanged=0; corridorTicks=0; corridorMaxTickNanos=0;
-            corridorStartedNanos=System.nanoTime(); corridorReceipt=null;
+        if (aeronautics() || broadside()) {
+            // Low-altitude routes need a prepared swept-hull envelope before any portal
+            // or ship exists. The horizontal powered aperture fits wholly inside it;
+            // the vertical portal extends above it, but the entire broadside arc must not.
+            preparingSourceCorridor=broadside(); sourceCorridorReceipt=null;
+            resetCorridorProgress();
             phase(Phase.PREPARE_CORRIDOR);
             return;
         }
         finishSetup();
     }
+    private static void resetCorridorProgress() {
+        corridorVisited=0; corridorChanged=0; corridorTicks=0; corridorMaxTickNanos=0;
+        corridorStartedNanos=System.nanoTime(); corridorReceipt=null;
+    }
     private static void prepareCorridor() {
+        ServerLevel corridorLevel=preparingSourceCorridor ? source : destination;
         long started=System.nanoTime(); int batch=0;
         var position=new BlockPos.MutableBlockPos();
         while (corridorVisited<SableShipFlightCorridor.VOLUME && batch<SableShipFlightCorridor.POSITIONS_PER_TICK) {
             int index=corridorVisited;
             position.set(SableShipFlightCorridor.x(index),SableShipFlightCorridor.y(index),SableShipFlightCorridor.z(index));
-            if (!destination.getBlockState(position).isAir()) {
-                require(destination.setBlock(position,Blocks.AIR.defaultBlockState(),2),"could not clear powered corridor at "+position);
+            if (!corridorLevel.getBlockState(position).isAir()) {
+                require(corridorLevel.setBlock(position,Blocks.AIR.defaultBlockState(),2),"could not clear flight corridor at "+position);
                 corridorChanged++;
             }
             corridorVisited++; batch++;
@@ -167,7 +196,7 @@ public final class SableShipFlightTest {
         corridorTicks++; corridorMaxTickNanos=Math.max(corridorMaxTickNanos,System.nanoTime()-started);
         boolean complete=corridorVisited==SableShipFlightCorridor.VOLUME;
         corridorReceipt=new LinkedHashMap<>();
-        corridorReceipt.put("dimension",destination.dimension().location().toString());
+        corridorReceipt.put("dimension",corridorLevel.dimension().location().toString());
         corridorReceipt.put("min",List.of(SableShipFlightCorridor.MIN_XZ,SableShipFlightCorridor.MIN_Y,SableShipFlightCorridor.MIN_XZ));
         corridorReceipt.put("max_inclusive",List.of(SableShipFlightCorridor.MAX_XZ,SableShipFlightCorridor.MAX_Y,SableShipFlightCorridor.MAX_XZ));
         corridorReceipt.put("total_positions",SableShipFlightCorridor.VOLUME);
@@ -177,11 +206,18 @@ public final class SableShipFlightTest {
         corridorReceipt.put("positions_per_tick_limit",SableShipFlightCorridor.POSITIONS_PER_TICK);
         corridorReceipt.put("soft_tick_budget_ms",SableShipFlightCorridor.SOFT_NANOS_PER_TICK/1_000_000.0);
         corridorReceipt.put("complete",complete); corridorReceipt.put("setup_only",true);
-        if (complete || corridorTicks%20==0) PortalSmokeSupport.write("powered-corridor.json",JSON.toJson(corridorReceipt));
-        if (complete) finishSetup();
+        if (complete || corridorTicks%20==0) PortalSmokeSupport.write(
+            broadside() ? "broadside-corridor-"+(preparingSourceCorridor ? "source" : "destination")+".json" : "powered-corridor.json",
+            JSON.toJson(corridorReceipt));
+        if (complete) {
+            if (preparingSourceCorridor) {
+                sourceCorridorReceipt=new LinkedHashMap<>(corridorReceipt);
+                preparingSourceCorridor=false; resetCorridorProgress();
+            } else finishSetup();
+        }
     }
     private static void finishSetup() {
-        int y = stack() ? source.getMinBuildHeight() + 40 : aeronautics() ? 32 : 160;
+        int y = broadside() ? SableShipBroadsideGeometry.ASSEMBLY_Y : stack() ? source.getMinBuildHeight() + 40 : aeronautics() ? 32 : 160;
         if (stack()) {
             VerticalConnectingPortal.connectMutually(Level.OVERWORLD, Level.NETHER, false);
             forward = VerticalConnectingPortal.getConnectingPortal(source, VerticalConnectingPortal.ConnectorType.floor);
@@ -196,29 +232,47 @@ public final class SableShipFlightTest {
         } else {
             forward = Portal.ENTITY_TYPE.create(source);
             require(forward != null, "cannot create ordinary portal");
-            forward.setOriginPos(new Vec3(0, aeronautics() ? -8 : 120, 0));
-            // X cross -Z gives +Y, so the vessel approaches the front while descending.
-            forward.setOrientationAndSize(new Vec3(1, 0, 0), new Vec3(0, 0, -1), 160, 160);
+            if (broadside()) {
+                forward.setOriginPos(new Vec3(0, SableShipBroadsideGeometry.PORTAL_Y, 0));
+                // -Z cross +Y gives +X. The unrotated ship's long/nose axis remains Z.
+                forward.setOrientationAndSize(new Vec3(0, 0, -1), new Vec3(0, 1, 0),
+                    SableShipBroadsideGeometry.PORTAL_WIDTH, SableShipBroadsideGeometry.PORTAL_HEIGHT);
+            } else {
+                forward.setOriginPos(new Vec3(0, aeronautics() ? -8 : 120, 0));
+                // X cross -Z gives +Y, so the vessel approaches the front while descending.
+                forward.setOrientationAndSize(new Vec3(1, 0, 0), new Vec3(0, 0, -1), 160, 160);
+            }
             forward.setDestinationDimension(Level.NETHER);
-            forward.setDestination(new Vec3(0, aeronautics() ? 48 : 224, 0));
+            forward.setDestination(new Vec3(0, broadside() ? SableShipBroadsideGeometry.PORTAL_Y : aeronautics() ? 48 : 224, 0));
             forward.setRotation(DQuaternion.rotationByDegrees(new Vec3(0, 1, 0), 90));
             require(source.addFreshEntity(forward), "ordinary portal spawn failed");
             reverse = PortalManipulation.createReversePortal(forward, Portal.ENTITY_TYPE);
             require(destination.addFreshEntity(reverse), "reverse portal spawn failed");
         }
-        var size = caseIndex < 2 ? SableFlightShipFixture.Size.CONTROL : SableFlightShipFixture.Size.LARGE;
-        fixture = SableFlightShipFixture.assemble(source, new BlockPos(0, y, 0), size);
+        var size = large() ? SableFlightShipFixture.Size.LARGE : SableFlightShipFixture.Size.CONTROL;
+        int x = broadside() ? SableFlightShipLayout.create(large()).halfWidth() + (int) SableShipBroadsideGeometry.START_GAP : 0;
+        fixture = SableFlightShipFixture.assemble(source, new BlockPos(x, y, 0), size);
         ServerSubLevel body = fixture.requireBody(source);
         SubLevelContainer.getContainer(source).addForceLoadTicket(body, SubLevelLoadingTicketType.COMMAND_FORCED, Unit.INSTANCE);
         hover = new Vector3d(body.logicalPose().position());
         caseReport = new LinkedHashMap<>();
-        caseReport.put("size", size.name()); caseReport.put("route", stack() ? "dimension-stack" : "ordinary");
+        caseReport.put("size", size.name()); caseReport.put("route", route());
         caseReport.put("ship_id", fixture.id().toString()); caseReport.put("assembled", true);
-        caseReport.put("dimensions", caseIndex < 2 ? List.of(7,5,11) : List.of(49,17,65));
+        caseReport.put("dimensions", large() ? List.of(49,17,65) : List.of(7,5,11));
         caseReport.put("blocks", fixture.assembledBlockCount());
         caseReport.put("chunks", fixture.plotChunks());
         caseReport.put("propulsion", aeronautics() ? "real Aeronautics propeller actors; no native velocity writes during powered intervals" : "native rigid-body velocity launch; not an Aeronautics engine acceptance test");
-        if (aeronautics()) caseReport.put("prepared_corridor",corridorReceipt);
+        if (aeronautics() || broadside()) caseReport.put("prepared_corridor",corridorReceipt);
+        if (broadside()) caseReport.put("prepared_source_corridor",sourceCorridorReceipt);
+        if (broadside()) caseReport.put("broadside_geometry",Map.of(
+            "portal_normal",List.of(1,0,0),"portal_width",SableShipBroadsideGeometry.PORTAL_WIDTH,
+            "portal_height",SableShipBroadsideGeometry.PORTAL_HEIGHT,"portal_center_y",SableShipBroadsideGeometry.PORTAL_Y,
+            "ship_nose_local",List.of(0,0,1),"travel_axis_local",List.of(1,0,0),
+            "yaw_degrees",90,"launch_kind","native-ballistic","flight_pose_writes",0));
+        if (broadside()) caseReport.put("visual_sampling",Map.of(
+            "states",List.of("before-launch","after-outbound","after-return"),
+            "in_flight_stage_screenshots",false,
+            "reason","Native flight is never paused for asynchronous client rendering; stage poses and hull passage are recorded server-side, while real graphical checks run before launch and after full clearance"));
         phase(Phase.ASSEMBLY);
     }
     private static void mountWhenReady() {
@@ -299,9 +353,9 @@ public final class SableShipFlightTest {
         }
         if (leg >= 0) { crossing.put("client_ack", true); crossings.add(crossing); }
         checkpoint("running", "");
-        if (leg == 3) {
+        if (leg == expectedCrossingsForRoute(route()) - 1) {
             caseReport.put("crossings", List.copyOf(crossings));
-            if (!stack()) {
+            if (!stack() && !broadside()) {
                 stoppedAnimationStage="pause";
                 writeStoppedAnimationControl("pause");
                 phase(Phase.STOPPED_ANIMATION);
@@ -317,7 +371,8 @@ public final class SableShipFlightTest {
             flightGravityY=((Number)fixture.drive().liftBudget(current,body).get("gravityY")).doubleValue();
             // Motors have spooled under the explicitly separate observation hold. Release feedback now.
             // No direct velocity, force, pose or gravity writes occur through FLY or the seam-clearance interval.
-        } else setVelocity(body, leg % 2 == 0 ? new Vector3d(8, -SPEED, 4) : new Vector3d(-4, SPEED, 8));
+        } else if (broadside()) launchBroadside(body);
+        else setVelocity(body, leg % 2 == 0 ? new Vector3d(8, -SPEED, 4) : new Vector3d(-4, SPEED, 8));
         previousVelocity = handle(body).getLinearVelocity(new Vector3d());
         previousOrientation = new Quaterniond(body.logicalPose().orientation());
         previousPose = new Pose3d(body.logicalPose());
@@ -325,14 +380,14 @@ public final class SableShipFlightTest {
     }
     private static void finishCase() {
         cases.add(caseReport);
-        cleanup(); caseIndex += aeronautics() ? 2 : 1;
-        if (caseIndex == lastCaseExclusive()) {
+        cleanup();
+        if (cases.size() == expectedCases()) {
             var report = new LinkedHashMap<String,Object>(); report.put("schema_version",1); report.put("cases",cases);
             if (aeronautics()) report.put("addons",addonVersions());
             PortalSmokeSupport.write("server-ships.json", JSON.toJson(report));
-            PortalSmokeSupport.write("server-pass.txt", expectedCases() + " assembled ship cases completed " + (expectedCases()*4) + " native crossings with rider/cargo/machinery continuity; aeronautics=" + aeronautics());
+            PortalSmokeSupport.write("server-pass.txt", expectedCases() + " assembled ship cases completed " + expectedCrossings() + " native crossings with rider/cargo/machinery continuity; aeronautics=" + aeronautics());
             phase(Phase.DONE);
-        } else setup();
+        } else { caseIndex = selectedCaseIndices().get(cases.size()); setup(); }
     }
     private static String stoppedAnimationToken() { return caseIndex+":stopped-animation"; }
     private static void writeStoppedAnimationControl(String mode) {
@@ -475,6 +530,7 @@ public final class SableShipFlightTest {
         var arriving = SubLevelContainer.getContainer(target).getSubLevel(fixture.id());
         if (!(arriving instanceof ServerSubLevel body)) {
             var active = fixture.requireBody(current);
+            if (broadside()) recordBroadsideSample(active, false);
             if (aeronautics()) {
                 int direction=leg%2==0?-1:1;
                 fixture.drive().verifyThrust(current,active,-direction*256); forceSamples++;
@@ -504,6 +560,7 @@ public final class SableShipFlightTest {
         double distance = observedFlightDistance;
         require(flightTicks >= 5 && distance >= 8, "insufficient genuine pre-seam flight");
         current = target;
+        if (broadside()) recordBroadsideSample(body, true);
         var integrity=fixture.verifyIntegrity(current, body); verifyRider(body);
         crossing = new LinkedHashMap<>();
         crossing.put("leg",leg); crossing.put("from",portal.level().dimension().location().toString());
@@ -528,12 +585,141 @@ public final class SableShipFlightTest {
     private static void clearSeam() {
         var body = fixture.requireBody(current);
         Portal portal = leg % 2 == 0 ? reverse : forward;
-        double clearance = Math.abs(body.logicalPose().position().y() - portal.getOriginPos().y);
         require(phaseTicks < 300,"ship failed to clear seam");
-        if (clearance < 28) return;
+        if (broadside()) {
+            var bounds=recordBroadsideSample(body,true);
+            if (bounds.maxNormal() > -SableShipBroadsideGeometry.CLEAR_GAP) return;
+            require(broadsideStages.keySet().equals(new java.util.LinkedHashSet<>(List.of("leading","center","trailing"))),
+                "broadside flight did not sample all three hull passage stages: "+broadsideStages.keySet());
+            var receipt=new LinkedHashMap<String,Object>();
+            receipt.put("launch",broadsideLaunch); receipt.put("samples",List.copyOf(broadsideSamples));
+            receipt.put("stages",new LinkedHashMap<>(broadsideStages));
+            receipt.put("final_max_normal",bounds.maxNormal()); receipt.put("clearance_gap",SableShipBroadsideGeometry.CLEAR_GAP);
+            receipt.put("whole_hull_cleared",true); receipt.put("aperture_fit",true);
+            receipt.put("no_native_writes_during_flight",true);
+            crossing.put("broadside_receipt",receipt);
+            PortalSmokeSupport.write("broadside-"+caseIndex+"-"+leg+".json",JSON.toJson(receipt));
+            if (leg==1) require(Math.abs(body.logicalPose().orientation().dot(new Quaterniond()))>.999,
+                "broadside return failed to restore original ship orientation");
+            broadsideInFlight=false;
+        } else {
+            double clearance = Math.abs(body.logicalPose().position().y() - portal.getOriginPos().y);
+            if (clearance < 28) return;
+        }
         hover = new Vector3d(body.logicalPose().position()); hold(body);
         fixture.setMotorSpeed(current,body,rpm()); fixture.mutateProbe(current,body,mutated()); prepareDrive(body);
         phase(Phase.SETTLE);
+    }
+    private static void launchBroadside(ServerSubLevel body) {
+        Portal entry=leg%2==0 ? forward : reverse;
+        require(Math.abs(entry.getNormal().y)<1e-8,"broadside portal is not vertical");
+        if (leg==0) require(Math.abs(body.logicalPose().orientation().dot(new Quaterniond()))>.999,
+            "broadside fixture was rotated nose-first before flight");
+        var bounds=broadsideBounds(body,false);
+        require(bounds.minNormal()>=SableShipBroadsideGeometry.CLEAR_GAP-1,
+            "broadside launch began with part of the hull in the seam: "+bounds);
+        var gravity=DimensionPhysicsData.getGravity(current,body.logicalPose().position());
+        var otherGravity=DimensionPhysicsData.getGravity(leg%2==0 ? destination : source);
+        double drag=DimensionPhysicsData.getUniversalDrag(current);
+        require(gravity.isFinite() && gravity.y<0 && Math.abs(gravity.x)+Math.abs(gravity.z)<1e-8
+            && gravity.distance(otherGravity)<1e-8,"broadside ballistic plan needs matching native vertical gravity");
+        require(Math.abs(drag-DimensionPhysicsData.getUniversalDrag(leg%2==0 ? destination : source))<1e-8,
+            "broadside ballistic plan needs matching native damping");
+        var plan=SableShipBroadsideGeometry.launch(bounds.maxNormal()+SableShipBroadsideGeometry.CLEAR_GAP,gravity.y,drag);
+        require(plan.upwardSpeed()<=SableShipBroadsideGeometry.SPEED,
+            "gravity compensation would dominate the sideways launch");
+        var hull=fixtureWorldBounds(body,body.logicalPose(),null);
+        require(hull.maxY+plan.maxRise()<SableShipFlightCorridor.MAX_Y,
+            "predicted broadside arc exceeds the prepared corridor");
+        Vec3 horizontal=entry.getNormal().scale(-SableShipBroadsideGeometry.SPEED);
+        Vector3d velocity=new Vector3d(horizontal.x,plan.upwardSpeed(),horizontal.z);
+        setVelocity(body,new Vector3d(velocity));
+        Vector3d actualVelocity=handle(body).getLinearVelocity(new Vector3d());
+        require(actualVelocity.isFinite() && actualVelocity.distance(velocity)<1e-6,
+            "native broadside launch did not apply the planned absolute velocity");
+        broadsideSamples.clear(); broadsideStages.clear(); broadsideTicks=0;
+        broadsideLaunch=new LinkedHashMap<>();
+        broadsideLaunch.put("kind","native-ballistic");
+        broadsideLaunch.put("horizontal_speed",SableShipBroadsideGeometry.SPEED);
+        broadsideLaunch.put("gravity_y",gravity.y); broadsideLaunch.put("universal_drag",drag);
+        broadsideLaunch.put("planned_distance",plan.distance()); broadsideLaunch.put("planned_duration",plan.duration());
+        broadsideLaunch.put("upward_speed",plan.upwardSpeed()); broadsideLaunch.put("predicted_max_rise",plan.maxRise());
+        broadsideLaunch.put("initial_velocity",List.of(actualVelocity.x,actualVelocity.y,actualVelocity.z));
+        broadsideLaunch.put("initial_bounds",describeBroadsideBounds(bounds));
+        broadsideInFlight=true;
+        recordBroadsideSample(body,false);
+    }
+    private static SableShipBroadsideGeometry.Bounds broadsideBounds(ServerSubLevel body,boolean arrived) {
+        Portal entry=leg%2==0 ? forward : reverse;
+        var center=body.getPlot().getCenterBlock(); var layout=fixture.layout();
+        var corners=new SableShipBroadsideGeometry.Point[8]; int i=0;
+        for (int x:new int[]{-layout.halfWidth(),layout.halfWidth()+1})
+            for (int y:new int[]{0,layout.height()}) for (int z:new int[]{-layout.halfLength(),layout.halfLength()+1}) {
+                Vec3 world=body.logicalPose().transformPosition(new Vec3(center.getX()+x,center.getY()+y,center.getZ()+z));
+                // Normalize destination corners back into the same entry frame. This is
+                // a measurement only; the native body/pose is never changed by the test.
+                if (arrived) world=entry.inverseTransformPoint(world);
+                Vec3 local=entry.transformFromWorldToPortalLocal(world);
+                corners[i++]=new SableShipBroadsideGeometry.Point(local.x,local.y,local.z);
+            }
+        return SableShipBroadsideGeometry.bounds(corners);
+    }
+    private static Map<String,Object> describeBroadsideBounds(SableShipBroadsideGeometry.Bounds b) {
+        return Map.of("min_normal",b.minNormal(),"center_normal",b.centerNormal(),"max_normal",b.maxNormal(),
+            "min_width",b.minWidth(),"max_width",b.maxWidth(),"min_height",b.minHeight(),"max_height",b.maxHeight());
+    }
+    /** Read-only native samples through leading, center and trailing passage, before stationkeeping resumes. */
+    private static SableShipBroadsideGeometry.Bounds recordBroadsideSample(ServerSubLevel body,boolean arrived) {
+        var bounds=broadsideBounds(body,arrived);
+        require(bounds.fitsAperture(),"actual swept broadside corner escaped aperture: "+bounds);
+        var worldVelocity=handle(body).getLinearVelocity(new Vector3d());
+        var localVelocity=new Quaterniond(body.logicalPose().orientation()).conjugate().transform(worldVelocity,new Vector3d());
+        var nose=new Quaterniond(body.logicalPose().orientation()).transform(new Vector3d(0,0,1));
+        double cosine=Math.abs(nose.dot(worldVelocity))/worldVelocity.length();
+        require(Double.isFinite(cosine) && cosine<.025 && localVelocity.x*(leg%2==0 ? -1 : 1)>8
+            && Math.abs(localVelocity.z)<Math.abs(localVelocity.x)*.025,
+            "native motion is not broadside to the ship nose: local="+localVelocity+" cosine="+cosine);
+        verifyRider(body);
+        AABB hull=fixtureWorldBounds(body,body.logicalPose(),null);
+        require(
+            SableShipFlightCorridor.contains(hull.minX,hull.minY,hull.minZ)
+                && SableShipFlightCorridor.contains(hull.maxX,hull.maxY,hull.maxZ),
+            "native broadside hull escaped prepared terrain: "+hull);
+        var sample=new LinkedHashMap<String,Object>();
+        sample.put("sample",broadsideTicks++); sample.put("dimension",current.dimension().location().toString());
+        sample.put("native_tick",current.getGameTime()); sample.put("arrived",arrived);
+        sample.put("ship_id",fixture.id().toString()); sample.put("bounds",describeBroadsideBounds(bounds));
+        sample.put("world_bounds",describeBounds(hull)); sample.put("pose",describePose(body.logicalPose()));
+        sample.put("native_velocity",List.of(worldVelocity.x,worldVelocity.y,worldVelocity.z));
+        sample.put("body_local_velocity",List.of(localVelocity.x,localVelocity.y,localVelocity.z));
+        sample.put("nose_world",List.of(nose.x,nose.y,nose.z)); sample.put("nose_velocity_abs_cosine",cosine);
+        @SuppressWarnings("unchecked") var initialBounds=(Map<String,Object>)broadsideLaunch.get("initial_bounds");
+        sample.put("native_distance",((Number)initialBounds.get("center_normal")).doubleValue()-bounds.centerNormal());
+        sample.put("source_body_count",SubLevelContainer.getContainer(source).getAllSubLevels().size());
+        sample.put("destination_body_count",SubLevelContainer.getContainer(destination).getAllSubLevels().size());
+        sample.put("seat_id",seatId.toString()); sample.put("player_id",player.getUUID().toString());
+        sample.put("player_dimension",player.serverLevel().dimension().location().toString());
+        sample.put("player_vehicle_id",player.getVehicle().getUUID().toString());
+        sample.put("seat_passenger_ids",current.getEntity(seatId).getPassengers().stream().map(entity->entity.getUUID().toString()).toList());
+        sample.put("unique_body",true); sample.put("rider_graph",true); sample.put("aperture_fit",true);
+        broadsideSamples.add(sample);
+        if (bounds.leading() && !broadsideStages.containsKey("leading")) recordBroadsideStage("leading",sample,body);
+        if (bounds.center() && !broadsideStages.containsKey("center")) recordBroadsideStage("center",sample,body);
+        if (bounds.trailing() && !broadsideStages.containsKey("trailing")) recordBroadsideStage("trailing",sample,body);
+        PortalSmokeSupport.write("broadside-progress-"+caseIndex+"-"+leg+".json",JSON.toJson(Map.of(
+            "launch",broadsideLaunch,"samples",broadsideSamples,"stages",broadsideStages)));
+        return bounds;
+    }
+    private static void recordBroadsideStage(String stage,Map<String,Object> sample,ServerSubLevel body) {
+        if (!broadsideStages.isEmpty()) {
+            var previous=broadsideStages.values().stream().reduce((a,b)->b).orElseThrow();
+            require(((Number)sample.get("sample")).intValue()>((Number)previous.get("sample")).intValue(),
+                "broadside passage skipped a separately observed hull stage");
+        }
+        var receipt=new LinkedHashMap<>(sample);
+        receipt.put("integrity_snapshot",fixture.verifyIntegrity(current,body));
+        receipt.put("machinery_snapshot",fixture.verifyMachinery(current,body,leg%2==0 ? 16 : -32));
+        broadsideStages.put(stage,receipt);
     }
     private static void writeSeamDiagnostics(Portal portal,ServerSubLevel body,Vec3 expected,Vector3d actual) {
         var report=new LinkedHashMap<String,Object>();
@@ -556,7 +742,7 @@ public final class SableShipFlightTest {
         AABB actualBounds=fixtureWorldBounds(body,body.logicalPose(),null);
         report.put("actual_hull_aabb",describeBounds(actualBounds));
         report.put("expected_transformed_previous_hull_aabb",describeBounds(fixtureWorldBounds(body,previousPose,portal)));
-        if (aeronautics() && body.getLevel()==destination) report.put("hull_inside_prepared_corridor",
+        if ((aeronautics() || broadside()) && body.getLevel()==destination) report.put("hull_inside_prepared_corridor",
             SableShipFlightCorridor.contains(actualBounds.minX,actualBounds.minY,actualBounds.minZ)
                 && SableShipFlightCorridor.contains(actualBounds.maxX,actualBounds.maxY,actualBounds.maxZ));
         report.put("terrain_collision_candidates",terrainCollisionCandidates(body.getLevel(),actualBounds));
@@ -650,9 +836,12 @@ public final class SableShipFlightTest {
     private static RigidBodyHandle handle(ServerSubLevel body) {
         var handle = RigidBodyHandle.of(body); require(handle != null && handle.isValid(),"native physics handle missing"); return handle;
     }
-    private static void setVelocity(ServerSubLevel body, Vector3d velocity) {
+    private static void setVelocity(ServerSubLevel body, Vector3dc velocity) {
+        require(!broadsideInFlight,"native velocity write attempted during broadside flight");
         var handle = handle(body);
-        handle.addLinearAndAngularVelocity(velocity.sub(handle.getLinearVelocity(new Vector3d())),
+        // Preserve the requested absolute velocity for launch receipts/callers. Native
+        // physics consumes a delta, which must have its own independently mutable vector.
+        handle.addLinearAndAngularVelocity(new Vector3d(velocity).sub(handle.getLinearVelocity(new Vector3d())),
             handle.getAngularVelocity(new Vector3d()).negate());
     }
     private static void cleanup() {

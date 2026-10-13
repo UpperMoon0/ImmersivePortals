@@ -61,7 +61,8 @@ public final class SableShipFlightClientTest {
             if (PortalSmokeSupport.exists("server-pass.txt")) {
                 require(cases.size() == SableShipFlightTest.expectedCases(), "server completed before expected client cases");
                 for (String key : cases.keySet()) {
-                    require(crossings.get(key).size() == 4,"missing client crossings for " + key);
+                    int expectedCrossings=SableShipFlightTest.expectedCrossingsForRoute((String)cases.get(key).get("route"));
+                    require(crossings.get(key).size() == expectedCrossings,"missing client crossings for " + key);
                     cases.get(key).put("crossings",crossings.get(key));
                     cases.get(key).put("screenshots",screenshots.get(key));
                     cases.get(key).put("snapshots",screenshots.get(key).size());
@@ -69,7 +70,7 @@ public final class SableShipFlightClientTest {
                 var report=new LinkedHashMap<String,Object>(); report.put("schema_version",1); report.put("cases",cases.values());
                 if (SableShipFlightTest.aeronautics()) report.put("addons",SableShipFlightTest.addonVersions());
                 PortalSmokeSupport.write("client-ships.json",new Gson().toJson(report));
-                PortalSmokeSupport.write("client-pass.txt","Real client observed " + (SableShipFlightTest.expectedCases()*4) + " assembled-ship crossings, live block/kinetic mutations and contrasting framebuffer states");
+                PortalSmokeSupport.write("client-pass.txt","Real client observed " + SableShipFlightTest.expectedCrossings() + " assembled-ship crossings, live block/kinetic mutations and contrasting framebuffer states");
                 restoreStoppedAnimationPrediction(); restorePlayerCamera(mc); done = true; mc.stop(); return;
             }
             String text = PortalSmokeSupport.read("ship-observe.json");
@@ -118,16 +119,21 @@ public final class SableShipFlightClientTest {
                 }
                 var dimensions=request.getAsJsonArray("dimensions");
                 double width=dimensions.get(0).getAsDouble(), height=dimensions.get(1).getAsDouble(), length=dimensions.get(2).getAsDouble();
+                boolean broadsideOutbound=request.get("route").getAsString().equals("vertical-broadside")
+                    && request.get("leg").getAsInt()==0;
                 // Pose3d transforms absolute hidden-plot positions, not relative fixture offsets.
+                var lowView=broadsideOutbound
+                    ? SableShipObservationCamera.overviewAfterBroadsideCrossing(width,height,length)
+                    : SableShipObservationCamera.overviewAfterCrossing(width,height,length);
                 var view=request.get("leg").getAsInt()<0
                     ? SableShipObservationCamera.overview(width,height,length)
-                    : SableShipObservationCamera.overviewAfterCrossing(width,height,length);
+                    : lowView;
                 var eye=shipPoint(body,center,view.eye());
                 // CrossPortalViewRendering traces this same rider-to-camera segment. Never
                 // certify another world's remapped camera as a view of the current body.
                 var cameraPortal=overviewCameraPortal(mc,eye);
                 if (cameraPortal!=null) {
-                    view=SableShipObservationCamera.overviewAfterCrossing(width,height,length);
+                    view=lowView;
                     eye=shipPoint(body,center,view.eye());
                     cameraPortal=overviewCameraPortal(mc,eye);
                 }

@@ -11,7 +11,9 @@ class SableShipObservationCameraTest {
                 SableShipObservationCamera.panel(), SableShipObservationCamera.overview(7, 5, 11),
                 SableShipObservationCamera.overview(49, 17, 65),
                 SableShipObservationCamera.overviewAfterCrossing(7, 5, 11),
-                SableShipObservationCamera.overviewAfterCrossing(49, 17, 65)
+                SableShipObservationCamera.overviewAfterCrossing(49, 17, 65),
+                SableShipObservationCamera.overviewAfterBroadsideCrossing(7, 5, 11),
+                SableShipObservationCamera.overviewAfterBroadsideCrossing(49, 17, 65)
             }) {
                 for (var relative : new SableShipObservationCamera.Point[] {view.eye(), view.target()}) {
                     var absolute = relative.inPlot(center, 128, -center);
@@ -29,7 +31,8 @@ class SableShipObservationCameraTest {
         for (double[] size : new double[][] {{7, 5, 11}, {49, 17, 65}}) {
             for (var view : new SableShipObservationCamera.View[] {
                 SableShipObservationCamera.overview(size[0], size[1], size[2]),
-                SableShipObservationCamera.overviewAfterCrossing(size[0], size[1], size[2])
+                SableShipObservationCamera.overviewAfterCrossing(size[0], size[1], size[2]),
+                SableShipObservationCamera.overviewAfterBroadsideCrossing(size[0], size[1], size[2])
             }) {
                 var eye = view.eye();
                 double[] forward = normalized(new double[] {view.target().x()-eye.x(), view.target().y()-eye.y(), view.target().z()-eye.z()});
@@ -83,6 +86,47 @@ class SableShipObservationCameraTest {
         assertEquals(high.target(), low.target());
     }
 
+    @Test void broadsideOutboundOverviewMirrorsOnlyTheEyeToTheSafeLocalXSide() {
+        for (double[] size : new double[][] {{7, 5, 11}, {49, 17, 65}}) {
+            var positive = SableShipObservationCamera.overviewAfterCrossing(size[0], size[1], size[2]);
+            var negative = SableShipObservationCamera.overviewAfterBroadsideCrossing(size[0], size[1], size[2]);
+            assertEquals(2 * positive.target().x(), positive.eye().x() + negative.eye().x());
+            assertTrue(negative.eye().x() < -size[0] / 2, "Camera must be outside the opposite broadside");
+            assertEquals(positive.eye().y(), negative.eye().y());
+            assertEquals(positive.eye().z(), negative.eye().z());
+            assertEquals(positive.target(), negative.target());
+        }
+    }
+
+    @Test void bothBroadsideLegCameraSegmentsStayOnTheClearedSideOfTheirTransformedPlanes() {
+        for (double[] size : new double[][] {{7, 5, 11}, {49, 17, 65}}) {
+            double outboundAnchor = .5 + size[0] / 2 + SableShipBroadsideGeometry.CLEAR_GAP;
+            double returnAnchor = -.5 + size[0] / 2 + SableShipBroadsideGeometry.CLEAR_GAP;
+            var rider = SableShipObservationCamera.panel().eye();
+            var outbound = SableShipObservationCamera.overviewAfterBroadsideCrossing(size[0], size[1], size[2]);
+            var returned = SableShipObservationCamera.overviewAfterCrossing(size[0], size[1], size[2]);
+            // +90 degrees around Y: (x,y,z) -> (z,y,-x). After outbound flight,
+            // the reverse portal is world z=0 and the entire body is on its +Z side.
+            double riderOutboundDistance = outboundAnchor - rider.x();
+            double cameraOutboundDistance = outboundAnchor - outbound.eye().x();
+            // The inverse return restores identity orientation and source plane x=0.
+            double riderReturnDistance = returnAnchor + rider.x();
+            double cameraReturnDistance = returnAnchor + returned.eye().x();
+            for (double fraction : new double[] {0, .25, .5, .75, 1}) {
+                assertTrue(riderOutboundDistance * (1 - fraction) + cameraOutboundDistance * fraction > 0,
+                    "Outbound rider-camera segment crosses the rotated reverse plane");
+                assertTrue(riderReturnDistance * (1 - fraction) + cameraReturnDistance * fraction > 0,
+                    "Return rider-camera segment crosses the restored source plane");
+            }
+            if (size[0] == 49) {
+                assertTrue(outboundAnchor - returned.eye().x() < 0,
+                    "Using the positive-X overview on outbound LARGE would cross the reverse seam");
+                assertTrue(returnAnchor + outbound.eye().x() < 0,
+                    "Keeping the negative-X overview after return would cross the source seam");
+            }
+        }
+    }
+
     @Test void onlyTheRequestedRenderedCameraCanCertifyAnOverview() {
         var view = SableShipObservationCamera.overviewAfterCrossing(49, 17, 65);
         assertTrue(SableShipObservationCamera.matchesObservedView(view, view));
@@ -109,6 +153,9 @@ class SableShipObservationCameraTest {
             assertThrows(IllegalArgumentException.class, () -> SableShipObservationCamera.overviewAfterCrossing(invalid, 5, 11));
             assertThrows(IllegalArgumentException.class, () -> SableShipObservationCamera.overviewAfterCrossing(7, invalid, 11));
             assertThrows(IllegalArgumentException.class, () -> SableShipObservationCamera.overviewAfterCrossing(7, 5, invalid));
+            assertThrows(IllegalArgumentException.class, () -> SableShipObservationCamera.overviewAfterBroadsideCrossing(invalid, 5, 11));
+            assertThrows(IllegalArgumentException.class, () -> SableShipObservationCamera.overviewAfterBroadsideCrossing(7, invalid, 11));
+            assertThrows(IllegalArgumentException.class, () -> SableShipObservationCamera.overviewAfterBroadsideCrossing(7, 5, invalid));
         }
     }
 

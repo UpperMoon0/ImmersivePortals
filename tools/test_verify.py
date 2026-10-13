@@ -3,6 +3,7 @@ import tempfile
 import base64
 from contextlib import contextmanager
 import json
+import math
 import socket
 import subprocess
 import unittest
@@ -1010,7 +1011,9 @@ class ShipVerificationHarnessTest(unittest.TestCase):
                                                 ("LARGE", [49, 17, 65], 4941 if aeronautics else 4185, 20)):
             if ship_size != "all" and size.lower() != ship_size:
                 continue
-            for route in (("ordinary",) if aeronautics else ("ordinary", "dimension-stack")):
+            for route in (("ordinary",) if aeronautics else ("ordinary", "dimension-stack", "vertical-broadside")):
+                broadside = route == "vertical-broadside"
+                leg_count = 2 if broadside else 4
                 common = dict(size=size, route=route, dimensions=dimensions, blocks=blocks, chunks=chunks,
                               assembled=True, ship_id=f"ship-{size}-{route}")
                 def snapshot(dimension, removed=0):
@@ -1025,16 +1028,20 @@ class ShipVerificationHarnessTest(unittest.TestCase):
                                 cargoManifest=manifest)
                 server = dict(common, crossings=[], stale_request_rejected=True,
                               integrity_snapshot=snapshot("minecraft:overworld"))
-                if aeronautics:
+                if broadside:
+                    del server["stale_request_rejected"]
+                if aeronautics or broadside:
                     server["prepared_corridor"] = dict(dimension="minecraft:the_nether", complete=True, setup_only=True,
                         min=[-128, 0, -128], max_inclusive=[128, 96, 128], total_positions=6406753,
                         visited_positions=6406753, changed_blocks=4000000, setup_ticks=240,
                         elapsed_ms=12000.0, max_batch_ms=175.0, positions_per_tick_limit=32768, soft_tick_budget_ms=50.0)
+                if aeronautics:
                     server["lift_budget"] = dict(mass=1000.0, gravityY=-10.0, weight=10000.0,
                         maximumStaticLift=15000.0, staticLiftWeightRatio=1.5, minimumAirPressure=0.9,
                         atmosphereModified=False, engineCount=8 if size == "CONTROL" else 252,
                         trimMomentX=30.0, trimMomentZ=-40.0)
-                case_index = (0 if size == "CONTROL" else 2) + (route == "dimension-stack")
+                case_index = ((4 if size == "CONTROL" else 5) if broadside
+                              else (0 if size == "CONTROL" else 2) + (route == "dimension-stack"))
                 def mesh(leg):
                     positions = [[1280063 + n, 8, 1280063] for n in range(1 if size == "CONTROL" else 2)]
                     return dict(view="overview", ship_id=common["ship_id"], token=f"{case_index}:{leg}",
@@ -1053,9 +1060,9 @@ class ShipVerificationHarnessTest(unittest.TestCase):
                                 expected_section_positions=positions,
                                 section_results=[dict(position=p, compiled=True, nonempty=True) for p in positions],
                                 screenshot=f"overview-{case_index}-{leg}.png")
-                client = dict(common, crossings=[], snapshots=5, overview_mesh=mesh(-1),
-                              screenshots=[f"{size}-{route}-{phase}.png" for phase in range(5)])
-                for leg in range(4):
+                client = dict(common, crossings=[], snapshots=leg_count+1, overview_mesh=mesh(-1),
+                              screenshots=[f"{size}-{route}-{phase}.png" for phase in range(leg_count+1)])
+                for leg in range(leg_count):
                     worlds = ("minecraft:overworld", "minecraft:the_nether")
                     server["crossings"].append(dict(leg=leg, **{"from": worlds[leg % 2], "to": worlds[(leg + 1) % 2]},
                         native_motion_ticks=20, native_distance=8.0, unique_body=True, rider_graph=True,
@@ -1076,6 +1083,61 @@ class ShipVerificationHarnessTest(unittest.TestCase):
                                 endVerticalVelocity=direction * 4.0, dimension=worlds[leg % 2],
                                 againstGravity=direction > 0))
                         client["crossings"][-1]["propellers"] = True
+                if broadside:
+                    server["prepared_source_corridor"] = dict(server["prepared_corridor"],dimension="minecraft:overworld")
+                    server["visual_sampling"] = dict(states=["before-launch","after-outbound","after-return"],
+                                                     in_flight_stage_screenshots=False)
+                    server["broadside_geometry"] = dict(portal_normal=[1,0,0], portal_width=160, portal_height=80,
+                        portal_center_y=64, ship_nose_local=[0,0,1], travel_axis_local=[1,0,0], yaw_degrees=90,
+                        launch_kind="native-ballistic", flight_pose_writes=0)
+                    for crossing in server["crossings"]:
+                        leg = crossing["leg"]
+                        def hull(center):
+                            return dict(min_normal=center-dimensions[0]/2, center_normal=center,
+                                max_normal=center+dimensions[0]/2, min_width=-dimensions[2]/2,
+                                max_width=dimensions[2]/2, min_height=-dimensions[1]/2, max_height=dimensions[1]/2)
+                        centers = [dimensions[0]/2+20, dimensions[0]/2-.5, -.5, -dimensions[0]/2-.5, -dimensions[0]/2-12]
+                        distance = centers[0]+dimensions[0]/2+12
+                        duration = distance/24
+                        upward = 11*duration/2
+                        rise = upward*upward/22
+                        samples = []
+                        for index, center in enumerate(centers):
+                            arrived = index >= 2
+                            dimension = crossing["to" if arrived else "from"]
+                            ow = dimension == "minecraft:overworld"
+                            travel = -24.0 if leg == 0 else 24.0
+                            local_v = [travel, upward, 0.0]
+                            v = local_v if ow else [0.0, upward, -travel]
+                            q = [0,0,0,1] if ow else [0,math.sqrt(.5),0,math.sqrt(.5)]
+                            normal_center = -center if arrived else center
+                            normal_axis = 0 if ow else 2
+                            mid = [0.0, 64.0, 0.0]; mid[normal_axis] = normal_center
+                            spans = list(dimensions) if ow else [dimensions[2],dimensions[1],dimensions[0]]
+                            world_bounds = [mid[i]-spans[i]/2 for i in range(3)] + [mid[i]+spans[i]/2 for i in range(3)]
+                            sample = dict(sample=index, dimension=dimension,
+                                native_tick=100+index*10, arrived=arrived, ship_id=common["ship_id"], bounds=hull(center),
+                                world_bounds=world_bounds,
+                                pose=dict(position=mid,orientation=q,rotation_point=[0,0,0],scale=[1,1,1]),
+                                native_velocity=v,body_local_velocity=local_v,nose_world=[0,0,1] if ow else [1,0,0],
+                                nose_velocity_abs_cosine=0,unique_body=True,rider_graph=True,aperture_fit=True)
+                            sample.update(native_distance=centers[0]-center,
+                                source_body_count=int(ow), destination_body_count=int(not ow),
+                                seat_id=f"broadside-seat-{size}",player_id="player-id",
+                                player_dimension=sample["dimension"],player_vehicle_id=f"broadside-seat-{size}",
+                                seat_passenger_ids=["player-id"])
+                            samples.append(sample)
+                        stages = {}
+                        for stage, index in (("leading",1),("center",2),("trailing",3)):
+                            stages[stage] = dict(samples[index], integrity_snapshot=snapshot(samples[index]["dimension"],leg%2),
+                                machinery_snapshot=dict(motorCount=2,expectedRpm=16 if leg==0 else -32,
+                                    actualSpeeds=[16 if leg==0 else -32]*6,nativePropulsion=True,aeronauticsPropulsion=False))
+                        crossing["broadside_receipt"] = dict(
+                            launch=dict(kind="native-ballistic",horizontal_speed=24,gravity_y=-11,universal_drag=0,
+                                planned_distance=distance,planned_duration=duration,upward_speed=upward,
+                                predicted_max_rise=rise,initial_velocity=list(samples[0]["native_velocity"]),initial_bounds=hull(centers[0])),
+                            samples=samples, stages=stages, final_max_normal=-12, clearance_gap=12,
+                            whole_hull_cleared=True,aperture_fit=True,no_native_writes_during_flight=True)
                 if route == "ordinary":
                     probe = dict(kind="held_body_stopped_source_animation", counted_as_flight_crossing=False,
                                  ship_id=common["ship_id"], seat_id=f"seat-{size}",
@@ -1090,6 +1152,8 @@ class ShipVerificationHarnessTest(unittest.TestCase):
                                                               blocks=True, machinery=True, mutation=True)
                 reports["server"]["cases"].append(server)
                 reports["client"]["cases"].append(client)
+        for report in reports.values():
+            report["cases"].sort(key=lambda c: (c["route"] == "vertical-broadside", c["size"], c["route"] != "ordinary"))
         return reports
 
     def write_reports(self, reports=None):
@@ -1234,6 +1298,207 @@ class ShipVerificationHarnessTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "out-of-order"):
             verify.validate_ship_reports()
 
+    def test_broadside_adds_exact_baseline_cases_legs_and_graphical_observations(self):
+        for size in ("all", "control", "large"):
+            reports = self.reports(ship_size=size)
+            for side in ("server", "client"):
+                cases = reports[side]["cases"]
+                self.assertEqual(len(cases), 6 if size == "all" else 3)
+                self.assertEqual(sum(len(c["crossings"]) for c in cases), 20 if size == "all" else 10)
+                for case in cases:
+                    broadside = case["route"] == "vertical-broadside"
+                    self.assertEqual(len(case["crossings"]), 2 if broadside else 4)
+                    if broadside:
+                        self.assertNotIn("stale_request_rejected", case)
+                        self.assertNotIn("stopped_animation_witness", case)
+                    if side == "client":
+                        self.assertEqual(case["snapshots"], 3 if broadside else 5)
+            self.write_reports(reports)
+            verify.validate_ship_reports(ship_size=size)
+        for side in ("server", "client"):
+            reports = self.reports()
+            reports[side]["cases"] = reports[side]["cases"][:4]
+            self.write_reports(reports)
+            with self.assertRaisesRegex(RuntimeError, "expected 6 ship cases"):
+                verify.validate_ship_reports()
+        powered = self.reports(aeronautics=True)
+        self.assertEqual(len(powered["server"]["cases"]), 2)
+        self.assertEqual(sum(len(c["crossings"]) for c in powered["server"]["cases"]), 8)
+
+    def test_broadside_rejects_wrong_leg_counts_and_reused_observation_tokens(self):
+        for side in ("server", "client"):
+            for index in (4, 5):
+                for count in (0, 1, 3, 4):
+                    reports = self.reports()
+                    case = reports[side]["cases"][index]
+                    case["crossings"] = (case["crossings"] * 2)[:count]
+                    self.write_reports(reports)
+                    with self.subTest(side=side, case=index, count=count), self.assertRaisesRegex(RuntimeError, "2 crossing legs"):
+                        verify.validate_ship_reports()
+        for index in (4, 5):
+            for leg in (-1, 0, 1):
+                reports = self.reports()
+                case = reports["client"]["cases"][index]
+                receipt = case["overview_mesh"] if leg < 0 else case["crossings"][leg]["render_completeness"]
+                receipt["token"] = f"{index - 4}:{leg}"
+                self.write_reports(reports)
+                with self.subTest(case=index, leg=leg), self.assertRaisesRegex(RuntimeError, "identity/token"):
+                    verify.validate_ship_reports()
+        for snapshots in (2, 4, 5):
+            reports = self.reports()
+            reports["client"]["cases"][4]["snapshots"] = snapshots
+            self.write_reports(reports)
+            with self.assertRaisesRegex(RuntimeError, "source and 2 arrival snapshots"):
+                verify.validate_ship_reports()
+
+    def test_broadside_requires_numeric_geometry_both_corridors_and_honest_visual_scope(self):
+        for index in (4, 5):
+            for field in ("broadside_geometry", "prepared_corridor", "prepared_source_corridor", "visual_sampling"):
+                reports = self.reports()
+                del reports["server"]["cases"][index][field]
+                self.write_reports(reports)
+                with self.subTest(case=index, field=field), self.assertRaises(RuntimeError):
+                    verify.validate_ship_reports()
+        for field, value in (("portal_normal", [0,1,0]), ("portal_normal", [True,0,0]),
+                             ("ship_nose_local", [1,0,0]), ("travel_axis_local", [0,0,1]),
+                             ("portal_width", 159), ("portal_height", 81), ("portal_center_y", 65),
+                             ("yaw_degrees", 0), ("flight_pose_writes", 1), ("flight_pose_writes", False),
+                             ("launch_kind", "teleport")):
+            reports = self.reports()
+            reports["server"]["cases"][5]["broadside_geometry"][field] = value
+            self.write_reports(reports)
+            with self.subTest(field=field, value=value), self.assertRaises(RuntimeError):
+                verify.validate_ship_reports()
+        reports = self.reports()
+        reports["server"]["cases"][4]["visual_sampling"]["in_flight_stage_screenshots"] = True
+        self.write_reports(reports)
+        with self.assertRaisesRegex(RuntimeError, "graphical scope"):
+            verify.validate_ship_reports()
+        reports = self.reports()
+        reports["server"]["cases"][4]["prepared_source_corridor"]["dimension"] = "minecraft:the_nether"
+        self.write_reports(reports)
+        with self.assertRaises(RuntimeError):
+            verify.validate_ship_reports()
+
+    def test_broadside_rejects_incomplete_launch_or_flight_receipts_in_each_leg(self):
+        invalid = ((["whole_hull_cleared"], False), (["aperture_fit"], 1),
+                   (["no_native_writes_during_flight"], None), (["clearance_gap"], 0),
+                   (["launch"], None), (["launch","kind"], "teleport"),
+                   (["launch","horizontal_speed"], 0), (["launch","gravity_y"], 0),
+                   (["launch","universal_drag"], -1), (["launch","planned_distance"], 1),
+                   (["launch","planned_duration"], 1), (["launch","predicted_max_rise"], float("nan")),
+                   (["launch","upward_speed"], 25), (["launch","initial_velocity"], [24,8,0]),
+                   (["samples"], []), (["samples"], None), (["stages"], {}),
+                   (["final_max_normal"], -11.9), (["final_max_normal"], float("inf")))
+        for index in (4, 5):
+            for leg in (0, 1):
+                for path, value in invalid:
+                    reports = self.reports()
+                    receipt = reports["server"]["cases"][index]["crossings"][leg]["broadside_receipt"]
+                    target = receipt
+                    for part in path[:-1]: target = target[part]
+                    target[path[-1]] = value
+                    self.write_reports(reports)
+                    with self.subTest(case=index, leg=leg, path=path, value=value), self.assertRaises(RuntimeError):
+                        verify.validate_ship_reports()
+
+    def test_broadside_native_samples_bind_full_hull_pose_motion_and_live_rider_ownership(self):
+        invalid = ((["sample"], True), (["sample"], 0), (["native_tick"], 100),
+                   (["ship_id"], "clone"), (["dimension"], "other:dimension"), (["arrived"], 1),
+                   (["native_distance"], -1), (["source_body_count"], 1), (["destination_body_count"], 2),
+                   (["seat_id"], "another-seat"), (["player_id"], "another-player"),
+                   (["player_dimension"], "other:dimension"), (["player_vehicle_id"], "other-seat"),
+                   (["seat_passenger_ids"], []), (["seat_passenger_ids"], ["player-id","extra-rider"]),
+                   (["unique_body"], False), (["rider_graph"], "true"), (["aperture_fit"], 1),
+                   (["native_velocity"], [0,24,0]), (["body_local_velocity"], [24,0,0]),
+                   (["nose_world"], [0,0,1]), (["nose_velocity_abs_cosine"], .025),
+                   (["bounds","min_width"], -79), (["bounds","max_height"], 39),
+                   (["bounds","center_normal"], 0), (["bounds","max_normal"], float("nan")),
+                   (["pose","scale"], [.1,.1,.1]), (["pose","orientation"], [0,0,0,1]),
+                   (["pose","position"], [0,float("inf"),0]),
+                   (["world_bounds"], [-1,63,-1,1,65,1]))
+        for path, value in invalid:
+            reports = self.reports()
+            target = reports["server"]["cases"][5]["crossings"][0]["broadside_receipt"]["samples"][2]
+            for part in path[:-1]: target = target[part]
+            target[path[-1]] = value
+            self.write_reports(reports)
+            with self.subTest(path=path, value=value), self.assertRaises(RuntimeError):
+                verify.validate_ship_reports()
+        reports = self.reports()
+        sample = reports["server"]["cases"][5]["crossings"][0]["broadside_receipt"]["samples"][4]
+        sample["arrived"] = False
+        self.write_reports(reports)
+        with self.assertRaises(RuntimeError):
+            verify.validate_ship_reports()
+
+    def test_broadside_return_cannot_substitute_a_different_rider_or_seat(self):
+        for field in ("seat_id", "player_id"):
+            reports = self.reports()
+            receipt = reports["server"]["cases"][5]["crossings"][1]["broadside_receipt"]
+            for sample in receipt["samples"] + list(receipt["stages"].values()):
+                sample[field] = "different-identity"
+                if field == "seat_id": sample["player_vehicle_id"] = "different-identity"
+                else: sample["seat_passenger_ids"] = ["different-identity"]
+            self.write_reports(reports)
+            with self.subTest(field=field), self.assertRaisesRegex(RuntimeError, "broadside rider graph"):
+                verify.validate_ship_reports()
+
+    def test_broadside_measured_seam_velocity_and_orientation_must_transform(self):
+        reports = self.reports()
+        sample = reports["server"]["cases"][5]["crossings"][0]["broadside_receipt"]["samples"][2]
+        sample["native_velocity"][1] += 6
+        sample["body_local_velocity"][1] += 6
+        self.write_reports(reports)
+        with self.assertRaisesRegex(RuntimeError, "seam velocity"):
+            verify.validate_ship_reports()
+        reports = self.reports()
+        sample = reports["server"]["cases"][5]["crossings"][0]["broadside_receipt"]["samples"][2]
+        angle = math.radians(100)
+        sample["pose"]["orientation"][:] = [0,math.sin(angle/2),0,math.cos(angle/2)]
+        sample["nose_world"][:] = [math.sin(angle),0,math.cos(angle)]
+        local = sample["body_local_velocity"]
+        sample["native_velocity"][:] = [local[0]*math.cos(angle),local[1],-local[0]*math.sin(angle)]
+        width = 49*abs(math.cos(angle))+65*abs(math.sin(angle))
+        length = 49*abs(math.sin(angle))+65*abs(math.cos(angle))
+        sample["world_bounds"][:] = [-width/2,55.5,.5-length/2,width/2,72.5,.5+length/2]
+        sample["bounds"].update(min_normal=-.5-length/2,max_normal=-.5+length/2,
+                                min_width=-width/2,max_width=width/2)
+        self.write_reports(reports)
+        with self.assertRaisesRegex(RuntimeError, "seam orientation"):
+            verify.validate_ship_reports()
+
+    def test_broadside_stages_must_be_distinct_actual_samples_with_exact_cargo_and_machinery(self):
+        for stage in ("leading", "center", "trailing"):
+            for field, value in (("sample", 0), ("sample", True), ("native_tick", 999),
+                                 ("integrity_snapshot", None), ("machinery_snapshot", None)):
+                reports = self.reports()
+                reports["server"]["cases"][4]["crossings"][1]["broadside_receipt"]["stages"][stage][field] = value
+                self.write_reports(reports)
+                with self.subTest(stage=stage, field=field), self.assertRaises(RuntimeError):
+                    verify.validate_ship_reports()
+            for field, value in (("motorCount", 1), ("motorCount", True), ("expectedRpm", 16),
+                                 ("actualSpeeds", [-32]*5), ("actualSpeeds", [-32]*5+[16]),
+                                 ("nativePropulsion", 1), ("aeronauticsPropulsion", True)):
+                reports = self.reports()
+                receipt = reports["server"]["cases"][4]["crossings"][1]["broadside_receipt"]["stages"][stage]
+                receipt["machinery_snapshot"][field] = value
+                self.write_reports(reports)
+                with self.subTest(stage=stage, field=field), self.assertRaises(RuntimeError):
+                    verify.validate_ship_reports()
+            reports = self.reports()
+            receipt = reports["server"]["cases"][5]["crossings"][0]["broadside_receipt"]["stages"][stage]
+            receipt["integrity_snapshot"]["cargoManifest"][0]["components"] = "changed"
+            self.write_reports(reports)
+            with self.assertRaisesRegex(RuntimeError, "cargo discontinuity"):
+                verify.validate_ship_reports()
+        reports = self.reports()
+        stages = reports["server"]["cases"][5]["crossings"][0]["broadside_receipt"]["stages"]
+        stages["center"] = stages["leading"]
+        self.write_reports(reports)
+        with self.assertRaisesRegex(RuntimeError, "unordered broadside hull stages"):
+            verify.validate_ship_reports()
+
     def test_ship_reports_require_exact_fixture_counts_for_each_mode(self):
         for addon in (False, True):
             for side in ("server", "client"):
@@ -1292,7 +1557,7 @@ class ShipVerificationHarnessTest(unittest.TestCase):
         for addon in (False, True):
             for value in (None, False, 1, "true"):
                 reports = self.reports(addon)
-                reports["server"]["cases"][-1]["stale_request_rejected"] = value
+                reports["server"]["cases"][0]["stale_request_rejected"] = value
                 self.write_reports(reports)
                 with self.assertRaisesRegex(RuntimeError, "stale request rejection"):
                     verify.validate_ship_reports(aeronautics=addon)
@@ -1392,7 +1657,7 @@ class ShipVerificationHarnessTest(unittest.TestCase):
                                      ("blockEntities", 8), ("blockEntities", 10000), ("blockEntities", True),
                                      ("cargoItems", 98), ("cargoItems", 99.0), ("assemblyMethod", "teleport")):
                     reports = self.reports(addon)
-                    case = reports["server"]["cases"][-1]
+                    case = reports["server"]["cases"][1 if addon else 3]
                     holder = case if location == -1 else case["crossings"][location]
                     if field is None:
                         holder["integrity_snapshot"] = value
@@ -1460,7 +1725,7 @@ class ShipVerificationHarnessTest(unittest.TestCase):
         for addon in (False, True):
             reports = self.reports(aeronautics=addon)
             for index in range(len(reports["client"]["cases"])):
-                for leg in range(-1, 4):
+                for leg in range(-1, len(reports["client"]["cases"][index]["crossings"])):
                     with self.subTest(addon=addon, case=index, leg=leg):
                         reports = self.reports(aeronautics=addon)
                         case = reports["client"]["cases"][index]
@@ -1914,7 +2179,7 @@ class ShipVerificationHarnessTest(unittest.TestCase):
                          [("CONTROL", "ordinary"), ("LARGE", "ordinary")])
         self.write_reports(powered)
         verify.validate_ship_reports(aeronautics=True)
-        with self.assertRaisesRegex(RuntimeError, "expected 4 ship cases"):
+        with self.assertRaisesRegex(RuntimeError, "expected 6 ship cases"):
             verify.validate_ship_reports()
         self.write_reports()
         verify.validate_ship_reports()

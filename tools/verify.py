@@ -969,8 +969,8 @@ def validate_ship_reports(aeronautics: bool = False, ship_size: str = "all") -> 
         raise ValueError("unknown ship size")
     sizes = dimensions if ship_size == "all" else (ship_size.upper(),)
     # Powered acceptance uses atmospheric ordinary portals. The native-motion
-    # baseline still requires both ordinary and dimension-stack routes.
-    routes = ("ordinary",) if aeronautics else ("ordinary", "dimension-stack")
+    # baseline retains ordinary/stack and adds a separate vertical broadside route.
+    routes = ("ordinary",) if aeronautics else ("ordinary", "dimension-stack", "vertical-broadside")
     expected_cases = {(size, route) for size in sizes for route in routes}
     worlds = ("minecraft:overworld", "minecraft:the_nether")
     server_cases = {}
@@ -1007,7 +1007,8 @@ def validate_ship_reports(aeronautics: bool = False, ship_size: str = "all") -> 
 
     def overview_mesh(receipt, case, leg, label):
         require(isinstance(receipt, dict), f"{label}: missing overview mesh receipt")
-        case_index = (0 if case["size"] == "CONTROL" else 2) + (case["route"] == "dimension-stack")
+        case_index = ((4 if case["size"] == "CONTROL" else 5) if case["route"] == "vertical-broadside"
+                      else (0 if case["size"] == "CONTROL" else 2) + (case["route"] == "dimension-stack"))
         token = f"{case_index}:{leg}"
         dimension = worlds[0] if leg < 0 else worlds[(leg + 1) % 2]
         require(receipt.get("view") == "overview" and receipt.get("ship_id") == case["ship_id"]
@@ -1087,9 +1088,9 @@ def validate_ship_reports(aeronautics: bool = False, ship_size: str = "all") -> 
         require(name == f"overview-{case_index}-{leg}.png", f"{label}: wrong overview screenshot")
         screenshot_file(name, label)
 
-    def prepared_corridor(receipt, label):
+    def prepared_corridor(receipt, label, dimension=worlds[1]):
         require(isinstance(receipt, dict), f"{label}: missing powered setup corridor receipt")
-        require(receipt.get("dimension") == worlds[1] and receipt.get("complete") is True
+        require(receipt.get("dimension") == dimension and receipt.get("complete") is True
                 and receipt.get("setup_only") is True, f"{label}: incomplete or mislabelled powered setup corridor")
         for field, expected in (("min", [-128, 0, -128]), ("max_inclusive", [128, 96, 128])):
             value = receipt.get(field)
@@ -1150,6 +1151,216 @@ def validate_ship_reports(aeronautics: bool = False, ship_size: str = "all") -> 
             cargo[key] = (entry["item"], entry["count"], components)
         return cargo
 
+    def broadside_geometry(receipt, label):
+        require(isinstance(receipt, dict), f"{label}: missing vertical broadside geometry")
+        for field, expected in (("portal_normal", [1, 0, 0]), ("ship_nose_local", [0, 0, 1]),
+                                ("travel_axis_local", [1, 0, 0])):
+            value = receipt.get(field)
+            require(isinstance(value, list) and all(finite(v) for v in value) and value == expected,
+                    f"{label}: wrong broadside {field}")
+        for field, expected in (("portal_width", 160), ("portal_height", 80), ("portal_center_y", 64), ("yaw_degrees", 90)):
+            require(finite(receipt.get(field)) and receipt[field] == expected, f"{label}: wrong broadside {field}")
+        require(receipt.get("launch_kind") == "native-ballistic" and type(receipt.get("flight_pose_writes")) is int
+                and receipt["flight_pose_writes"] == 0, f"{label}: broadside must use native flight without pose writes")
+
+    def broadside_crossing(receipt, case, crossing, final_cargo, label):
+        require(isinstance(receipt, dict), f"{label}: missing broadside flight receipt")
+        for field in ("whole_hull_cleared", "aperture_fit", "no_native_writes_during_flight"):
+            require(receipt.get(field) is True, f"{label}: missing broadside {field} proof")
+        require(finite(receipt.get("clearance_gap")) and receipt["clearance_gap"] == 12,
+                f"{label}: wrong broadside clearance gap")
+
+        def vector(value, count, description):
+            require(isinstance(value, list) and len(value) == count and all(finite(v) for v in value),
+                    f"{label}: invalid broadside {description}")
+            return value
+
+        def rotate(quaternion, value, inverse=False):
+            x, y, z, w = quaternion
+            if inverse:
+                x, y, z = -x, -y, -z
+            length = x*x + y*y + z*z + w*w
+            a, b, c = value
+            return [((w*w+x*x-y*y-z*z)*a + 2*(x*y-z*w)*b + 2*(x*z+y*w)*c)/length,
+                    (2*(x*y+z*w)*a + (w*w-x*x+y*y-z*z)*b + 2*(y*z-x*w)*c)/length,
+                    (2*(x*z-y*w)*a + 2*(y*z+x*w)*b + (w*w-x*x-y*y+z*z)*c)/length]
+
+        def bounds(value):
+            require(isinstance(value, dict) and all(finite(value.get(f)) for f in
+                    ("min_normal", "center_normal", "max_normal", "min_width", "max_width", "min_height", "max_height")),
+                    f"{label}: missing measured broadside hull bounds")
+            require(value["min_normal"] < value["max_normal"]
+                    and math.isclose(value["center_normal"], (value["min_normal"] + value["max_normal"]) / 2,
+                                     abs_tol=1e-6, rel_tol=1e-6)
+                    and -79 < value["min_width"] < value["max_width"] < 79
+                    and -39 < value["min_height"] < value["max_height"] < 39,
+                    f"{label}: broadside hull escaped aperture or has inconsistent bounds")
+            return value
+
+        launch = receipt.get("launch")
+        require(isinstance(launch, dict) and launch.get("kind") == "native-ballistic",
+                f"{label}: missing native broadside launch")
+        initial = bounds(launch.get("initial_bounds"))
+        require(initial["min_normal"] >= 11, f"{label}: broadside launch starts inside seam")
+        for field in ("horizontal_speed", "gravity_y", "universal_drag", "planned_distance", "planned_duration",
+                      "upward_speed", "predicted_max_rise"):
+            require(finite(launch.get(field)), f"{label}: invalid broadside launch {field}")
+        speed, gravity, drag = launch["horizontal_speed"], launch["gravity_y"], launch["universal_drag"]
+        distance = launch["planned_distance"]
+        require(speed == 24 and gravity < 0 and drag >= 0 and drag * distance < speed
+                and math.isclose(distance, initial["max_normal"] + 12, abs_tol=1e-6, rel_tol=1e-6)
+                and launch["planned_duration"] > 0 and 0 < launch["upward_speed"] <= speed
+                and launch["predicted_max_rise"] > 0, f"{label}: invalid broadside ballistic plan")
+        duration = distance / speed if drag < 1e-8 else -math.log1p(-drag * distance / speed) / drag
+        upward = (-gravity * duration / 2 if drag < 1e-8
+                  else -gravity * (duration-distance/speed) / (drag*distance/speed))
+        peak_time = upward / -gravity if drag < 1e-8 else math.log1p(drag * upward / -gravity) / drag
+        integral = peak_time if drag < 1e-8 else -math.expm1(-drag*peak_time)/drag
+        rise = (upward*peak_time + gravity*peak_time*peak_time/2 if drag < 1e-8
+                else upward*integral + gravity/drag*(peak_time-integral))
+        require(all(math.isclose(launch[field], expected, abs_tol=1e-6, rel_tol=1e-5) for field,expected in
+                    (("planned_duration",duration),("upward_speed",upward),("predicted_max_rise",rise))),
+                f"{label}: broadside launch measurements disagree with ballistic plan")
+        velocity = vector(launch.get("initial_velocity"), 3, "launch velocity")
+        require(math.isclose(math.hypot(velocity[0], velocity[2]), speed, abs_tol=1e-6)
+                and math.isclose(velocity[1], launch["upward_speed"], abs_tol=1e-6),
+                f"{label}: broadside launch velocity disagrees with plan")
+        expected_launch = [-24, launch["upward_speed"], 0] if crossing["leg"] == 0 else [0, launch["upward_speed"], -24]
+        require(all(math.isclose(a, b, abs_tol=1e-6) for a, b in zip(velocity, expected_launch)),
+                f"{label}: broadside launch points in wrong world direction")
+        samples = receipt.get("samples")
+        require(isinstance(samples, list) and len(samples) >= 4, f"{label}: missing native broadside sample history")
+        previous_tick, previous_center, arrived = None, None, False
+        first_launch = case["crossings"][0]["broadside_receipt"]["samples"][0] if crossing["leg"] else None
+        rider_identity = (first_launch["seat_id"], first_launch["player_id"]) if first_launch is not None else None
+        for index, sample in enumerate(samples):
+            require(isinstance(sample, dict) and type(sample.get("sample")) is int and sample["sample"] == index
+                    and positive_integer(sample.get("native_tick"), 0), f"{label}: unordered broadside sample history")
+            require(type(sample.get("arrived")) is bool and (not arrived or sample["arrived"]),
+                    f"{label}: broadside ownership returned to source during one flight")
+            arrived = sample["arrived"]
+            require(sample.get("ship_id") == case["ship_id"]
+                    and sample.get("dimension") == crossing["to" if arrived else "from"],
+                    f"{label}: broadside sample identity/dimension mismatch")
+            for field in ("unique_body", "rider_graph", "aperture_fit"):
+                require(sample.get(field) is True, f"{label}: missing broadside sample {field} proof")
+            measured = bounds(sample.get("bounds"))
+            require(previous_tick is None or sample["native_tick"] > previous_tick,
+                    f"{label}: native broadside ticks did not advance")
+            require(previous_center is None or measured["center_normal"] < previous_center,
+                    f"{label}: native broadside hull did not advance into portal")
+            previous_tick, previous_center = sample["native_tick"], measured["center_normal"]
+            require(finite(sample.get("native_distance")) and sample["native_distance"] >= 0
+                    and math.isclose(sample["native_distance"], initial["center_normal"] - measured["center_normal"],
+                                     abs_tol=1e-6, rel_tol=1e-6), f"{label}: inconsistent measured broadside distance")
+            for field, count in (("source_body_count", int(sample["dimension"] == worlds[0])),
+                                 ("destination_body_count", int(sample["dimension"] == worlds[1]))):
+                require(type(sample.get(field)) is int and sample[field] == count,
+                        f"{label}: duplicate or missing body in broadside ownership sample")
+            identity = (sample.get("seat_id"), sample.get("player_id"))
+            require(all(isinstance(v, str) and bool(v.strip()) for v in identity)
+                    and (rider_identity is None or identity == rider_identity)
+                    and sample.get("player_dimension") == sample["dimension"]
+                    and sample.get("player_vehicle_id") == identity[0]
+                    and sample.get("seat_passenger_ids") == [identity[1]],
+                    f"{label}: inconsistent measured broadside rider graph")
+            rider_identity = identity
+            world = vector(sample.get("world_bounds"), 6, "world hull")
+            require(all(world[i] < world[i+3] for i in range(3)), f"{label}: degenerate broadside world hull")
+            require(-128 <= world[0] < world[3] <= 129 and 0 <= world[1] < world[4] <= 97
+                    and -128 <= world[2] < world[5] <= 129, f"{label}: broadside hull escaped prepared corridor")
+            pose = sample.get("pose")
+            require(isinstance(pose, dict), f"{label}: missing native broadside pose")
+            for field, count in (("position", 3), ("orientation", 4), ("rotation_point", 3), ("scale", 3)):
+                vector(pose.get(field), count, "pose " + field)
+            require(math.isclose(math.hypot(*pose["orientation"]), 1, abs_tol=1e-5)
+                    and all(math.isclose(v, 1, abs_tol=1e-6) for v in pose["scale"]),
+                    f"{label}: invalid or rescaled broadside pose orientation/scale")
+            axes = [rotate(pose["orientation"], basis) for basis in ([1,0,0], [0,1,0], [0,0,1])]
+            extents = [sum(abs(axes[j][i]) * case["dimensions"][j] * pose["scale"][j] for j in range(3)) for i in range(3)]
+            require(all(math.isclose(world[i+3]-world[i], extents[i], abs_tol=1e-4, rel_tol=1e-6) for i in range(3)),
+                    f"{label}: broadside world hull does not contain full fixture extents")
+            # Both portals are vertical cardinal planes related by the required 90-degree yaw.
+            # Project the independently recorded world AABB into the common entry frame.
+            overworld = sample["dimension"] == worlds[0]
+            normal_axis, width_axis = (0, 2) if overworld else (2, 0)
+            normal_min, normal_max = ((-world[normal_axis+3], -world[normal_axis]) if arrived
+                                      else (world[normal_axis], world[normal_axis+3]))
+            width_min, width_max = ((-world[width_axis+3], -world[width_axis]) if crossing["leg"] == 0
+                                    else (world[width_axis], world[width_axis+3]))
+            projected = dict(min_normal=normal_min, max_normal=normal_max, min_width=width_min, max_width=width_max,
+                             min_height=world[1]-64, max_height=world[4]-64)
+            require(all(math.isclose(measured[k], v, abs_tol=1e-4, rel_tol=1e-6) for k,v in projected.items()),
+                    f"{label}: broadside corner bounds disagree with world hull projection")
+            native = vector(sample.get("native_velocity"), 3, "native velocity")
+            local = vector(sample.get("body_local_velocity"), 3, "body-local velocity")
+            nose = vector(sample.get("nose_world"), 3, "nose direction")
+            cosine = sample.get("nose_velocity_abs_cosine")
+            require(all(math.isclose(a,b,abs_tol=1e-5,rel_tol=1e-6)
+                        for a,b in zip(local, rotate(pose["orientation"], native, inverse=True)))
+                    and all(math.isclose(a,b,abs_tol=1e-5,rel_tol=1e-6)
+                        for a,b in zip(nose, rotate(pose["orientation"], [0,0,1]))),
+                    f"{label}: broadside vectors disagree with actual body quaternion")
+            native_speed = math.hypot(*native)
+            require(native_speed > 0 and math.isclose(math.hypot(*nose), 1, abs_tol=1e-5)
+                    and finite(cosine) and 0 <= cosine < .025
+                    and math.isclose(cosine, abs(sum(a*b for a,b in zip(nose,native))) / native_speed,
+                                     abs_tol=1e-6, rel_tol=1e-6)
+                    and (-local[0] if crossing["leg"] == 0 else local[0]) > 8
+                    and abs(local[2]) < .025 * abs(local[0])
+                    and math.isclose(math.hypot(*local), native_speed, abs_tol=1e-4, rel_tol=1e-5),
+                    f"{label}: native motion is not measured broadside to the ship nose")
+        require(samples[0]["arrived"] is False and samples[0]["bounds"] == initial
+                and samples[0]["native_velocity"] == velocity and samples[-1]["arrived"] is True,
+                f"{label}: broadside history lacks source launch or destination clearance")
+        require(finite(receipt.get("final_max_normal")) and receipt["final_max_normal"] <= -12
+                and receipt["final_max_normal"] == samples[-1]["bounds"]["max_normal"],
+                f"{label}: whole broadside hull did not clear portal")
+        arrival_index = next(i for i,sample in enumerate(samples) if sample["arrived"])
+        before, after = samples[arrival_index-1], samples[arrival_index]
+        sin_half = math.sqrt(.5) * (1 if crossing["leg"] == 0 else -1)
+        cos_half = math.sqrt(.5)
+        x, y, z, w = before["pose"]["orientation"]
+        expected_rotation = [cos_half*x+sin_half*z, cos_half*y+sin_half*w,
+                             cos_half*z-sin_half*x, cos_half*w-sin_half*y]
+        require(abs(sum(a*b for a,b in zip(expected_rotation, after["pose"]["orientation"]))) > .999,
+                f"{label}: measured broadside seam orientation was not transformed")
+        expected_velocity = rotate([0,sin_half,0,cos_half], before["native_velocity"])
+        require(math.dist(expected_velocity, after["native_velocity"]) < 5,
+                f"{label}: measured broadside seam velocity was not transformed")
+        endpoint = samples[0] if crossing["leg"] == 0 else samples[-1]
+        require(abs(endpoint["pose"]["orientation"][3]) > .999,
+                f"{label}: original broadside orientation was not retained/restored")
+        stages = receipt.get("stages")
+        require(isinstance(stages, dict) and set(stages) == {"leading", "center", "trailing"},
+                f"{label}: incomplete broadside hull passage stages")
+        previous_index = -1
+        for name in ("leading", "center", "trailing"):
+            stage = stages[name]
+            require(isinstance(stage, dict) and positive_integer(stage.get("sample"), 0)
+                    and previous_index < stage["sample"] < len(samples), f"{label}: unordered broadside hull stages")
+            previous_index = stage["sample"]
+            sample = samples[previous_index]
+            require(all(stage.get(k) == v for k,v in sample.items()), f"{label}: stage is not an actual native sample")
+            b = stage["bounds"]
+            require((b["min_normal"] <= 0 < b["max_normal"] if name == "leading" else
+                     b["center_normal"] <= 0 < b["max_normal"] if name == "center" else b["max_normal"] <= 0),
+                    f"{label}: wrong geometric broadside {name} stage")
+            snapshot = stage.get("integrity_snapshot")
+            cargo = integrity_snapshot(snapshot, case, stage["dimension"], case["blocks"] - crossing["leg"] % 2,
+                                       label + "/" + name)
+            require(cargo == final_cargo and all(snapshot[field] == case["integrity_snapshot"][field]
+                    for field in ("plotSections", "blockEntities")), f"{label}: broadside stage integrity/cargo discontinuity")
+            machine = stage.get("machinery_snapshot")
+            rpm = 16 if crossing["leg"] == 0 else -32
+            require(isinstance(machine, dict) and type(machine.get("motorCount")) is int and machine["motorCount"] == 2
+                    and finite(machine.get("expectedRpm")) and machine["expectedRpm"] == rpm
+                    and machine.get("nativePropulsion") is True and machine.get("aeronauticsPropulsion") is False,
+                    f"{label}: missing broadside machinery witness")
+            speeds = machine.get("actualSpeeds")
+            require(isinstance(speeds, list) and len(speeds) == 6
+                    and all(finite(v) and abs(v-rpm) < .01 for v in speeds), f"{label}: broadside machinery speed changed")
+
     for side in ("server", "client"):
         try:
             report = json.loads((RESULT_DIR / f"{side}-ships.json").read_text(encoding="utf-8"))
@@ -1172,6 +1383,8 @@ def validate_ship_reports(aeronautics: bool = False, ship_size: str = "all") -> 
             require(key in expected_cases and key not in seen, f"{side}: unexpected or duplicate case {key}")
             seen.add(key)
             label = f"{side}/{size}/{route}"
+            broadside = route == "vertical-broadside"
+            leg_count = 2 if broadside else 4
             shape = case.get("dimensions")
             require(isinstance(shape, list) and all(type(value) is int for value in shape)
                     and shape == dimensions[size], f"{label}: fixture dimensions")
@@ -1184,7 +1397,8 @@ def validate_ship_reports(aeronautics: bool = False, ship_size: str = "all") -> 
             if side == "server":
                 require(all(other["ship_id"] != ship_id for other in server_cases.values()),
                         f"{label}: reused fixture identity")
-                require(case.get("stale_request_rejected") is True, f"{label}: missing stale request rejection proof")
+                if not broadside:
+                    require(case.get("stale_request_rejected") is True, f"{label}: missing stale request rejection proof")
                 final_integrity = case.get("integrity_snapshot")
                 final_cargo = integrity_snapshot(final_integrity, case, worlds[0], case["blocks"], label)
             else:
@@ -1192,8 +1406,17 @@ def validate_ship_reports(aeronautics: bool = False, ship_size: str = "all") -> 
                 require(all(case.get(field) == source.get(field) for field in ("ship_id", "blocks", "chunks", "dimensions")),
                         f"{label}: client/server fixture mismatch")
             engines = 8 if size == "CONTROL" else 252
-            if aeronautics and side == "server":
+            if side == "server" and (aeronautics or broadside):
                 prepared_corridor(case.get("prepared_corridor"), label)
+            if side == "server" and broadside:
+                prepared_corridor(case.get("prepared_source_corridor"), label, worlds[0])
+                broadside_geometry(case.get("broadside_geometry"), label)
+                sampling = case.get("visual_sampling")
+                require(isinstance(sampling, dict) and sampling.get("states") ==
+                        ["before-launch", "after-outbound", "after-return"]
+                        and sampling.get("in_flight_stage_screenshots") is False,
+                        f"{label}: broadside graphical scope must be labelled accurately")
+            if aeronautics and side == "server":
                 budget = case.get("lift_budget")
                 require(isinstance(budget, dict), f"{label}: missing natural-atmosphere lift budget")
                 for field in ("mass", "gravityY", "weight", "maximumStaticLift", "staticLiftWeightRatio",
@@ -1213,7 +1436,8 @@ def validate_ship_reports(aeronautics: bool = False, ship_size: str = "all") -> 
                 require(math.hypot(budget["trimMomentX"], budget["trimMomentZ"]) / budget["maximumStaticLift"] < 0.02,
                         f"{label}: unbalanced static thrust moment")
             crossings = case.get("crossings")
-            require(isinstance(crossings, list) and len(crossings) == 4, f"{label}: four crossing legs required")
+            require(isinstance(crossings, list) and len(crossings) == leg_count,
+                    f"{label}: {leg_count} crossing legs required")
             for leg, crossing in enumerate(crossings):
                 require(isinstance(crossing, dict) and type(crossing.get("leg")) is int
                         and crossing["leg"] == leg, f"{label}: missing, duplicated or out-of-order leg {leg}")
@@ -1230,6 +1454,8 @@ def validate_ship_reports(aeronautics: bool = False, ship_size: str = "all") -> 
                     require(type(distance) in (int, float) and math.isfinite(distance) and distance >= 8,
                             f"{label}/{leg}: native movement not observed")
                     claims = ("unique_body", "rider_graph", "integrity", "velocity", "orientation", "client_ack")
+                    if broadside:
+                        broadside_crossing(crossing.get("broadside_receipt"), case, crossing, final_cargo, f"{label}/{leg}")
                     if aeronautics:
                         claims += ("powered_thrust", "no_native_velocity_writes")
                         require(type(crossing.get("propeller_count")) is int and crossing["propeller_count"] == engines,
@@ -1299,7 +1525,9 @@ def validate_ship_reports(aeronautics: bool = False, ship_size: str = "all") -> 
                 for crossing in crossings:
                     overview_mesh(crossing.get("render_completeness"), case, crossing["leg"],
                                   f"{label}/{crossing['leg']}")
-                require(positive_integer(case.get("snapshots"), 5), f"{label}: source and four arrival snapshots required")
+                require(positive_integer(case.get("snapshots"), leg_count + 1)
+                        and (not broadside or case["snapshots"] == 3),
+                        f"{label}: source and {leg_count} arrival snapshots required")
                 screenshots = case.get("screenshots")
                 require(isinstance(screenshots, list) and len(screenshots) == case["snapshots"], f"{label}: missing graphical evidence")
                 leg_screenshots = set()
