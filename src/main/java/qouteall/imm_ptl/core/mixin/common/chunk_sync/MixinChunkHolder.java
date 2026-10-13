@@ -20,6 +20,7 @@ import org.spongepowered.asm.mixin.injection.ModifyVariable;
 import org.spongepowered.asm.mixin.injection.Redirect;
 import qouteall.imm_ptl.core.chunk_loading.ImmPtlChunkTracking;
 import qouteall.imm_ptl.core.chunk_loading.ChunkLoadingRecovery;
+import qouteall.imm_ptl.core.compat.sable.SableInterface;
 import qouteall.imm_ptl.core.ducks.IEChunkHolder;
 import qouteall.imm_ptl.core.network.PacketRedirection;
 
@@ -100,6 +101,11 @@ public abstract class MixinChunkHolder implements IEChunkHolder {
         )
     )
     private List<ServerPlayer> redirectGetPlayers(ChunkHolder.PlayerProvider playerProvider, ChunkPos chunkPos, boolean boundaryOnly) {
+        List<ServerPlayer> plotPlayers = SableInterface.invoker.getPlotChunkBroadcastPlayers(
+            (ServerLevel) levelHeightAccessor, chunkPos
+        );
+        if (plotPlayers != null) return plotPlayers;
+
         return ImmPtlChunkTracking.getPlayersViewingChunk(
             ((Level) levelHeightAccessor).dimension(),
             chunkPos.x, chunkPos.z,
