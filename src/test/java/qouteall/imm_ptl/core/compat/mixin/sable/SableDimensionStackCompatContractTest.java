@@ -238,6 +238,57 @@ class SableDimensionStackCompatContractTest {
     }
 
     @Test
+    void cleanupCompletedClientRequestsStillRequireAuthoritativePointMotion() throws Exception {
+        ClassNode compat = readClass(
+            "qouteall/imm_ptl/core/compat/sable/SableDimensionStackCompat.class"
+        );
+        MethodNode prepare = findMethodByName(compat, "beforePlayerPortalTeleport");
+        MethodNode approach = findMethodByName(compat, "isRiddenBodyApproachingPortal");
+        MethodNode substep = findMethodByName(compat, "afterPhysicsSubstep");
+        assertNotNull(prepare);
+        assertNotNull(approach);
+        assertNotNull(substep);
+
+        int pending = invocationIndex(prepare, "containsKey");
+        int direction = invocationIndex(prepare, "isRiddenBodyApproachingPortal");
+        int migration = invocationIndex(prepare, "migrateSubLevel");
+        assertTrue(pending >= 0 && pending < direction && direction < migration,
+            "the independent motion guard must apply after handoff cleanup, before migration");
+        JumpInsnNode noHandoff = assertInstanceOf(JumpInsnNode.class,
+            nextExecutable(prepare.instructions.get(pending)));
+        assertEquals(Opcodes.IFEQ, noHandoff.getOpcode());
+        assertTrue(prepare.instructions.indexOf(noHandoff.label) < direction,
+            "absence of a handoff must lead through the native motion check");
+        JumpInsnNode approaching = assertInstanceOf(JumpInsnNode.class,
+            nextExecutable(prepare.instructions.get(direction)));
+        assertEquals(Opcodes.IFNE, approaching.getOpcode());
+        assertEquals(Opcodes.ICONST_0, nextExecutable(approaching).getOpcode());
+        assertEquals(Opcodes.IRETURN, nextExecutable(nextExecutable(approaching)).getOpcode(),
+            "a stale outward/tangential request must not continue into body migration");
+
+        int portalLevel = invocationIndex(approach, "level");
+        int bodyLevel = invocationIndex(approach, "getLevel");
+        assertTrue(portalLevel >= 0 && portalLevel < bodyLevel);
+        JumpInsnNode sameLevel = assertInstanceOf(JumpInsnNode.class,
+            nextExecutable(approach.instructions.get(bodyLevel)));
+        assertEquals(Opcodes.IF_ACMPEQ, sameLevel.getOpcode());
+        assertEquals(Opcodes.ICONST_0, nextExecutable(sameLevel).getOpcode());
+        assertEquals(Opcodes.IRETURN, nextExecutable(nextExecutable(sameLevel)).getOpcode(),
+            "a portal from a different authoritative body world must be rejected");
+        for (String method : List.of("isValid", "getLinearVelocity", "getAngularVelocity",
+            "transformPosition", "getWorldCenterOfMass", "getNormal", "movesIntoPortal",
+            "worldPosToPortalLocalPos", "getPortalPointVelocity", "thisSidePointVelocity")) {
+            assertTrue(invokesNamed(approach, method), "missing authoritative point-motion input: " + method);
+        }
+        assertFalse(invokesNamed(approach, "otherSidePointVelocity"),
+            "destination-only animation must not authorize a stationary source body crossing");
+        assertFalse(invokesNamed(approach, "getDeltaMovement"),
+            "client/rider-local movement must not stand in for native rigid-body motion");
+        assertFalse(invokesNamed(substep, "isRiddenBodyApproachingPortal"),
+            "genuine swept native crossings must remain independent of the client-request gate");
+    }
+
+    @Test
     void sableRiderUsesServerFirstClientTeleportHandshake() throws Exception {
         ClassNode clientTeleport = readClass(
             "qouteall/imm_ptl/core/teleportation/ClientTeleportationManager.class"

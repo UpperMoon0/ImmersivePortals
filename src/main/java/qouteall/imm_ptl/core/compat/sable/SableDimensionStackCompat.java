@@ -43,6 +43,7 @@ import qouteall.imm_ptl.core.network.PacketRedirection;
 import qouteall.imm_ptl.core.portal.Portal;
 import qouteall.imm_ptl.core.portal.PortalUtils;
 import qouteall.imm_ptl.core.teleportation.ServerTeleportationManager;
+import qouteall.imm_ptl.core.teleportation.TeleportationUtil;
 import qouteall.q_misc_util.my_util.DQuaternion;
 
 import java.util.ArrayList;
@@ -164,6 +165,7 @@ public final class SableDimensionStackCompat {
                 // while their body stays here. Matching destination acknowledgements returned
                 // above; real reverse physics crossings still migrate the complete body graph.
                 if (CLIENT_HANDOFFS.containsKey(sourceSubLevel.getUniqueId())) return false;
+                if (!isRiddenBodyApproachingPortal(sourceSubLevel, vehicle, portal)) return false;
                 return migrateSubLevel(
                     sourceContainer, sourceSubLevel, portal, new Pose3d(sourceSubLevel.lastPose())
                 ) != null;
@@ -171,6 +173,45 @@ public final class SableDimensionStackCompat {
             vehicle = vehicle.getVehicle();
         }
         return true;
+    }
+
+    private static boolean isRiddenBodyApproachingPortal(
+        ServerSubLevel body, Entity retainedVehicle, Portal portal
+    ) {
+        if (portal.level() != body.getLevel()) return false;
+        RigidBodyHandle handle = RigidBodyHandle.of(body);
+        if (handle == null || !handle.isValid()) return false;
+
+        // A client can still interpolate the rider behind the destination seam after both
+        // the body transfer and network cleanup finish. Its reported crossing alone must
+        // not migrate an outward-moving body back. Check native motion at the retained
+        // vehicle, including rotation, rather than client coordinates or only COM velocity.
+        Vector3d linear = handle.getLinearVelocity(new Vector3d());
+        Vector3d angular = handle.getAngularVelocity(new Vector3d());
+        Vector3d worldVehicle = body.logicalPose().transformPosition(
+            JOMLConversion.toJOML(retainedVehicle.position())
+        );
+        Vec3 portalVelocityPerTick = Vec3.ZERO;
+        var lastAnimatedState = portal.animation.lastTickAnimatedState;
+        var currentAnimatedState = portal.animation.thisTickAnimatedState;
+        if (lastAnimatedState != null && currentAnimatedState != null) {
+            // Real portal animations support a moving/rotating source plane sweeping a
+            // stationary rider. Use its projected point, not destination-side transform
+            // velocity. Client-only default interpolation has no such server-side motion.
+            Vec3 local = currentAnimatedState.worldPosToPortalLocalPos(JOMLConversion.toMojang(worldVehicle));
+            portalVelocityPerTick = TeleportationUtil.getPortalPointVelocity(
+                lastAnimatedState, currentAnimatedState, new Vec3(local.x, local.y, 0)
+            ).thisSidePointVelocity();
+        }
+        Vector3d offset = worldVehicle.sub(JOMLConversion.toJOML(
+            getWorldCenterOfMass(body, body.logicalPose())
+        ));
+        Vec3 normal = portal.getNormal();
+        return SableRiderPortalApproach.movesIntoPortal(
+            linear.x, linear.y, linear.z, angular.x, angular.y, angular.z,
+            offset.x, offset.y, offset.z, normal.x, normal.y, normal.z,
+            portalVelocityPerTick.x, portalVelocityPerTick.y, portalVelocityPerTick.z
+        );
     }
 
     /**

@@ -36,8 +36,9 @@ import java.util.UUID;
 
 /**
  * World-built ships, assembled through Sable's real block/BE transfer path.
- * The Create drive trains genuinely run, but do not provide lift or propulsion.
- * The flight runner supplies explicitly-labelled native-body velocity/force input.
+ * Baseline Create machinery runs while the runner supplies a native launch velocity.
+ * The optional pinned Aeronautics mode adds genuine propeller actors and forbids
+ * direct velocity writes during its powered flight intervals.
  */
 public final class SableFlightShipFixture {
     public enum Size { CONTROL, LARGE }
@@ -253,6 +254,7 @@ public final class SableFlightShipFixture {
         }
         require(nonAir == expectedNonAir, "ship gained unexpected blocks: " + nonAir + " expected " + expectedNonAir);
         int itemCount = 0;
+        var cargoManifest = new ArrayList<Map<String,Object>>();
         for (var entry : expectedInventories.entrySet()) {
             Direction side = entry.getKey().equals(blockPos(layout.drain())) ? Direction.NORTH : null;
             IItemHandler actual = inventory(level, plotPosition(body, entry.getKey()), side);
@@ -263,14 +265,20 @@ public final class SableFlightShipFixture {
                 require(observed.getCount() == expected.getCount() && ItemStack.isSameItemSameComponents(observed, expected),
                     "cargo changed at " + entry.getKey() + " slot=" + slot);
                 itemCount += observed.getCount();
+                if (!observed.isEmpty()) cargoManifest.add(Map.of(
+                    "position",List.of(entry.getKey().getX(),entry.getKey().getY(),entry.getKey().getZ()),
+                    "slot",slot,"item",BuiltInRegistries.ITEM.getKey(observed.getItem()).toString(),
+                    "count",observed.getCount(),"components",observed.getComponents().toString()));
             }
         }
         Vector3d velocity = RigidBodyHandle.of(body).getLinearVelocity(new Vector3d());
         require(Double.isFinite(velocity.x) && Double.isFinite(velocity.y) && Double.isFinite(velocity.z), "non-finite ship velocity");
-        return Map.of("shipId", id.toString(), "size", size.name(), "assembledBlocks", assembledBlockCount,
+        var receipt = new LinkedHashMap<String,Object>(Map.of("shipId", id.toString(), "size", size.name(), "assembledBlocks", assembledBlockCount,
             "currentBlocks", nonAir, "plotChunks", plotChunks, "plotSections", plotSections,
             "blockEntities", expectedBlockEntities.size(), "cargoItems", itemCount,
-            "assemblyMethod", "SubLevelAssemblyHelper.assembleBlocks", "dimension", level.dimension().location().toString());
+            "assemblyMethod", "SubLevelAssemblyHelper.assembleBlocks", "dimension", level.dimension().location().toString()));
+        receipt.put("cargoManifest",cargoManifest);
+        return receipt;
     }
 
     private void setExpected(ServerLevel level, ServerSubLevel body, BlockPos relative, BlockState state) {

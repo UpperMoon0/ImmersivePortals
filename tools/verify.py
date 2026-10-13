@@ -980,6 +980,44 @@ def validate_ship_reports(aeronautics: bool = False, ship_size: str = "all") -> 
     def finite(value) -> bool:
         return type(value) in (int, float) and math.isfinite(value)
 
+    def integrity_snapshot(snapshot, case, dimension, current_blocks, label):
+        require(isinstance(snapshot, dict), f"{label}: missing integrity snapshot")
+        require(snapshot.get("shipId") == case["ship_id"] and snapshot.get("size") == case["size"]
+                and snapshot.get("dimension") == dimension, f"{label}: integrity identity/dimension mismatch")
+        for field, expected in (("assembledBlocks", case["blocks"]), ("currentBlocks", current_blocks),
+                                ("plotChunks", case["chunks"]), ("cargoItems", 99)):
+            require(type(snapshot.get(field)) is int and snapshot[field] == expected,
+                    f"{label}: inconsistent integrity {field}")
+        sections = snapshot.get("plotSections")
+        require(positive_integer(sections, case["chunks"]) and sections <= case["chunks"] * 2
+                and (case["size"] != "LARGE" or sections > case["chunks"]),
+                f"{label}: missing or impossible occupied section evidence")
+        require(positive_integer(snapshot.get("blockEntities"), 9) and snapshot["blockEntities"] <= current_blocks,
+                f"{label}: invalid block entity count")
+        require(snapshot.get("assemblyMethod") == "SubLevelAssemblyHelper.assembleBlocks",
+                f"{label}: missing real assembly provenance")
+        half_width, half_length = case["dimensions"][0] // 2, case["dimensions"][2] // 2
+        left, right = (-half_width + 1, 1, half_length - 1), (half_width - 1, 1, half_length - 1)
+        expected_cargo = {(left, 0): ("minecraft:diamond", 17), (left, 26): ("minecraft:copper_ingot", 31),
+                          (right, 0): ("minecraft:emerald", 18), (right, 26): ("minecraft:copper_ingot", 32),
+                          ((0, 1, 3), 0): ("minecraft:diamond", 1)}
+        manifest = snapshot.get("cargoManifest")
+        require(isinstance(manifest, list) and len(manifest) == 5, f"{label}: missing complete cargo manifest")
+        cargo = {}
+        for entry in manifest:
+            require(isinstance(entry, dict), f"{label}: invalid cargo entry")
+            position, slot = entry.get("position"), entry.get("slot")
+            require(isinstance(position, list) and len(position) == 3 and all(type(v) is int for v in position)
+                    and positive_integer(slot, 0), f"{label}: invalid cargo position/slot")
+            key = (tuple(position), slot)
+            require(key in expected_cargo and key not in cargo, f"{label}: unexpected or duplicate cargo slot")
+            require(type(entry.get("count")) is int and (entry.get("item"), entry["count"]) == expected_cargo[key],
+                    f"{label}: incorrect cargo item/count")
+            components = entry.get("components")
+            require(isinstance(components, str) and bool(components.strip()), f"{label}: missing cargo components")
+            cargo[key] = (entry["item"], entry["count"], components)
+        return cargo
+
     for side in ("server", "client"):
         try:
             report = json.loads((RESULT_DIR / f"{side}-ships.json").read_text(encoding="utf-8"))
@@ -1008,8 +1046,15 @@ def validate_ship_reports(aeronautics: bool = False, ship_size: str = "all") -> 
             ship_id = case.get("ship_id")
             require(isinstance(ship_id, str) and bool(ship_id.strip()), f"{label}: missing ship identity")
             require(case.get("assembled") is True, f"{label}: assembly was not observed")
-            require(positive_integer(case.get("blocks"), 3500 if size == "LARGE" else 1), f"{label}: block count")
+            expected_blocks = (189 if aeronautics else 176) if size == "CONTROL" else (4941 if aeronautics else 4185)
+            require(type(case.get("blocks")) is int and case["blocks"] == expected_blocks, f"{label}: block count")
             require(positive_integer(case.get("chunks"), 12 if size == "LARGE" else 1), f"{label}: chunk count")
+            if side == "server":
+                require(all(other["ship_id"] != ship_id for other in server_cases.values()),
+                        f"{label}: reused fixture identity")
+                require(case.get("stale_request_rejected") is True, f"{label}: missing stale request rejection proof")
+                final_integrity = case.get("integrity_snapshot")
+                final_cargo = integrity_snapshot(final_integrity, case, worlds[0], case["blocks"], label)
             engines = 8 if size == "CONTROL" else 252
             if aeronautics and side == "server":
                 budget = case.get("lift_budget")
@@ -1038,6 +1083,11 @@ def validate_ship_reports(aeronautics: bool = False, ship_size: str = "all") -> 
                 require(crossing.get("from") == worlds[leg % 2] and crossing.get("to") == worlds[(leg + 1) % 2],
                         f"{label}/{leg}: wrong crossing route")
                 if side == "server":
+                    arrival_integrity = crossing.get("integrity_snapshot")
+                    arrival_cargo = integrity_snapshot(arrival_integrity, case, crossing["to"],
+                                                       case["blocks"] - leg % 2, f"{label}/{leg}")
+                    require(arrival_cargo == final_cargo and all(arrival_integrity[field] == final_integrity[field]
+                            for field in ("plotSections", "blockEntities")), f"{label}/{leg}: integrity/cargo continuity mismatch")
                     require(positive_integer(crossing.get("native_motion_ticks"), 5), f"{label}/{leg}: native motion ticks")
                     distance = crossing.get("native_distance")
                     require(type(distance) in (int, float) and math.isfinite(distance) and distance >= 8,
@@ -1073,8 +1123,6 @@ def validate_ship_reports(aeronautics: bool = False, ship_size: str = "all") -> 
                 for claim in claims:
                     require(crossing.get(claim) is True, f"{label}/{leg}: missing {claim} proof")
             if side == "server":
-                require(all(other["ship_id"] != ship_id for other in server_cases.values()),
-                        f"{label}: reused fixture identity")
                 server_cases[key] = case
             else:
                 source = server_cases[key]

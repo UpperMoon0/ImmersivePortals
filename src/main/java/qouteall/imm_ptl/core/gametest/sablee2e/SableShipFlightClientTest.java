@@ -35,6 +35,7 @@ public final class SableShipFlightClientTest {
     private static String overviewToken = "";
     private static int overviewTicks;
     private static net.minecraft.world.entity.Entity overviewCamera;
+    private static net.minecraft.world.entity.Entity panelCamera;
     private static final Map<String,Map<String,Object>> cases = new LinkedHashMap<>();
     private static final Map<String,List<Map<String,Object>>> crossings = new LinkedHashMap<>();
     private static final Map<String,List<String>> screenshots = new LinkedHashMap<>();
@@ -65,7 +66,7 @@ public final class SableShipFlightClientTest {
                 if (SableShipFlightTest.aeronautics()) report.put("addons",SableShipFlightTest.addonVersions());
                 PortalSmokeSupport.write("client-ships.json",new Gson().toJson(report));
                 PortalSmokeSupport.write("client-pass.txt","Real client observed " + (SableShipFlightTest.expectedCases()*4) + " assembled-ship crossings, live block/kinetic mutations and contrasting framebuffer states");
-                done = true; mc.stop(); return;
+                restorePlayerCamera(mc); done = true; mc.stop(); return;
             }
             String text = PortalSmokeSupport.read("ship-observe.json");
             if (text.isBlank()) return;
@@ -106,27 +107,30 @@ public final class SableShipFlightClientTest {
             // An independent client-only camera preserves the real player/seat graph while documenting the whole vessel.
             if (request.get("leg").getAsInt()==-1 && !overviewToken.equals(token)) {
                 if (overviewCamera==null) {
-                    var dimensions=request.getAsJsonArray("dimensions");
-                    double width=dimensions.get(0).getAsDouble(), height=dimensions.get(1).getAsDouble(), length=dimensions.get(2).getAsDouble();
-                    var target=body.logicalPose().transformPosition(new org.joml.Vector3d(0,height/2,0));
-                    var position=new org.joml.Vector3d(target).add(Math.max(12,width*.8),Math.max(8,height*1.5),Math.max(16,length*.8));
-                    var look=new org.joml.Vector3d(target).sub(position);
                     overviewCamera=net.minecraft.world.entity.EntityType.ARMOR_STAND.create(mc.level);
                     require(overviewCamera!=null,"cannot create client overview camera");
-                    overviewCamera.moveTo(position.x,position.y,position.z,
-                        (float)Math.toDegrees(Math.atan2(-look.x,look.z)),
-                        (float)-Math.toDegrees(Math.atan2(look.y,Math.hypot(look.x,look.z))));
-                    mc.options.hideGui=true; mc.setCameraEntity(overviewCamera); overviewTicks=0;
+                    overviewTicks=0;
                 }
+                var dimensions=request.getAsJsonArray("dimensions");
+                double width=dimensions.get(0).getAsDouble(), height=dimensions.get(1).getAsDouble(), length=dimensions.get(2).getAsDouble();
+                // Pose3d transforms absolute hidden-plot positions, not relative fixture offsets.
+                var view=SableShipObservationCamera.overview(width,height,length);
+                aimCamera(mc,overviewCamera,shipPoint(body,center,view.eye()),shipPoint(body,center,view.target()));
                 if (++overviewTicks<25) return;
                 try (NativeImage overview=Screenshot.takeScreenshot(mc.getMainRenderTarget())) {
                     overview.writeToFile(PortalSmokeSupport.directory().resolve("overview-"+token.replace(':','-')+".png"));
                 }
-                mc.setCameraEntity(mc.player); overviewCamera=null; overviewToken=token; stable=0; return;
+                restorePlayerCamera(mc); overviewToken=token; stable=0; return;
             }
-            // The view is local to the retained Create seat. Let normal render frames settle after camera input.
-            mc.options.hideGui = true;
-            mc.player.setYRot(0); mc.player.setXRot(-12);
+            // Observe the real panel from the seat's local eye region without modifying
+            // the player or relying on Sable's rider camera projection after an overview.
+            // Ownership and the actual riding graph were checked independently above.
+            if (panelCamera==null) {
+                panelCamera=net.minecraft.world.entity.EntityType.ARMOR_STAND.create(mc.level);
+                require(panelCamera!=null,"cannot create client panel camera");
+            }
+            var view=SableShipObservationCamera.panel();
+            aimCamera(mc,panelCamera,shipPoint(body,center,view.eye()),shipPoint(body,center,view.target()));
             if (++stable < 15) return;
             try (NativeImage pixels = Screenshot.takeScreenshot(mc.getMainRenderTarget())) {
                 int red=0, green=0, blue=0, yellow=0;
@@ -168,13 +172,36 @@ public final class SableShipFlightClientTest {
                     record.put("panel_roi_pixels",roi); record.put("blue_panel_pixels",blue); record.put("yellow_panel_pixels",yellow); record.put("screenshot",file);
                     crossings.get(key).add(record);
                 }
+                restorePlayerCamera(mc);
                 PortalSmokeSupport.write("ship-client-ack.txt",token); observedToken=token;
             }
         } catch (Throwable error) {
-            done=true; if(mc.player!=null) mc.setCameraEntity(mc.player); error.printStackTrace();
+            done=true; restorePlayerCamera(mc); error.printStackTrace();
             PortalSmokeSupport.write("client-fail.txt","ships token="+pendingToken+": "+error);
             mc.stop();
         }
+    }
+    private static org.joml.Vector3d shipPoint(ClientSubLevel body,BlockPos center,SableShipObservationCamera.Point point) {
+        var absolute=point.inPlot(center.getX(),center.getY(),center.getZ());
+        // Use the same interpolated pose as Sable's renderer, not the newer physics pose.
+        return body.renderPose().transformPosition(new org.joml.Vector3d(absolute.x(),absolute.y(),absolute.z()));
+    }
+    private static void aimCamera(Minecraft mc,net.minecraft.world.entity.Entity camera,
+        org.joml.Vector3d eye,org.joml.Vector3d target) {
+        var look=new org.joml.Vector3d(target).sub(eye);
+        require(eye.isFinite() && look.isFinite() && look.lengthSquared()>1.0e-6,"invalid ship observation camera");
+        camera.moveTo(eye.x,eye.y-camera.getEyeHeight(),eye.z,
+            (float)Math.toDegrees(Math.atan2(-look.x,look.z)),
+            (float)-Math.toDegrees(Math.atan2(look.y,Math.hypot(look.x,look.z))));
+        camera.setOldPosAndRot();
+        mc.options.hideGui=true;
+        mc.options.setCameraType(net.minecraft.client.CameraType.FIRST_PERSON);
+        mc.setCameraEntity(camera);
+    }
+    private static void restorePlayerCamera(Minecraft mc) {
+        if (mc.player!=null) mc.setCameraEntity(mc.player);
+        overviewCamera=null;
+        panelCamera=null;
     }
     private static void waiting(String reason) {
         stable=0;

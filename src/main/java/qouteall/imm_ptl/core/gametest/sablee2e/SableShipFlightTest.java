@@ -35,7 +35,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
-/** Real assembly and native-physics flight. Never teleports a ship or invokes the compatibility transfer API. */
+/** Real assembly and native-physics flight. No direct ship transfer; a separate stale-request negative regression must not migrate anything. */
 public final class SableShipFlightTest {
     private enum Phase { LOGIN, ASSEMBLY, SETTLE, OBSERVE, FLY, CLEAR_SEAM, DONE }
     private static final Gson JSON = new Gson();
@@ -192,7 +192,7 @@ public final class SableShipFlightTest {
     private static void settle() {
         var body = fixture.requireBody(current); hold(body);
         if (phaseTicks < (aeronautics() ? 60 : 30)) return;
-        fixture.verifyIntegrity(current, body);
+        caseReport.put("integrity_snapshot",fixture.verifyIntegrity(current, body));
         fixture.verifyMachinery(current, body, rpm());
         verifyRider(body);
         if (aeronautics()) {
@@ -225,6 +225,21 @@ public final class SableShipFlightTest {
     private static void observe() {
         var body = fixture.requireBody(current); hold(body);
         if (!PortalSmokeSupport.read("ship-client-ack.txt").equals(token)) return;
+        // After cleanup has expired, exercise the real server request entry point with
+        // an intentionally stale opposite prediction. This is a negative regression, not flight input.
+        if (leg==3) {
+            if (phaseTicks<120) return;
+            require(handle(body).getLinearVelocity(new Vector3d()).y>=0, "negative regression requires outward/stationary body motion");
+            var manager=qouteall.imm_ptl.core.teleportation.ServerTeleportationManager.of(player.server);
+            require(!manager.isJustTeleported(player,1),"negative regression needs a quiet request interval");
+            manager.onPlayerTeleportedInClient(
+                player,current.dimension(),forward.getOriginPos().subtract(forward.getNormal().scale(2)),forward.getUUID());
+            require(manager.isJustTeleported(player,1),"stale request did not resolve the real portal entry point");
+            require(fixture.requireBody(current)==body,"stale opposite request moved native ship");
+            verifyRider(body);
+            require(SubLevelContainer.getContainer(destination).getSubLevel(fixture.id())==null,"stale request duplicated native ship");
+            caseReport.put("stale_request_rejected",true);
+        }
         if (leg >= 0) { crossing.put("client_ack", true); crossings.add(crossing); }
         checkpoint("running", "");
         if (leg == 3) {
@@ -286,7 +301,7 @@ public final class SableShipFlightTest {
         double distance = observedFlightDistance;
         require(flightTicks >= 5 && distance >= 8, "insufficient genuine pre-seam flight");
         current = target;
-        fixture.verifyIntegrity(current, body); verifyRider(body);
+        var integrity=fixture.verifyIntegrity(current, body); verifyRider(body);
         crossing = new LinkedHashMap<>();
         crossing.put("leg",leg); crossing.put("from",portal.level().dimension().location().toString());
         crossing.put("to",current.dimension().location().toString());
@@ -294,6 +309,7 @@ public final class SableShipFlightTest {
         crossing.put("unique_body",true); crossing.put("rider_graph",true); crossing.put("integrity",true);
         crossing.put("velocity",true); crossing.put("orientation",true);
         crossing.put("arrival_speed",actual.length());
+        crossing.put("integrity_snapshot",integrity);
         if (aeronautics()) {
             require(forceSamples>=5 && poweredMotion!=null && peakSignedAcceleration>.05,"no genuine powered-motion witness");
             require(leg%2!=0 || peakSignedAcceleration>-flightGravityY+1,
@@ -317,6 +333,10 @@ public final class SableShipFlightTest {
         phase(Phase.SETTLE);
     }
     private static void verifyRider(ServerSubLevel body) {
+        // Disposable worlds contain only this fixture: also reject a clone with a new UUID.
+        int bodies=SubLevelContainer.getContainer(source).getAllSubLevels().size()
+            +SubLevelContainer.getContainer(destination).getAllSubLevels().size();
+        require(bodies==1,"unexpected extra or missing native bodies: "+bodies);
         Entity seat = current.getEntity(seatId);
         require(seat != null && Sable.HELPER.getContaining(seat) == body,"retained seat missing from ship: " + riderDiagnostics(body));
         require(player.serverLevel() == current && player.getVehicle() == seat && seat.getPassengers().contains(player),"rider separated from vessel");

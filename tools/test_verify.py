@@ -1006,14 +1006,25 @@ class ShipVerificationHarnessTest(unittest.TestCase):
         if aeronautics:
             for report in reports.values():
                 report["addons"] = dict(verify.aeronautics_bundle.BUNDLE["mods"])
-        for size, dimensions, blocks, chunks in (("CONTROL", [7, 5, 11], 100, 1),
-                                                ("LARGE", [49, 17, 65], 4000, 20)):
+        for size, dimensions, blocks, chunks in (("CONTROL", [7, 5, 11], 189 if aeronautics else 176, 1),
+                                                ("LARGE", [49, 17, 65], 4941 if aeronautics else 4185, 20)):
             if ship_size != "all" and size.lower() != ship_size:
                 continue
             for route in (("ordinary",) if aeronautics else ("ordinary", "dimension-stack")):
                 common = dict(size=size, route=route, dimensions=dimensions, blocks=blocks, chunks=chunks,
                               assembled=True, ship_id=f"ship-{size}-{route}")
-                server = dict(common, crossings=[])
+                def snapshot(dimension, removed=0):
+                    half_width, half_length = dimensions[0] // 2, dimensions[2] // 2
+                    left, right = [-half_width + 1, 1, half_length - 1], [half_width - 1, 1, half_length - 1]
+                    manifest = [dict(position=position, slot=slot, item="minecraft:" + item, count=count, components="{}")
+                                for position, slot, item, count in ((left, 0, "diamond", 17), (left, 26, "copper_ingot", 31),
+                                    (right, 0, "emerald", 18), (right, 26, "copper_ingot", 32), ([0, 1, 3], 0, "diamond", 1))]
+                    return dict(shipId=common["ship_id"], size=size, dimension=dimension, assembledBlocks=blocks,
+                                currentBlocks=blocks-removed, plotChunks=chunks, plotSections=40 if size == "LARGE" else 1,
+                                blockEntities=9, cargoItems=99, assemblyMethod="SubLevelAssemblyHelper.assembleBlocks",
+                                cargoManifest=manifest)
+                server = dict(common, crossings=[], stale_request_rejected=True,
+                              integrity_snapshot=snapshot("minecraft:overworld"))
                 if aeronautics:
                     server["lift_budget"] = dict(mass=1000.0, gravityY=-10.0, weight=10000.0,
                         maximumStaticLift=15000.0, staticLiftWeightRatio=1.5, minimumAirPressure=0.9,
@@ -1025,7 +1036,8 @@ class ShipVerificationHarnessTest(unittest.TestCase):
                     worlds = ("minecraft:overworld", "minecraft:the_nether")
                     server["crossings"].append(dict(leg=leg, **{"from": worlds[leg % 2], "to": worlds[(leg + 1) % 2]},
                         native_motion_ticks=20, native_distance=8.0, unique_body=True, rider_graph=True,
-                        integrity=True, velocity=True, orientation=True, client_ack=True))
+                        integrity=True, velocity=True, orientation=True, client_ack=True,
+                        integrity_snapshot=snapshot(worlds[(leg+1) % 2], leg % 2)))
                     client["crossings"].append(dict(leg=leg, **{"from": worlds[leg % 2], "to": worlds[(leg + 1) % 2]},
                         unique_body=True, rider_graph=True, blocks=True, machinery=True, mutation=True,
                         panel_pixels=1200, opposing_panel_pixels=40, panel_roi_pixels=5000,
@@ -1185,6 +1197,84 @@ class ShipVerificationHarnessTest(unittest.TestCase):
         self.write_reports(reports)
         with self.assertRaisesRegex(RuntimeError, "out-of-order"):
             verify.validate_ship_reports()
+
+    def test_ship_reports_require_exact_fixture_counts_for_each_mode(self):
+        for addon in (False, True):
+            for side in ("server", "client"):
+                for index in range(len(self.reports(addon)[side]["cases"])):
+                    for delta in (-1, 1):
+                        reports = self.reports(addon)
+                        reports[side]["cases"][index]["blocks"] += delta
+                        self.write_reports(reports)
+                        with self.subTest(addon=addon, side=side, case=index, delta=delta), self.assertRaisesRegex(RuntimeError, "block count"):
+                            verify.validate_ship_reports(aeronautics=addon)
+
+    def test_ship_reports_require_server_stale_request_regression(self):
+        for addon in (False, True):
+            for value in (None, False, 1, "true"):
+                reports = self.reports(addon)
+                reports["server"]["cases"][-1]["stale_request_rejected"] = value
+                self.write_reports(reports)
+                with self.assertRaisesRegex(RuntimeError, "stale request rejection"):
+                    verify.validate_ship_reports(aeronautics=addon)
+
+    def test_every_server_integrity_snapshot_is_required_and_typed(self):
+        for addon in (False, True):
+            for location in range(-1, 4):
+                for field, value in ((None, None), (None, True), (None, []), ("shipId", "another-ship"),
+                                     ("size", "CONTROL"), ("dimension", "other:world"), ("assembledBlocks", 1),
+                                     ("currentBlocks", 0), ("plotChunks", True), ("plotSections", True),
+                                     ("plotSections", 20), ("plotSections", 41), ("plotSections", 20.5),
+                                     ("blockEntities", 8), ("blockEntities", 10000), ("blockEntities", True),
+                                     ("cargoItems", 98), ("cargoItems", 99.0), ("assemblyMethod", "teleport")):
+                    reports = self.reports(addon)
+                    case = reports["server"]["cases"][-1]
+                    holder = case if location == -1 else case["crossings"][location]
+                    if field is None:
+                        holder["integrity_snapshot"] = value
+                    else:
+                        holder["integrity_snapshot"][field] = value
+                    self.write_reports(reports)
+                    with self.subTest(addon=addon, location=location, field=field, value=value), self.assertRaises(RuntimeError):
+                        verify.validate_ship_reports(aeronautics=addon)
+
+    def test_integrity_requires_arrival_dimension_and_pre_mutation_nonair_counts(self):
+        for leg in range(4):
+            for field, value in (("dimension", ("minecraft:overworld", "minecraft:the_nether")[leg % 2]),
+                                 ("currentBlocks", 176 - (1 - leg % 2)), ("assembledBlocks", 176.0),
+                                 ("plotSections", 2), ("blockEntities", 10)):
+                reports = self.reports()
+                reports["server"]["cases"][0]["crossings"][leg]["integrity_snapshot"][field] = value
+                self.write_reports(reports)
+                with self.subTest(leg=leg, field=field), self.assertRaises(RuntimeError):
+                    verify.validate_ship_reports()
+
+    def test_integrity_requires_exact_cargo_slots_items_counts_and_components(self):
+        edits = (lambda manifest: manifest.pop(), lambda manifest: manifest.append(manifest[0]),
+                 lambda manifest: manifest.__setitem__(1, manifest[0]), lambda manifest: manifest.__setitem__(0, None),
+                 lambda manifest: manifest[0].update(position=[-2.0, 1, 4]),
+                 lambda manifest: manifest[0].update(position=[-2, 1, 5]),
+                 lambda manifest: manifest[0].update(slot=True), lambda manifest: manifest[0].update(slot=1),
+                 lambda manifest: manifest[0].update(item="minecraft:emerald"),
+                 lambda manifest: manifest[0].update(count=17.0), lambda manifest: manifest[0].update(count=16),
+                 lambda manifest: manifest[0].update(components=None), lambda manifest: manifest[0].update(components=" "),
+                 lambda manifest: manifest[0].update(components="{changed:component}"))
+        for location in range(-1, 4):
+            for index, edit in enumerate(edits):
+                reports = self.reports()
+                case = reports["server"]["cases"][0]
+                snapshot = (case if location == -1 else case["crossings"][location])["integrity_snapshot"]
+                edit(snapshot["cargoManifest"])
+                self.write_reports(reports)
+                with self.subTest(location=location, edit=index), self.assertRaises(RuntimeError):
+                    verify.validate_ship_reports()
+        # Inventory map iteration order is immaterial; all positions, slots and components must agree.
+        reports = self.reports()
+        for case in reports["server"]["cases"]:
+            for crossing in case["crossings"]:
+                crossing["integrity_snapshot"]["cargoManifest"].reverse()
+        self.write_reports(reports)
+        verify.validate_ship_reports()
 
     def test_ship_reports_require_case_bound_graphical_artifacts_and_snapshots(self):
         for field, values in (("snapshots", (None, True, 0, 3, 4, 6)),
