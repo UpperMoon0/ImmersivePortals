@@ -93,7 +93,7 @@ def network_stress_commands(port: int) -> list[list[str]]:
     commands = [
         ["sudo", "tc", "qdisc", "add", "dev", "lo", "root", "handle", "1:", "prio"],
         ["sudo", "tc", "qdisc", "add", "dev", "lo", "parent", "1:3", "handle", "30:",
-         "netem", "delay", "30ms", "10ms", "loss", "0.5%", "seed", "28"],
+         "netem", "delay", "30ms", "10ms", "loss", "0.5%"],
     ]
     # Only Minecraft/Sable traffic is impaired, never Gradle daemon/download traffic.
     for protocol in ("6", "17"):
@@ -125,7 +125,7 @@ def network_stress(port: int):
         if "qdisc netem 30:" not in stats or not re.search(r"Sent [1-9]\d* bytes [1-9]\d* pkt", netem):
             raise RuntimeError("network stress passed no game packets through netem")
         (RESULT_DIR / "network-stress.json").write_text(json.dumps({
-            "delay_ms": 30, "jitter_ms": 10, "loss_percent": 0.5, "seed": 28,
+            "delay_ms": 30, "jitter_ms": 10, "loss_percent": 0.5, "loss_model": "random",
             "port": port, "statistics": stats}, indent=2), encoding="utf-8")
     finally:
         if installed:
