@@ -154,13 +154,17 @@ def main() -> None:
     record.add_argument("--directory", type=Path, default=ROOT / "build/libs")
     select = sub.add_parser("resolve")
     select.add_argument("--run-id", default="")
+    select.add_argument("--target-commit", help="Exact artifact commit when policy is checked out separately")
     check = sub.add_parser("verify-bundle")
     check.add_argument("--directory", type=Path, default=ROOT / "build/libs")
     check.add_argument("--run-id", type=int, required=True)
     check.add_argument("--run-attempt", type=int, required=True)
     args = parser.parse_args()
     if args.mode == "resolve":
-        output(resolve(os.environ["GITHUB_REPOSITORY"], git_commit(), args.run_id))
+        commit = args.target_commit if args.target_commit is not None else git_commit()
+        if not re.fullmatch(r"[0-9a-f]{40}", commit):
+            parser.error("--target-commit must be a full lowercase commit SHA")
+        output(resolve(os.environ["GITHUB_REPOSITORY"], commit, args.run_id))
     elif args.mode == "record":
         manifest = write_manifest(args.directory, git_commit(), int(os.environ["GITHUB_RUN_ID"]),
                                   int(os.environ["GITHUB_RUN_ATTEMPT"]), mod_version())

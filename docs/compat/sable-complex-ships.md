@@ -10,6 +10,8 @@ When the changes filter selects E2E, **Required verification requires all six co
 
 Release verification has the same six mandatory ship rows when running fresh. Reused CI evidence must contain all 47 exact required jobs, including these six ship jobs, successful on the same tagged commit and run attempt. The release publication gate accepts skipped fresh ship jobs only after that complete reused evidence is validated; absent or failed ship evidence cannot bypass verification.
 
+Reuse policy is loaded from the executing workflow commit, separately from the requested tag. An older tag's smaller historical CI contract cannot authorize skipping current required jobs. Its evidence must meet the executing workflow's contract or fresh verification runs; tags too old to support those checks fail closed. Artifact commit, run attempt and checksum remain bound to the requested tag.
+
 For example, `ships --ship-size large` writes `build/sable-ship-flight-large-e2e/` and `build/verification-ships-large.json`, using `run-sable-ship-flight-large-server/` and `run-sable-ship-flight-large-client/`. Powered paths additionally include `-aeronautics` before the size. Runs without a size filter retain the original evidence directory names and use their own mode-specific server/client directories.
 
 Ship modes use a 10-chunk client render distance and server view distance so the large-vessel overview camera is inside the visible range. Both simulation distances remain 3; the 854×480 framebuffer, 60 FPS cap, timeouts and pixel thresholds are unchanged. Existing rider E2E and smoke modes retain their 3-chunk view/render distance.

@@ -43,18 +43,26 @@ jobs:
       - uses: actions/checkout@v6
         with:
           ref: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || github.ref }}
+      - name: Checkout verification policy from the executing workflow
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .verification-policy
+          sparse-checkout: |
+            tools/release_evidence.py
+            tools/ci-coverage.json
+          sparse-checkout-cone-mode: false
       - name: Validate every main CI check and artifact origin
         id: select
         env:
           GH_TOKEN: ${{ github.token }}
           SOURCE_CI_RUN_ID: ${{ inputs.source_ci_run_id }}
         run: |
-          if [[ -f tools/release_evidence.py ]]; then
-            python3 tools/release_evidence.py resolve --run-id "$SOURCE_CI_RUN_ID"
-          else
-            # Older tags have no evidence contract; always verify them afresh.
-            echo 'reuse=false' >> "$GITHUB_OUTPUT"
-          fi
+          # The tag identifies the tested artifact, not the acceptance policy.
+          # An older tag must not downgrade this workflow's required matrix.
+          target_commit="$(git rev-parse HEAD)"
+          python3 .verification-policy/tools/release_evidence.py resolve \
+            --target-commit "$target_commit" --run-id "$SOURCE_CI_RUN_ID"
 
   core-verification:
     name: Core verification

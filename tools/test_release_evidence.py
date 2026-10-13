@@ -32,6 +32,45 @@ class ReleaseEvidenceTest(unittest.TestCase):
     def test_complete_exact_commit_main_ci_is_eligible(self):
         self.assertEqual(self.validate()["id"], 456)
 
+    def test_separate_workflow_policy_keeps_exact_tag_identity_and_rejects_old_coverage(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            target = root / "tag"
+            policy = target / ".verification-policy"
+            (target / "tools").mkdir(parents=True)
+            (policy / "tools").mkdir(parents=True)
+            current_jobs = evidence.required_jobs()
+            old_jobs = [name for name in current_jobs if not name.startswith("Sable ship flight")]
+            self.assertEqual((len(current_jobs), len(old_jobs)), (47, 41))
+            (target / "tools/ci-coverage.json").write_text(json.dumps(old_jobs))
+            (policy / "tools/ci-coverage.json").write_text(json.dumps(current_jobs))
+            for jobs, expected in ((self.jobs, dict(reuse="true", run_id="123", run_attempt="2", artifact_id="456")),
+                                   ([job for job in self.jobs if job["name"] in old_jobs], {"reuse": "false"})):
+                with patch.object(evidence, "ROOT", policy), \
+                     patch.object(evidence, "git_commit", return_value="b" * 40) as policy_commit, \
+                     patch.object(evidence, "api", return_value=self.run), \
+                     patch.object(evidence, "pages", side_effect=[jobs, self.artifacts]), \
+                     patch.object(evidence, "output") as output, \
+                     patch.dict(os.environ, GITHUB_REPOSITORY=self.repo), \
+                     patch("sys.argv", ["release_evidence.py", "resolve", "--run-id", "123", "--target-commit", self.commit]):
+                    evidence.main()
+                    output.assert_called_once_with(expected)
+                    policy_commit.assert_not_called()
+
+    def test_resolver_explicit_target_sha_is_full_and_default_remains_checkout_commit(self):
+        for target in ("", "main", "a" * 39, "a" * 41, "A" * 40):
+            with patch("sys.argv", ["release_evidence.py", "resolve", "--target-commit", target]), \
+                 patch.object(evidence, "resolve") as resolve, patch("sys.stderr"):
+                with self.assertRaises(SystemExit):
+                    evidence.main()
+                resolve.assert_not_called()
+        with patch("sys.argv", ["release_evidence.py", "resolve"]), \
+             patch.object(evidence, "git_commit", return_value=self.commit), \
+             patch.object(evidence, "resolve", return_value={"reuse": "false"}) as resolve, \
+             patch.object(evidence, "output"), patch.dict(os.environ, GITHUB_REPOSITORY=self.repo):
+            evidence.main()
+            resolve.assert_called_once_with(self.repo, self.commit, "")
+
     def test_ref_suffixed_main_ci_is_eligible_for_real_resolution(self):
         # Actions REST reports workflow_run.path with this suffix.
         self.run["path"] = ".github/workflows/ci.yml@main"
@@ -324,6 +363,23 @@ class ReleaseEvidenceTest(unittest.TestCase):
         self.assertIn("run-id: ${{ needs.evidence.outputs.run_id }}", release)
         self.assertLess(release.index("python3 tools/release_evidence.py verify-bundle"),
                         release.index("- name: Publish GitHub Release"))
+
+    def test_release_reuse_policy_is_pinned_to_workflow_not_requested_tag(self):
+        release = (evidence.ROOT / ".github/workflows/release.yml").read_text()
+        selection = release.split("  evidence:\n", 1)[1].split("\n  core-verification:\n", 1)[0]
+        policy = selection.split("      - name: Checkout verification policy from the executing workflow\n", 1)[1].split(
+            "      - name: Validate every main CI check and artifact origin\n", 1)[0]
+        self.assertIn("ref: ${{ github.workflow_sha }}", policy)
+        self.assertIn("path: .verification-policy", policy)
+        self.assertIn("tools/release_evidence.py", policy)
+        self.assertIn("tools/ci-coverage.json", policy)
+        self.assertIn("sparse-checkout-cone-mode: false", policy)
+        self.assertIn("ref: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || github.ref }}", selection)
+        self.assertNotIn("working-directory:", selection)
+        self.assertIn('target_commit="$(git rev-parse HEAD)"', selection)
+        self.assertIn("python3 .verification-policy/tools/release_evidence.py resolve", selection)
+        self.assertIn('--target-commit "$target_commit" --run-id "$SOURCE_CI_RUN_ID"', selection)
+        self.assertNotIn("python3 tools/release_evidence.py resolve", selection)
 
 
 if __name__ == "__main__":
