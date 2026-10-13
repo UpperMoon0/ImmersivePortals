@@ -184,6 +184,8 @@ jobs:
           path: |
             build/verification-ships*.json
             build/sable-ship-flight*-e2e/**
+            ${{ env.SHIP_RUNTIME_PREFIX }}-server/server.properties
+            ${{ env.SHIP_RUNTIME_PREFIX }}-client/options.txt
             ${{ env.SHIP_RUNTIME_PREFIX }}-server/config/sable-common.toml
             ${{ env.SHIP_RUNTIME_PREFIX }}-client/config/sable-common.toml
             ${{ env.SHIP_RUNTIME_PREFIX }}-client/config/sable-client.toml

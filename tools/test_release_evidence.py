@@ -342,6 +342,7 @@ class ReleaseEvidenceTest(unittest.TestCase):
             "      - run: chmod +x ./gradlew\n", 1)[0]
         self.assertEqual(configure(ci_job), configure(release_job))
         for path in ("build/verification-ships*.json", "build/sable-ship-flight*-e2e/**",
+                     "${{ env.SHIP_RUNTIME_PREFIX }}-server/server.properties", "${{ env.SHIP_RUNTIME_PREFIX }}-client/options.txt",
                      "${{ env.SHIP_RUNTIME_PREFIX }}-server/crash-reports/**", "${{ env.SHIP_RUNTIME_PREFIX }}-client/logs/**"):
             self.assertIn(path, release_job)
         gate = release.split("\n  verified:\n", 1)[1].split("\n  release:\n", 1)[0]

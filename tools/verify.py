@@ -899,7 +899,10 @@ def prepare_e2e(*, ships: bool = False) -> dict[str, str]:
     (CLIENT_DIR / "options.txt").write_text(
         f"onboardAccessibility:false\nrenderDistance:{view_distance}\nsimulationDistance:3\n"
         "overrideWidth:854\noverrideHeight:480\nmaxFps:60\nenableVsync:false\npauseOnLostFocus:false\n"
-        "soundCategory_master:0.0\n", encoding="utf-8")
+        "soundCategory_master:0.0\n"
+        # Large baseline overviews can intersect the vanilla 192-196 cloud layer.
+        # Disable only decorative cloud geometry, preserving fog and atmosphere.
+        + ("renderClouds:false\n" if ships else ""), encoding="utf-8")
     (SERVER_DIR / "eula.txt").write_text("eula=true\n", encoding="utf-8")
     (SERVER_DIR / "server.properties").write_text(
         "\n".join(

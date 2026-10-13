@@ -1586,11 +1586,15 @@ class ShipVerificationHarnessTest(unittest.TestCase):
                 properties = dict(line.split("=", 1) for line in (root / "server/server.properties").read_text().splitlines())
                 configs.append((options, properties))
                 self.assertEqual(options["renderDistance"], "10" if ships else "3")
+                if ships:
+                    self.assertEqual(options["renderClouds"], "false")
+                else:
+                    self.assertNotIn("renderClouds", options)
                 self.assertEqual(properties["view-distance"], "10" if ships else "3")
                 self.assertEqual(options["simulationDistance"], "3")
                 self.assertEqual(properties["simulation-distance"], "3")
                 self.assertEqual((options["overrideWidth"], options["overrideHeight"], options["maxFps"]), ("854", "480", "60"))
-        self.assertEqual(configs[1][0], dict(configs[0][0], renderDistance="10"))
+        self.assertEqual(configs[1][0], dict(configs[0][0], renderDistance="10", renderClouds="false"))
         self.assertEqual(configs[1][1], dict(configs[0][1], **{"view-distance": "10"}))
         self.assertEqual(configs[2], configs[0], "Returning to ordinary E2E must restore its original graphics budget")
 
@@ -1965,6 +1969,7 @@ class ShipVerificationHarnessTest(unittest.TestCase):
         self.assertIn("IP_VERIFICATION_NETWORKING: bundled", ships)
         self.assertIn("if: always()", ships)
         for artifact in ("build/verification-ships*.json", "build/sable-ship-flight*-e2e/**",
+                         "${{ env.SHIP_RUNTIME_PREFIX }}-server/server.properties", "${{ env.SHIP_RUNTIME_PREFIX }}-client/options.txt",
                          "${{ env.SHIP_RUNTIME_PREFIX }}-server/crash-reports/**", "${{ env.SHIP_RUNTIME_PREFIX }}-client/logs/**"):
             self.assertIn(artifact, ships)
         for value in ("true", "false"):

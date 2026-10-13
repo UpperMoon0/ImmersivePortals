@@ -361,6 +361,9 @@ public final class SableShipFlightClientTest {
         report.put("token",token); report.put("stage",stage); report.put("dimension",mc.level.dimension().location().toString());
         report.put("ship_id",body.getUniqueId().toString()); report.put("finalized",body.isFinalized());
         report.put("effective_render_distance",mc.options.getEffectiveRenderDistance());
+        report.put("clouds",mc.options.getCloudsType().getSerializedName());
+        float cloudHeight=mc.level.effects().getCloudHeight();
+        report.put("cloud_height",Float.isFinite(cloudHeight)?cloudHeight:null);
         var camera=mc.gameRenderer.getMainCamera();
         var position=camera.getPosition();
         report.put("camera",List.of(position.x,position.y,position.z));
