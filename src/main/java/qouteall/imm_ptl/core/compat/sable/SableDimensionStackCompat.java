@@ -159,7 +159,11 @@ public final class SableDimensionStackCompat {
                 if (sourceSubLevel.getLevel() != player.serverLevel()) return false;
                 ServerSubLevelContainer sourceContainer = SubLevelContainer.getContainer(player.serverLevel());
                 if (sourceContainer == null) return false;
-                if (CLIENT_HANDOFFS.containsKey(sourceSubLevel.getUniqueId())) return true;
+                // Network cleanup can outlive a committed body transfer. A stale opposite-way
+                // rider request must not authorize IP to move only the player and retained seat
+                // while their body stays here. Matching destination acknowledgements returned
+                // above; real reverse physics crossings still migrate the complete body graph.
+                if (CLIENT_HANDOFFS.containsKey(sourceSubLevel.getUniqueId())) return false;
                 return migrateSubLevel(
                     sourceContainer, sourceSubLevel, portal, new Pose3d(sourceSubLevel.lastPose())
                 ) != null;

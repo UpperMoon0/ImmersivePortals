@@ -10,7 +10,11 @@ import dev.ryanhcode.sable.util.SubLevelInclusiveLevelEntityGetter;
 import net.minecraft.world.level.Level;
 import org.junit.jupiter.api.Test;
 import org.objectweb.asm.ClassReader;
+import org.objectweb.asm.Opcodes;
+import org.objectweb.asm.tree.AbstractInsnNode;
 import org.objectweb.asm.tree.ClassNode;
+import org.objectweb.asm.tree.FieldInsnNode;
+import org.objectweb.asm.tree.JumpInsnNode;
 import org.objectweb.asm.tree.MethodInsnNode;
 import org.objectweb.asm.tree.MethodNode;
 import qouteall.imm_ptl.core.mixin.common.mc_util.IELevelEntityGetterAdapter;
@@ -20,6 +24,8 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -184,9 +190,51 @@ class SableDimensionStackCompatContractTest {
         assertNotNull(hook);
         assertTrue(invokesNamed(hook, "beforePlayerPortalTeleport"));
         assertTrue(invokesNamed(hook, "forceTeleportPlayer"),
-            "failed body handoff must correct the player back to the source dimension");
+            "failed body handoff must correct the player to its authoritative server dimension");
         assertTrue(invokesNamed(hook, "cancel"),
             "failed body handoff must cancel the rest of IP's portal-teleport callback");
+    }
+
+    @Test
+    void pendingHandoffRejectsIndependentRiderReturnButAllowsCompletedAcknowledgement() throws Exception {
+        ClassNode compat = readClass(
+            "qouteall/imm_ptl/core/compat/sable/SableDimensionStackCompat.class"
+        );
+        MethodNode prepare = findMethodByName(compat, "beforePlayerPortalTeleport");
+        assertNotNull(prepare);
+
+        FieldInsnNode handoffs = null;
+        for (var instruction : prepare.instructions) {
+            if (instruction instanceof FieldInsnNode field && field.name.equals("CLIENT_HANDOFFS")) {
+                handoffs = field;
+                break;
+            }
+        }
+        assertNotNull(handoffs, "rider requests must check the pending body handoff");
+        AbstractInsnNode contains = nextExecutable(nextExecutable(nextExecutable(handoffs)));
+        MethodInsnNode containsCall = assertInstanceOf(MethodInsnNode.class, contains);
+        assertEquals("java/util/Map", containsCall.owner);
+        assertEquals("containsKey", containsCall.name);
+        JumpInsnNode pendingBranch = assertInstanceOf(JumpInsnNode.class, nextExecutable(contains));
+        assertEquals(Opcodes.IFEQ, pendingBranch.getOpcode());
+        assertEquals(Opcodes.ICONST_0, nextExecutable(pendingBranch).getOpcode(),
+            "an existing handoff must reject an independent player/seat transfer");
+        assertEquals(Opcodes.IRETURN, nextExecutable(nextExecutable(pendingBranch)).getOpcode());
+
+        int destination = invocationIndex(prepare, "getDestDim");
+        int pending = prepare.instructions.indexOf(handoffs);
+        int migration = invocationIndex(prepare, "migrateSubLevel");
+        assertTrue(destination >= 0 && destination < pending && pending < migration,
+            "completed destination acknowledgement must precede rejection; new crossings still migrate");
+        AbstractInsnNode destinationEquals = nextExecutable(prepare.instructions.get(destination));
+        assertEquals("equals", assertInstanceOf(MethodInsnNode.class, destinationEquals).name);
+        JumpInsnNode destinationBranch = assertInstanceOf(JumpInsnNode.class, nextExecutable(destinationEquals));
+        assertEquals(Opcodes.IFEQ, destinationBranch.getOpcode());
+        assertEquals(Opcodes.ICONST_1, nextExecutable(destinationBranch).getOpcode(),
+            "a matching completed body migration must still acknowledge successfully");
+        assertEquals(Opcodes.IRETURN, nextExecutable(nextExecutable(destinationBranch)).getOpcode());
+        assertTrue(prepare.instructions.indexOf(pendingBranch.label) < migration,
+            "requests without a pending handoff must retain the real body migration path");
     }
 
     @Test
@@ -326,6 +374,14 @@ class SableDimensionStackCompatContractTest {
             new ClassReader(stream).accept(node, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
             return node;
         }
+    }
+
+    private static AbstractInsnNode nextExecutable(AbstractInsnNode instruction) {
+        do {
+            instruction = instruction.getNext();
+        } while (instruction != null && instruction.getOpcode() < 0);
+        assertNotNull(instruction, "expected another executable instruction");
+        return instruction;
     }
 
     private static MethodNode findMethod(String resource, String name, String descriptor) throws Exception {
