@@ -876,7 +876,7 @@ def choose_tcp_udp_port(attempts: int = 64) -> int:
     raise RuntimeError("could not find a localhost port free for both TCP and UDP")
 
 
-def prepare_e2e() -> dict[str, str]:
+def prepare_e2e(*, ships: bool = False) -> dict[str, str]:
     aeronautics_bundle.require_clean_runs((SERVER_DIR, CLIENT_DIR))
     # Resolve every disposable target before deleting; never follow a redirected
     # run directory outside this checkout, and never hide cleanup errors.
@@ -892,9 +892,12 @@ def prepare_e2e() -> dict[str, str]:
 
     port = choose_tcp_udp_port()
 
-    # Deterministic low-cost graphics; real rendering and Sodium remain enabled.
+    # Large-ship overview cameras sit beyond the old 3-chunk fog range. The
+    # effective render distance is capped by both client and server settings.
+    # Keep simulation, framebuffer/FPS and the established E2E/smoke unchanged.
+    view_distance = 10 if ships else 3
     (CLIENT_DIR / "options.txt").write_text(
-        "onboardAccessibility:false\nrenderDistance:3\nsimulationDistance:3\n"
+        f"onboardAccessibility:false\nrenderDistance:{view_distance}\nsimulationDistance:3\n"
         "overrideWidth:854\noverrideHeight:480\nmaxFps:60\nenableVsync:false\npauseOnLostFocus:false\n"
         "soundCategory_master:0.0\n", encoding="utf-8")
     (SERVER_DIR / "eula.txt").write_text("eula=true\n", encoding="utf-8")
@@ -906,7 +909,7 @@ def prepare_e2e() -> dict[str, str]:
                 "gamemode=creative",
                 "difficulty=peaceful",
                 "spawn-protection=0",
-                "view-distance=3",
+                f"view-distance={view_distance}",
                 "simulation-distance=3",
                 "enable-command-block=true",
                 f"server-port={port}",
@@ -1565,7 +1568,7 @@ def run_e2e(smoke: bool = False, renderer: str = "sodium", sable: bool = True, s
         raise ValueError("ship size selection requires ship mode and a supported size")
     print(f"[verify] {'visual ' + renderer if smoke else 'ships-aeronautics' if aeronautics else 'ships' if ships else 'e2e'}: dedicated server + automated graphical client", flush=True)
     run_deadline = visual_run_deadline() if smoke else None
-    env = prepare_e2e()
+    env = prepare_e2e(ships=ships)
     env["IP_SABLE_SHIPS"] = str(ships).lower()
     env["IP_SABLE_SHIPS_AERONAUTICS"] = str(aeronautics).lower()
     env["IP_SABLE_SHIPS_SIZE"] = ship_size

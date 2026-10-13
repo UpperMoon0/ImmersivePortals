@@ -110,6 +110,7 @@ public final class SableShipFlightClientTest {
             // An independent client-only camera preserves the real player/seat graph while documenting the whole vessel.
             if (request.get("leg").getAsInt()==-1 && !overviewToken.equals(token)) {
                 if (overviewCamera==null) {
+                    writeRenderDiagnostics(mc,body,token,"before-overview");
                     overviewCamera=net.minecraft.world.entity.EntityType.ARMOR_STAND.create(mc.level);
                     require(overviewCamera!=null,"cannot create client overview camera");
                     overviewTicks=0;
@@ -120,6 +121,7 @@ public final class SableShipFlightClientTest {
                 var view=SableShipObservationCamera.overview(width,height,length);
                 aimCamera(mc,overviewCamera,shipPoint(body,center,view.eye()),shipPoint(body,center,view.target()));
                 if (++overviewTicks<25) return;
+                writeRenderDiagnostics(mc,body,token,"overview");
                 try (NativeImage overview=Screenshot.takeScreenshot(mc.getMainRenderTarget())) {
                     overview.writeToFile(PortalSmokeSupport.directory().resolve("overview-"+token.replace(':','-')+".png"));
                 }
@@ -149,13 +151,17 @@ public final class SableShipFlightClientTest {
                 boolean mutated=request.get("mutated").getAsBoolean();
                 int roi = (pixels.getWidth()*3/4-pixels.getWidth()/4)*(pixels.getHeight()*3/4-pixels.getHeight()/4);
                 if (!SableShipPanelPixels.accepts(mutated ? red : green, mutated ? green : red, blue, yellow, roi)) {
-                    if (stable % 60 == 0) pixels.writeToFile(PortalSmokeSupport.directory().resolve("pending-"+token.replace(':','-')+".png"));
+                    if (stable % 60 == 0) {
+                        pixels.writeToFile(PortalSmokeSupport.directory().resolve("pending-"+token.replace(':','-')+".png"));
+                        writeRenderDiagnostics(mc,body,token,"pending");
+                    }
                     require(stable<240,"ship panel pixels stale/invisible: token="+token+" red="+red+" green="+green+" blue="+blue+" yellow="+yellow);
                     return;
                 }
                 String key=request.get("size").getAsString()+":"+request.get("route").getAsString();
                 String file="ship-"+token.replace(':','-')+".png";
                 pixels.writeToFile(PortalSmokeSupport.directory().resolve(file));
+                writeRenderDiagnostics(mc,body,token,"panel");
                 if (!cases.containsKey(key)) {
                     var report=new LinkedHashMap<String,Object>();
                     for (String field:List.of("size","route","ship_id")) report.put(field,request.get(field).getAsString());
@@ -259,6 +265,66 @@ public final class SableShipFlightClientTest {
         var absolute=point.inPlot(center.getX(),center.getY(),center.getZ());
         // Use the same interpolated pose as Sable's renderer, not the newer physics pose.
         return body.renderPose().transformPosition(new org.joml.Vector3d(absolute.x(),absolute.y(),absolute.z()));
+    }
+    /** Read-only evidence: distinguish a missing compiled mesh from camera or lighting failures. */
+    private static void writeRenderDiagnostics(Minecraft mc,ClientSubLevel body,String token,String stage) {
+        var report=new LinkedHashMap<String,Object>();
+        report.put("token",token); report.put("stage",stage); report.put("dimension",mc.level.dimension().location().toString());
+        report.put("ship_id",body.getUniqueId().toString()); report.put("finalized",body.isFinalized());
+        report.put("effective_render_distance",mc.options.getEffectiveRenderDistance());
+        var camera=mc.gameRenderer.getMainCamera();
+        var position=camera.getPosition();
+        report.put("camera",List.of(position.x,position.y,position.z));
+        report.put("camera_yaw",camera.getYRot()); report.put("camera_pitch",camera.getXRot());
+        report.put("camera_entity",camera.getEntity()==null?"null":camera.getEntity().getType().toString());
+        report.put("sky_light_scale",body.getLatestSkyLightScale());
+        var lights=new ArrayList<List<Integer>>();
+        BlockPos plotCenter=body.getPlot().getCenterBlock();
+        for (int x=-1;x<=1;x++) for (int y=2;y<=4;y++) {
+            BlockPos front=plotCenter.offset(x,y,1);
+            lights.add(List.of(x,y,1,mc.level.getBrightness(net.minecraft.world.level.LightLayer.BLOCK,front),
+                mc.level.getBrightness(net.minecraft.world.level.LightLayer.SKY,front)));
+        }
+        report.put("panel_front_light",lights);
+        var data=body.getRenderData();
+        report.put("render_data",data==null?"null":data.getClass().getName());
+        if (data instanceof dev.ryanhcode.sable.sublevel.render.vanilla.VanillaChunkedSubLevelRenderData vanilla) {
+            var sections=new ArrayList<Map<String,Object>>();
+            for (var section:vanilla.allRenderSections()) {
+                var item=new LinkedHashMap<String,Object>();
+                BlockPos origin=section.getOrigin();
+                var center=body.renderPose().transformPosition(new org.joml.Vector3d(origin.getX()+8,origin.getY()+8,origin.getZ()+8));
+                item.put("origin",List.of(origin.getX(),origin.getY(),origin.getZ()));
+                item.put("world_center",List.of(center.x,center.y,center.z));
+                item.put("camera_distance_squared",center.distanceSquared(position.x,position.y,position.z));
+                // This is the exact public helper used by Sable's RenderSectionMixin
+                // override of getDistToPlayerSqr, rather than a player-distance guess.
+                item.put("renderer_distance_squared",Sable.HELPER.distanceSquaredWithSubLevels(mc.level,position,
+                    origin.getX()+8,origin.getY()+8,origin.getZ()+8));
+                item.put("dirty",section.isDirty()); item.put("dirty_from_player",section.isDirtyFromPlayer());
+                item.put("has_all_neighbors",section.hasAllNeighbors());
+                // hasAllNeighbors skips its lookups within 24 blocks. Record actual
+                // hidden-plot neighbors too; container.getChunk is lookup-only.
+                var container=SubLevelContainer.getContainer(body.getLevel());
+                var neighbors=new LinkedHashMap<String,Boolean>();
+                for (var direction:List.of(net.minecraft.core.Direction.NORTH,net.minecraft.core.Direction.SOUTH,
+                    net.minecraft.core.Direction.WEST,net.minecraft.core.Direction.EAST)) {
+                    var chunk=new net.minecraft.world.level.ChunkPos((origin.getX()>>4)+direction.getStepX(),
+                        (origin.getZ()>>4)+direction.getStepZ());
+                    neighbors.put(direction.getName(),container!=null && container.getChunk(chunk)!=null);
+                }
+                item.put("horizontal_neighbors_present",neighbors);
+                var compiled=section.getCompiled();
+                item.put("uncompiled",compiled==net.minecraft.client.renderer.chunk.SectionRenderDispatcher.CompiledSection.UNCOMPILED);
+                item.put("solid_empty",compiled.isEmpty(net.minecraft.client.renderer.RenderType.solid()));
+                item.put("cutout_empty",compiled.isEmpty(net.minecraft.client.renderer.RenderType.cutout()));
+                item.put("cutout_mipped_empty",compiled.isEmpty(net.minecraft.client.renderer.RenderType.cutoutMipped()));
+                item.put("translucent_empty",compiled.isEmpty(net.minecraft.client.renderer.RenderType.translucent()));
+                sections.add(item);
+            }
+            report.put("sections",sections);
+        }
+        PortalSmokeSupport.write("render-"+stage+"-"+token.replace(':','-')+".json",new Gson().toJson(report));
     }
     private static void aimCamera(Minecraft mc,net.minecraft.world.entity.Entity camera,
         org.joml.Vector3d eye,org.joml.Vector3d target) {

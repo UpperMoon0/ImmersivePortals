@@ -83,7 +83,8 @@ class SableFlightShipLayoutTest {
             assertEquals("create:red_seat", layout.blocks().get(layout.seat()));
             assertEquals("create:item_drain", layout.blocks().get(layout.drain()));
             for (int[] offset : new int[][] {{-1,0,0},{1,0,0},{0,0,-1},{0,0,1}}) {
-                assertEquals("minecraft:spruce_planks", layout.blocks().get(layout.drain().offset(offset[0], offset[1], offset[2])),
+                assertEquals(offset[2] == -1 ? "minecraft:sea_lantern" : "minecraft:spruce_planks",
+                    layout.blocks().get(layout.drain().offset(offset[0], offset[1], offset[2])),
                     "The loaded drain needs a solid stop on every potential export side");
             }
             for (int x = -1; x <= 1; x++) for (int y = 2; y <= 4; y++) {

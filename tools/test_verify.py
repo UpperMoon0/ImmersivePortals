@@ -1463,11 +1463,39 @@ class ShipVerificationHarnessTest(unittest.TestCase):
         self.assertEqual(env["IP_SABLE_E2E_CLIENT_DIR"], str((root / "client").resolve()))
         self.assertEqual(env["IP_SABLE_E2E"], "true")
 
+    def test_ship_only_view_distance_changes_both_sides_without_expanding_other_budgets(self):
+        root = self.results / "checkout"
+        configs = []
+        with patch.multiple(verify, ROOT=root, RESULT_DIR=root / "results",
+                            SERVER_DIR=root / "server", CLIENT_DIR=root / "client"), \
+             patch.object(verify, "choose_tcp_udp_port", return_value=25566), \
+             patch.dict(verify.os.environ, IP_SABLE_SHIPS="true", IP_SABLE_SHIPS_AERONAUTICS="true"):
+            for ships in (False, True, False):
+                verify.prepare_e2e(ships=ships)
+                options = dict(line.split(":", 1) for line in (root / "client/options.txt").read_text().splitlines())
+                properties = dict(line.split("=", 1) for line in (root / "server/server.properties").read_text().splitlines())
+                configs.append((options, properties))
+                self.assertEqual(options["renderDistance"], "10" if ships else "3")
+                self.assertEqual(properties["view-distance"], "10" if ships else "3")
+                self.assertEqual(options["simulationDistance"], "3")
+                self.assertEqual(properties["simulation-distance"], "3")
+                self.assertEqual((options["overrideWidth"], options["overrideHeight"], options["maxFps"]), ("854", "480", "60"))
+        self.assertEqual(configs[1][0], dict(configs[0][0], renderDistance="10"))
+        self.assertEqual(configs[1][1], dict(configs[0][1], **{"view-distance": "10"}))
+        self.assertEqual(configs[2], configs[0], "Returning to ordinary E2E must restore its original graphics budget")
+
+    def test_preparation_uses_explicit_mode_for_smoke_baseline_and_powered_ships(self):
+        for options in ({}, {"smoke": True}, {"ships": True}, {"ships": True, "aeronautics": True}):
+            with self.subTest(options=options), patch.object(verify, "prepare_e2e", side_effect=RuntimeError("prepared")) as prepare:
+                with self.assertRaisesRegex(RuntimeError, "prepared"):
+                    verify.run_e2e(**options)
+                prepare.assert_called_once_with(ships=options.get("ships", False))
+
     def test_ship_launch_passes_mode_to_both_processes_and_uses_twenty_minutes(self):
         for ships, ship_size in ((False, "all"), (True, "all"), (True, "control"), (True, "large")):
             self.write_reports()
             server, client = Mock(), Mock()
-            with patch.object(verify, "prepare_e2e", return_value={"IP_SABLE_E2E_PORT": "25566"}), \
+            with patch.object(verify, "prepare_e2e", return_value={"IP_SABLE_E2E_PORT": "25566"}) as prepare, \
                  patch.object(verify, "invalidate_generated_run_classpath"), \
                  patch.object(verify.subprocess, "Popen", return_value=server) as launch_server, \
                  patch.object(verify, "wait_for_server"), patch.object(verify, "wait_for_client") as wait, \
@@ -1475,6 +1503,7 @@ class ShipVerificationHarnessTest(unittest.TestCase):
                  patch.object(verify, "stop_process_tree"), \
                  patch.dict(verify.os.environ, DISPLAY=":99", IP_NETWORK_STRESS="false"):
                 verify.run_e2e(ships=ships, ship_size=ship_size)
+            prepare.assert_called_once_with(ships=ships)
             self.assertEqual(launch_server.call_args.kwargs["env"]["IP_SABLE_SHIPS"], str(ships).lower())
             self.assertEqual(launch_client.call_args.args[1]["IP_SABLE_SHIPS"], str(ships).lower())
             self.assertEqual(launch_server.call_args.kwargs["env"]["IP_SABLE_SHIPS_SIZE"], ship_size)

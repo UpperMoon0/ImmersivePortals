@@ -69,6 +69,9 @@ public final class SableFlightShipLayout {
         placed.put(seat, "create:red_seat");
         placed.put(drain, "create:item_drain");
         for (int x = -1; x <= 1; x++) put(placed, x, 1, 2, "minecraft:spruce_planks");
+        // Real illumination makes the three-color target visible in naturally dark
+        // dimensions. This full solid block also remains the drain's front stop.
+        put(placed, 0, 1, 2, "minecraft:sea_lantern");
         // A drain advances even non-processable items and ejects through an open side.
         // Solid stops retain its item through arbitrarily long observation barriers.
         put(placed, -1, 1, 3, "minecraft:spruce_planks");
