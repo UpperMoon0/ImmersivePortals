@@ -79,6 +79,7 @@ public final class SableDimensionStackCompat {
     private static final SableRiderPortalWitnesses ANIMATED_RIDER_CROSSINGS = new SableRiderPortalWitnesses(100);
     private static final Set<Portal> ANIMATED_PORTALS = new HashSet<>();
     private static final Map<UUID, PortalState> CAPTURED_ANIMATION_STATES = new HashMap<>();
+    private static final boolean RIDER_WITNESS_DIAGNOSTICS = Boolean.parseBoolean(System.getenv("IP_SABLE_SHIPS"));
     private static boolean witnessListenersInitialized;
 
     private SableDimensionStackCompat() {}
@@ -102,6 +103,9 @@ public final class SableDimensionStackCompat {
                     // transaction may retry its witness; a committed migration clears it below.
                     if (handoff != null && !handoff.committed) return;
                 }
+                if (RIDER_WITNESS_DIAGNOSTICS) LOGGER.info(
+                    "Sable rider witness mount invalidation: player={} vehicle={} mounting={} tick={}",
+                    player.getUUID(), mount == null ? null : mount.getUUID(), event.isMounting(), player.serverLevel().getGameTime());
                 ANIMATED_RIDER_CROSSINGS.invalidatePlayer(player.getUUID());
             }
         });
@@ -136,6 +140,8 @@ public final class SableDimensionStackCompat {
         for (var key : ANIMATED_RIDER_CROSSINGS.keys()) {
             ServerPlayer player = server.getPlayerList().getPlayer(key.player());
             if (player == null || !isStoredRiderCrossingApplicable(player, key)) {
+                if (RIDER_WITNESS_DIAGNOSTICS) LOGGER.info("Sable rider witness invalidated: key={} reason={}",
+                    key, player == null ? "offline" : "current rider/portal/aperture no longer applicable");
                 ANIMATED_RIDER_CROSSINGS.invalidate(key);
             }
         }
@@ -170,10 +176,20 @@ public final class SableDimensionStackCompat {
                             .add(McHelper.getEyeOffset(passenger));
                         Vec3 previousAnchor = new Pose3d(body.lastPose()).transformPosition(localAnchor);
                         Vec3 currentAnchor = body.logicalPose().transformPosition(localAnchor);
-                        if (portal.getPortalShape().raytracePortalShapeByLocalPos(
-                            after.getThisSideState(), before.worldPosToPortalLocalPos(previousAnchor),
-                            after.worldPosToPortalLocalPos(currentAnchor), 0
-                        ) != null) {
+                        Vec3 localBefore = before.worldPosToPortalLocalPos(previousAnchor);
+                        Vec3 localAfter = after.worldPosToPortalLocalPos(currentAnchor);
+                        boolean crossed = portal.getPortalShape().raytracePortalShapeByLocalPos(
+                            after.getThisSideState(), localBefore, localAfter, 0
+                        ) != null;
+                        boolean contactCrossed = ANIMATED_RIDER_CROSSINGS.samplePlaneContact(
+                            key, before, after, level.getGameTime(), localBefore.z, localAfter.z,
+                            SableRiderPortalSweep.planeContactInsideAperture(
+                                portal.getPortalShape(), before, after, localBefore, localAfter));
+                        if (RIDER_WITNESS_DIAGNOSTICS) LOGGER.info(
+                            "Sable rider witness sample: tick={} key={} before={} after={} previousEye={} currentEye={} crossed={} contactCrossed={} contactArmed={}",
+                            level.getGameTime(), key, localBefore, localAfter, previousAnchor, currentAnchor, crossed,
+                            contactCrossed, ANIMATED_RIDER_CROSSINGS.hasPlaneContact(key, level.getGameTime()));
+                        if (crossed || contactCrossed) {
                             ANIMATED_RIDER_CROSSINGS.record(key, level.getGameTime());
                         }
                         break;
@@ -182,6 +198,65 @@ public final class SableDimensionStackCompat {
                 }
             }
         }
+    }
+
+    /** Read-only diagnostics for the dedicated ship probe; absent outside its explicit test mode. */
+    public static Map<String, Object> describeAnimatedRiderWitness(ServerPlayer player, Portal portal) {
+        if (!RIDER_WITNESS_DIAGNOSTICS) return Map.of();
+        Map<String, Object> result = new java.util.LinkedHashMap<>();
+        result.put("tick", player.serverLevel().getGameTime());
+        result.put("portal_id", portal.getUUID().toString());
+        result.put("player_id", player.getUUID().toString());
+        result.put("dimension", player.serverLevel().dimension().location().toString());
+        result.put("destination", portal.getDestDim().location().toString());
+        result.put("portal_origin", diagnosticVector(portal.getOriginPos()));
+        result.put("portal_normal", diagnosticVector(portal.getNormal()));
+        result.put("portal_removed", portal.isRemoved());
+        result.put("portal_allowed", portal.canTeleportEntity(player));
+        result.put("registered_candidate", ANIMATED_PORTALS.contains(portal));
+        result.put("animation_running", portal.animation.isRoughlyRunningAnimation());
+        var before = portal.animation.lastTickAnimatedState;
+        var after = portal.animation.thisTickAnimatedState;
+        result.put("before_state", before == null ? 0 : System.identityHashCode(before));
+        result.put("after_state", after == null ? 0 : System.identityHashCode(after));
+        result.put("after_already_sampled", after != null && CAPTURED_ANIMATION_STATES.get(portal.getUUID()) == after);
+        Entity passenger = player;
+        for (Entity vehicle = player.getVehicle(); vehicle != null; vehicle = vehicle.getVehicle()) {
+            if (Sable.HELPER.getContaining(vehicle) instanceof ServerSubLevel body) {
+                var key = riderWitnessKey(player, body, vehicle, portal);
+                Vec3 localAnchor = vehicle.getPassengerRidingPosition(passenger).add(McHelper.getEyeOffset(passenger));
+                Vec3 previousEye = new Pose3d(body.lastPose()).transformPosition(localAnchor);
+                Vec3 currentEye = body.logicalPose().transformPosition(localAnchor);
+                result.put("body_id", body.getUniqueId().toString());
+                result.put("vehicle_id", vehicle.getUUID().toString());
+                result.put("body_removed", body.isRemoved());
+                result.put("local_eye", diagnosticVector(localAnchor));
+                result.put("previous_world_eye", diagnosticVector(previousEye));
+                result.put("world_eye", diagnosticVector(currentEye));
+                result.put("signed_plane_distance", portal.getDistanceToPlane(currentEye));
+                result.put("stable_mount", ANIMATED_RIDER_CROSSINGS.hasStableMount(key, player.serverLevel().getGameTime()));
+                result.put("stored_witness", ANIMATED_RIDER_CROSSINGS.has(key, player.serverLevel().getGameTime()));
+                result.put("plane_contact_armed", ANIMATED_RIDER_CROSSINGS.hasPlaneContact(key, player.serverLevel().getGameTime()));
+                result.put("currently_applicable", isStoredRiderCrossingApplicable(player, key));
+                ClientHandoff handoff = CLIENT_HANDOFFS.get(body.getUniqueId());
+                result.put("uncommitted_handoff", handoff != null && !handoff.committed);
+                if (before != null && after != null) {
+                    Vec3 localBefore = before.worldPosToPortalLocalPos(previousEye);
+                    Vec3 localAfter = after.worldPosToPortalLocalPos(currentEye);
+                    result.put("before_local_eye", diagnosticVector(localBefore));
+                    result.put("after_local_eye", diagnosticVector(localAfter));
+                    result.put("sample_crosses", portal.getPortalShape().raytracePortalShapeByLocalPos(
+                        after.getThisSideState(), localBefore, localAfter, 0) != null);
+                }
+                break;
+            }
+            passenger = vehicle;
+        }
+        return result;
+    }
+
+    private static List<Double> diagnosticVector(Vec3 vector) {
+        return List.of(vector.x, vector.y, vector.z);
     }
 
     private static SableRiderPortalWitnesses.Key riderWitnessKey(

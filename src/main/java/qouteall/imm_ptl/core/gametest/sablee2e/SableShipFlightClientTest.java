@@ -40,6 +40,7 @@ public final class SableShipFlightClientTest {
     private static final Map<String,Map<String,Object>> cases = new LinkedHashMap<>();
     private static final Map<String,List<Map<String,Object>>> crossings = new LinkedHashMap<>();
     private static final Map<String,List<String>> screenshots = new LinkedHashMap<>();
+    private static final Map<String,Map<String,Object>> overviewMeshes = new LinkedHashMap<>();
 
     public static void onClientTick(ClientTickEvent.Post event) {
         if (!SableShipFlightTest.enabled() || done) return;
@@ -108,7 +109,7 @@ public final class SableShipFlightClientTest {
                 catch (IllegalStateException pending) { waiting("propeller update: "+pending.getMessage()); return; }
             }
             // An independent client-only camera preserves the real player/seat graph while documenting the whole vessel.
-            if (request.get("leg").getAsInt()==-1 && !overviewToken.equals(token)) {
+            if (!overviewToken.equals(token)) {
                 if (overviewCamera==null) {
                     writeRenderDiagnostics(mc,body,token,"before-overview");
                     overviewCamera=net.minecraft.world.entity.EntityType.ARMOR_STAND.create(mc.level);
@@ -121,10 +122,24 @@ public final class SableShipFlightClientTest {
                 var view=SableShipObservationCamera.overview(width,height,length);
                 aimCamera(mc,overviewCamera,shipPoint(body,center,view.eye()),shipPoint(body,center,view.target()));
                 if (++overviewTicks<25) return;
-                writeRenderDiagnostics(mc,body,token,"overview");
-                try (NativeImage overview=Screenshot.takeScreenshot(mc.getMainRenderTarget())) {
-                    overview.writeToFile(PortalSmokeSupport.directory().resolve("overview-"+token.replace(':','-')+".png"));
+                var mesh=visibleStaticMesh(mc,body,request);
+                if (!Boolean.TRUE.equals(mesh.get("complete"))) {
+                    if (overviewTicks % 60==0) {
+                        writeRenderDiagnostics(mc,body,token,"overview-pending");
+                        PortalSmokeSupport.write("mesh-pending-"+token.replace(':','-')+".json",new Gson().toJson(mesh));
+                        try (NativeImage overview=Screenshot.takeScreenshot(mc.getMainRenderTarget())) {
+                            overview.writeToFile(PortalSmokeSupport.directory().resolve("overview-pending-"+token.replace(':','-')+".png"));
+                        }
+                    }
+                    require(overviewTicks<240,"visible static ship mesh incomplete: token="+token+" "+mesh);
+                    return;
                 }
+                writeRenderDiagnostics(mc,body,token,"overview");
+                String overviewFile="overview-"+token.replace(':','-')+".png";
+                try (NativeImage overview=Screenshot.takeScreenshot(mc.getMainRenderTarget())) {
+                    overview.writeToFile(PortalSmokeSupport.directory().resolve(overviewFile));
+                }
+                mesh.put("screenshot",overviewFile); overviewMeshes.put(token,mesh);
                 restorePlayerCamera(mc); overviewToken=token; stable=0; return;
             }
             // Observe the real panel from the seat's local eye region without modifying
@@ -168,6 +183,7 @@ public final class SableShipFlightClientTest {
                     for (String field:List.of("blocks","chunks")) report.put(field,request.get(field).getAsInt());
                     report.put("dimensions",java.util.stream.StreamSupport.stream(request.getAsJsonArray("dimensions").spliterator(),false).map(com.google.gson.JsonElement::getAsInt).toList());
                     report.put("assembled",true); cases.put(key,report);
+                    report.put("overview_mesh",overviewMeshes.get(token));
                     crossings.put(key,new ArrayList<>()); screenshots.put(key,new ArrayList<>());
                 }
                 screenshots.get(key).add(file);
@@ -179,6 +195,7 @@ public final class SableShipFlightClientTest {
                     if (SableShipFlightTest.aeronautics()) record.put("propellers",true);
                     record.put("panel_pixels",mutated?red:green); record.put("opposing_panel_pixels",mutated?green:red);
                     record.put("panel_roi_pixels",roi); record.put("blue_panel_pixels",blue); record.put("yellow_panel_pixels",yellow); record.put("screenshot",file);
+                    record.put("render_completeness",overviewMeshes.get(token));
                     crossings.get(key).add(record);
                 }
                 restorePlayerCamera(mc);
@@ -266,6 +283,78 @@ public final class SableShipFlightClientTest {
         // Use the same interpolated pose as Sable's renderer, not the newer physics pose.
         return body.renderPose().transformPosition(new org.joml.Vector3d(absolute.x(),absolute.y(),absolute.z()));
     }
+    /** Expectations come from received block states, never from the meshes being tested. */
+    private static Map<String,Object> visibleStaticMesh(Minecraft mc,ClientSubLevel body,JsonObject request) {
+        var occupied=new ArrayList<SableShipObservationCamera.Point>();
+        BlockPos center=body.getPlot().getCenterBlock();
+        for (var entry:request.getAsJsonArray("blocks_manifest")) {
+            var row=entry.getAsJsonArray();
+            BlockPos pos=center.offset(row.get(0).getAsInt(),row.get(1).getAsInt(),row.get(2).getAsInt());
+            var state=mc.level.getBlockState(pos);
+            if (state.getRenderShape()!=net.minecraft.world.level.block.RenderShape.MODEL) continue;
+            boolean exposed=false;
+            for (var direction:net.minecraft.core.Direction.values()) {
+                if (Block.shouldRenderFace(state,mc.level,pos,direction,pos.relative(direction))) { exposed=true; break; }
+            }
+            if (exposed) occupied.add(new SableShipObservationCamera.Point(pos.getX(),pos.getY(),pos.getZ()));
+        }
+        var camera=mc.gameRenderer.getMainCamera();
+        var worldEye=camera.getPosition();
+        var eye=body.renderPose().transformPositionInverse(new org.joml.Vector3d(worldEye.x,worldEye.y,worldEye.z));
+        var forward=body.renderPose().orientation().transformInverse(new org.joml.Vector3d(camera.getLookVector()));
+        var up=body.renderPose().orientation().transformInverse(new org.joml.Vector3d(camera.getUpVector()));
+        var view=new SableShipObservationCamera.View(cameraPoint(eye),cameraPoint(new org.joml.Vector3d(eye).add(forward)));
+        double fov=((qouteall.imm_ptl.core.compat.mixin.sable.InvokerGameRenderer_SableProjection)mc.gameRenderer)
+            .ip_sableEffectiveFov(camera,mc.getTimer().getGameTimeDeltaPartialTick(true),true);
+        double aspect=(double)mc.getMainRenderTarget().width/mc.getMainRenderTarget().height;
+        double viewDistance=mc.options.getEffectiveRenderDistance()*16.0;
+        var expected=SableShipVisibleSections.expectedSections(occupied,view,cameraPoint(up),fov,aspect,viewDistance);
+        var allOccupied=new java.util.HashSet<SableShipVisibleSections.Section>();
+        for (var block:occupied) allOccupied.add(new SableShipVisibleSections.Section(
+            Math.floorDiv((int)block.x(),16),Math.floorDiv((int)block.y(),16),Math.floorDiv((int)block.z(),16)));
+        require(!allOccupied.isEmpty() && expected.equals(allOccupied),
+            "wide overview failed to frame every exposed static hull section: expected="+allOccupied+" visible="+expected);
+        var ordered=expected.stream().sorted(java.util.Comparator.comparingInt(SableShipVisibleSections.Section::x)
+            .thenComparingInt(SableShipVisibleSections.Section::y).thenComparingInt(SableShipVisibleSections.Section::z)).toList();
+        int compiledCount=0,nonemptyCount=0;
+        var missing=new ArrayList<List<Integer>>();
+        var results=new ArrayList<Map<String,Object>>();
+        for (var key:ordered) {
+            var position=List.of(key.x(),key.y(),key.z());
+            var result=new LinkedHashMap<String,Object>(); result.put("position",position);
+            result.put("compiled",false); result.put("nonempty",false); results.add(result);
+            var section=body.getRenderData() instanceof dev.ryanhcode.sable.sublevel.render.vanilla.VanillaChunkedSubLevelRenderData vanilla
+                ? vanilla.getRenderSection(net.minecraft.core.SectionPos.of(key.x(),key.y(),key.z())) : null;
+            if (section==null || section.getCompiled()==net.minecraft.client.renderer.chunk.SectionRenderDispatcher.CompiledSection.UNCOMPILED) {
+                missing.add(position); continue;
+            }
+            compiledCount++; result.put("compiled",true);
+            var compiled=section.getCompiled();
+            if (!compiled.isEmpty(net.minecraft.client.renderer.RenderType.solid())
+                || !compiled.isEmpty(net.minecraft.client.renderer.RenderType.cutout())
+                || !compiled.isEmpty(net.minecraft.client.renderer.RenderType.cutoutMipped())
+                || !compiled.isEmpty(net.minecraft.client.renderer.RenderType.translucent())) {
+                nonemptyCount++; result.put("nonempty",true);
+            } else missing.add(position);
+        }
+        var receipt=new LinkedHashMap<String,Object>();
+        receipt.put("ship_id",body.getUniqueId().toString()); receipt.put("token",request.get("token").getAsString());
+        receipt.put("dimension",mc.level.dimension().location().toString());
+        receipt.put("view","overview"); receipt.put("expected_sections",expected.size());
+        receipt.put("expected_section_positions",ordered.stream().map(key->List.of(key.x(),key.y(),key.z())).toList());
+        receipt.put("section_results",results);
+        receipt.put("camera_plot_eye",List.of(eye.x,eye.y,eye.z));
+        receipt.put("camera_plot_forward",List.of(forward.x,forward.y,forward.z));
+        receipt.put("camera_plot_up",List.of(up.x,up.y,up.z));
+        receipt.put("vertical_fov_degrees",fov); receipt.put("aspect_ratio",aspect);
+        receipt.put("view_distance_blocks",viewDistance); receipt.put("framed_all_exposed_static_sections",true);
+        receipt.put("compiled_sections",compiledCount); receipt.put("nonempty_sections",nonemptyCount);
+        receipt.put("complete",!expected.isEmpty() && nonemptyCount==expected.size()); receipt.put("missing_sections",missing);
+        return receipt;
+    }
+    private static SableShipObservationCamera.Point cameraPoint(org.joml.Vector3d point) {
+        return new SableShipObservationCamera.Point(point.x,point.y,point.z);
+    }
     /** Read-only evidence: distinguish a missing compiled mesh from camera or lighting failures. */
     private static void writeRenderDiagnostics(Minecraft mc,ClientSubLevel body,String token,String stage) {
         var report=new LinkedHashMap<String,Object>();
@@ -307,13 +396,17 @@ public final class SableShipFlightClientTest {
                 // hidden-plot neighbors too; container.getChunk is lookup-only.
                 var container=SubLevelContainer.getContainer(body.getLevel());
                 var neighbors=new LinkedHashMap<String,Boolean>();
+                var plotHolders=new LinkedHashMap<String,Boolean>();
                 for (var direction:List.of(net.minecraft.core.Direction.NORTH,net.minecraft.core.Direction.SOUTH,
                     net.minecraft.core.Direction.WEST,net.minecraft.core.Direction.EAST)) {
                     var chunk=new net.minecraft.world.level.ChunkPos((origin.getX()>>4)+direction.getStepX(),
                         (origin.getZ()>>4)+direction.getStepZ());
-                    neighbors.put(direction.getName(),container!=null && container.getChunk(chunk)!=null);
+                    neighbors.put(direction.getName(),body.getLevel().getChunk(chunk.x,chunk.z,
+                        net.minecraft.world.level.chunk.status.ChunkStatus.FULL,false)!=null);
+                    plotHolders.put(direction.getName(),container!=null && container.getChunk(chunk)!=null);
                 }
                 item.put("horizontal_neighbors_present",neighbors);
+                item.put("plot_holder_neighbors_present",plotHolders);
                 var compiled=section.getCompiled();
                 item.put("uncompiled",compiled==net.minecraft.client.renderer.chunk.SectionRenderDispatcher.CompiledSection.UNCOMPILED);
                 item.put("solid_empty",compiled.isEmpty(net.minecraft.client.renderer.RenderType.solid()));

@@ -3,9 +3,12 @@ package qouteall.imm_ptl.core.compat.sable;
 import net.minecraft.world.phys.Vec3;
 import org.junit.jupiter.api.Test;
 import qouteall.imm_ptl.core.portal.PortalState;
+import qouteall.imm_ptl.core.portal.shape.BoxPortalShape;
 import qouteall.imm_ptl.core.portal.shape.RectangularPortalShape;
+import qouteall.imm_ptl.core.portal.shape.SpecialFlatPortalShape;
 import qouteall.imm_ptl.core.teleportation.TeleportationUtil;
 import qouteall.q_misc_util.my_util.DQuaternion;
+import qouteall.q_misc_util.my_util.Mesh2D;
 import qouteall.q_misc_util.my_util.RayTraceResult;
 
 import java.util.UUID;
@@ -227,6 +230,91 @@ class SableAnimatedPortalApproachTest {
         assertTrue(witnesses.has(key, 104));
         assertTrue(witnesses.has(key, 105), "The crossing is retained through the inclusive maximum age");
         assertFalse(witnesses.has(key, 106), "A stopped portal cannot extend the old crossing indefinitely");
+    }
+
+    @Test void exactPlaneFrameInSymmetricTwentyTickSweepRetainsProvenFrontHistory() {
+        Vec3 seat = SOURCE.add(2, 3, 0);
+        PortalState before = state(SOURCE.add(0, 0, -.75), DESTINATION, DQuaternion.identity, DQuaternion.identity, 1);
+        var contact = new SableRiderPlaneContact(100);
+        int strictHits = 0, historicalHits = 0;
+        for (int tick = 1; tick <= 20; tick++) {
+            PortalState after = state(SOURCE.add(0, 0, (tick - 10) * .075), DESTINATION,
+                DQuaternion.identity, DQuaternion.identity, 1);
+            Vec3 from = before.worldPosToPortalLocalPos(seat), to = after.worldPosToPortalLocalPos(seat);
+            if (sweepStationarySeat(before, after, seat) != null) strictHits++;
+            if (contact.sample(before, after, tick, from.z, to.z,
+                SableRiderPortalSweep.planeContactInsideAperture(RectangularPortalShape.INSTANCE, before, after, from, to))) historicalHits++;
+            before = after;
+        }
+        assertEquals(0, strictHits, "Original adjacent-pair sampler misses front -> exact plane -> behind");
+        assertEquals(1, historicalHits, "Continuous authoritative front history must survive the exact-plane frame");
+    }
+
+    @Test void rotatingPlaneCanPassThroughAnExactIdentityOrientationContact() {
+        Vec3 seat = SOURCE.add(2, 1, 0);
+        PortalState front = state(SOURCE, DESTINATION, DQuaternion.rotationByDegrees(new Vec3(0, 1, 0), 45), DQuaternion.identity, 1);
+        PortalState zero = state(SOURCE, DESTINATION, DQuaternion.identity, DQuaternion.identity, 1);
+        PortalState behind = state(SOURCE, DESTINATION, DQuaternion.rotationByDegrees(new Vec3(0, 1, 0), -45), DQuaternion.identity, 1);
+        var contact = new SableRiderPlaneContact(100);
+        Vec3 from = front.worldPosToPortalLocalPos(seat), on = zero.worldPosToPortalLocalPos(seat), to = behind.worldPosToPortalLocalPos(seat);
+        assertTrue(from.z > 0); assertEquals(0, on.z); assertTrue(to.z < 0);
+        assertFalse(contact.sample(front, zero, 1, from.z, on.z,
+            SableRiderPortalSweep.planeContactInsideAperture(RectangularPortalShape.INSTANCE, front, zero, from, on)));
+        assertTrue(contact.sample(zero, behind, 2, on.z, to.z,
+            SableRiderPortalSweep.planeContactInsideAperture(RectangularPortalShape.INSTANCE, zero, behind, on, to)));
+    }
+
+    @Test void exactPlaneHistoryStillRequiresTheRealStrictApertureAtContact() {
+        PortalState front = state(SOURCE.add(0, 0, -.5), DESTINATION, DQuaternion.identity, DQuaternion.identity, 1);
+        PortalState zero = state(SOURCE, DESTINATION, DQuaternion.identity, DQuaternion.identity, 1);
+        PortalState behind = state(SOURCE.add(0, 0, .5), DESTINATION, DQuaternion.identity, DQuaternion.identity, 1);
+        for (Vec3 seat : new Vec3[]{SOURCE.add(6, 0, 0), SOURCE.add(0, 5, 0), SOURCE.add(7, 0, 0)}) {
+            var contact = new SableRiderPlaneContact(100);
+            Vec3 from = front.worldPosToPortalLocalPos(seat), on = zero.worldPosToPortalLocalPos(seat), to = behind.worldPosToPortalLocalPos(seat);
+            assertFalse(contact.sample(front, zero, 1, from.z, on.z,
+                SableRiderPortalSweep.planeContactInsideAperture(RectangularPortalShape.INSTANCE, front, zero, from, on)));
+            assertFalse(contact.sample(zero, behind, 2, on.z, to.z,
+                SableRiderPortalSweep.planeContactInsideAperture(RectangularPortalShape.INSTANCE, zero, behind, on, to)));
+        }
+    }
+
+    @Test void exactPlaneContactUsesTheActualTriangleInsteadOfItsBoundingRectangle() {
+        PortalState state = state(SOURCE, DESTINATION, DQuaternion.identity, DQuaternion.identity, 1);
+        Mesh2D mesh = new Mesh2D();
+        mesh.addTriangle(-1, -1, 0, -1, -1, 0);
+        var triangle = new SpecialFlatPortalShape(mesh);
+        assertTrue(SableRiderPortalSweep.planeContactInsideAperture(triangle, state, state,
+            new Vec3(-4.5, -3.75, .5), new Vec3(-4.5, -3.75, 0)));
+        assertFalse(SableRiderPortalSweep.planeContactInsideAperture(triangle, state, state,
+            new Vec3(0, 0, .5), Vec3.ZERO), "Rectangle center lies outside the real triangle");
+        assertFalse(SableRiderPortalSweep.planeContactInsideAperture(triangle, state, state,
+            Vec3.ZERO, new Vec3(0, 0, -.5)));
+    }
+
+    @Test void exactPlaneContactRejectsEveryNonfiniteEndpointCoordinate() {
+        PortalState state = state(SOURCE, DESTINATION, DQuaternion.identity, DQuaternion.identity, 1);
+        for (double invalid : new double[]{Double.NaN, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY}) {
+            for (int endpoint = 0; endpoint < 2; endpoint++) {
+                for (int coordinate = 0; coordinate < 3; coordinate++) {
+                    for (boolean departing : new boolean[]{false, true}) {
+                        double[][] points = departing
+                            ? new double[][]{{1, 1, 0}, {1, 1, -.5}}
+                            : new double[][]{{1, 1, .5}, {1, 1, 0}};
+                        points[endpoint][coordinate] = invalid;
+                        assertFalse(SableRiderPortalSweep.planeContactInsideAperture(
+                            RectangularPortalShape.INSTANCE, state, state,
+                            new Vec3(points[0][0], points[0][1], points[0][2]),
+                            new Vec3(points[1][0], points[1][1], points[1][2])));
+                    }
+                }
+            }
+        }
+    }
+
+    @Test void nonplanarPortalDoesNotUsePlanarContactHistory() {
+        PortalState state = state(SOURCE, DESTINATION, DQuaternion.identity, DQuaternion.identity, 1);
+        assertFalse(SableRiderPortalSweep.planeContactInsideAperture(
+            BoxPortalShape.FACING_OUTWARDS, state, state, new Vec3(1, 1, .5), new Vec3(1, 1, 0)));
     }
 
     private static RayTraceResult sweepStationarySeat(PortalState before, PortalState after, Vec3 worldSeat) {

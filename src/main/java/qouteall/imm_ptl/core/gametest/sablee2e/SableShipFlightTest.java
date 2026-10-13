@@ -59,6 +59,7 @@ public final class SableShipFlightTest {
     private static Map<String, Object> caseReport, crossing;
     private static final List<Map<String, Object>> cases = new ArrayList<>();
     private static final List<Map<String, Object>> crossings = new ArrayList<>();
+    private static final List<Map<String, Object>> stoppedAnimationTrace = new ArrayList<>();
     private static String token;
     private static Portal stoppedAnimationPortal;
     private static String stoppedAnimationStage;
@@ -329,6 +330,8 @@ public final class SableShipFlightTest {
                 List.of(new qouteall.imm_ptl.core.portal.animation.NormalAnimation.Phase(20,
                     new qouteall.imm_ptl.core.portal.animation.DeltaUnilateralPortalState(direction.scale(sweepHalf*2),null,null),
                     qouteall.imm_ptl.core.portal.animation.TimingFunction.linear)),current.getGameTime(),1,false));
+            stoppedAnimationTrace.clear();
+            recordStoppedAnimationWitness("created");
             stoppedAnimationStart=new Vector3d(body.logicalPose().position());
             stoppedAnimationStartTick=current.getGameTime(); stoppedAnimationDrainedTicks=0;
             stoppedAnimationCrossedTick=-1;
@@ -337,6 +340,7 @@ public final class SableShipFlightTest {
             return;
         }
         if (stoppedAnimationStage.equals("animate")) {
+            recordStoppedAnimationWitness("animate");
             require(SubLevelContainer.getContainer(destination).getSubLevel(fixture.id())==null,
                 "held animated probe migrated before its delayed request");
             Vector3d center=body.logicalPose().transformPosition(new Vector3d(body.getSelfMassTracker().getCenterOfMass()));
@@ -364,6 +368,7 @@ public final class SableShipFlightTest {
             double angularSpeed=handle(body).getAngularVelocity(new Vector3d()).length();
             require(linearSpeed==0 && angularSpeed==0,
                 "delayed animation witness requires zero current native motion");
+            recordStoppedAnimationWitness("before-delayed-request");
             var manager=qouteall.imm_ptl.core.teleportation.ServerTeleportationManager.of(player.server);
             require(!manager.isJustTeleported(player,1),"stopped-animation request needs a quiet request interval");
             manager.onPlayerTeleportedInClient(player,current.dimension(),stoppedAnimationEye,stoppedAnimationPortal.getUUID());
@@ -411,6 +416,13 @@ public final class SableShipFlightTest {
         writeStoppedAnimationControl("idle");
         stoppedAnimationPortal.discard(); stoppedAnimationPortal=null; stoppedAnimationStage=null;
         finishCase();
+    }
+    private static void recordStoppedAnimationWitness(String stage) {
+        var sample=new LinkedHashMap<>(qouteall.imm_ptl.core.compat.sable.SableDimensionStackCompat
+            .describeAnimatedRiderWitness(player,stoppedAnimationPortal));
+        sample.put("stage",stage);
+        stoppedAnimationTrace.add(sample);
+        PortalSmokeSupport.write("stopped-animation-witness-"+caseIndex+".json",JSON.toJson(stoppedAnimationTrace));
     }
     private static void fly() {
         flightTicks++;

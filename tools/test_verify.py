@@ -1030,7 +1030,21 @@ class ShipVerificationHarnessTest(unittest.TestCase):
                         maximumStaticLift=15000.0, staticLiftWeightRatio=1.5, minimumAirPressure=0.9,
                         atmosphereModified=False, engineCount=8 if size == "CONTROL" else 252,
                         trimMomentX=30.0, trimMomentZ=-40.0)
-                client = dict(common, crossings=[], snapshots=5,
+                case_index = (0 if size == "CONTROL" else 2) + (route == "dimension-stack")
+                def mesh(leg):
+                    positions = [[1280063 + n, 8, 1280063] for n in range(1 if size == "CONTROL" else 2)]
+                    return dict(view="overview", ship_id=common["ship_id"], token=f"{case_index}:{leg}",
+                                dimension="minecraft:the_nether" if leg in (0, 2) else "minecraft:overworld",
+                                camera_plot_eye=[1280000.5, 130.0, 1280000.5],
+                                camera_plot_forward=[0.0, 0.0, 1.0], camera_plot_up=[0.0, 1.0, 0.0],
+                                vertical_fov_degrees=70.0, aspect_ratio=854/480, view_distance_blocks=160.0,
+                                framed_all_exposed_static_sections=True,
+                                expected_sections=len(positions), compiled_sections=len(positions),
+                                nonempty_sections=len(positions), complete=True, missing_sections=[],
+                                expected_section_positions=positions,
+                                section_results=[dict(position=p, compiled=True, nonempty=True) for p in positions],
+                                screenshot=f"overview-{case_index}-{leg}.png")
+                client = dict(common, crossings=[], snapshots=5, overview_mesh=mesh(-1),
                               screenshots=[f"{size}-{route}-{phase}.png" for phase in range(5)])
                 for leg in range(4):
                     worlds = ("minecraft:overworld", "minecraft:the_nether")
@@ -1042,7 +1056,7 @@ class ShipVerificationHarnessTest(unittest.TestCase):
                         unique_body=True, rider_graph=True, blocks=True, machinery=True, mutation=True,
                         panel_pixels=1200, opposing_panel_pixels=40, panel_roi_pixels=5000,
                         blue_panel_pixels=500, yellow_panel_pixels=500,
-                        screenshot=client["screenshots"][leg+1]))
+                        screenshot=client["screenshots"][leg+1], render_completeness=mesh(leg)))
                     if aeronautics:
                         direction = -1 if leg % 2 == 0 else 1
                         server["crossings"][-1].update(powered_thrust=True, propeller_count=8 if size == "CONTROL" else 252,
@@ -1077,7 +1091,8 @@ class ShipVerificationHarnessTest(unittest.TestCase):
         for side in ("server", "client"):
             (self.results / f"{side}-pass.txt").write_text("verified ship flight\n")
         for case in self.reports()["client"]["cases"]:
-            for name in case["screenshots"]:
+            overviews = [case["overview_mesh"]] + [c["render_completeness"] for c in case["crossings"]]
+            for name in case["screenshots"] + [m["screenshot"] for m in overviews]:
                 (self.results / name).write_bytes(base64.b64decode(
                     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLttAAAAABJRU5ErkJggg=="))
 
@@ -1387,6 +1402,101 @@ class ShipVerificationHarnessTest(unittest.TestCase):
         self.write_reports()
         (self.results / "CONTROL-ordinary-0.png").write_bytes(b"not an image")
         with self.assertRaisesRegex(RuntimeError, "invalid screenshot"):
+            verify.validate_ship_reports()
+
+    def test_ship_overviews_are_required_at_source_and_every_crossing_in_both_modes(self):
+        for addon in (False, True):
+            reports = self.reports(aeronautics=addon)
+            for index in range(len(reports["client"]["cases"])):
+                for leg in range(-1, 4):
+                    with self.subTest(addon=addon, case=index, leg=leg):
+                        reports = self.reports(aeronautics=addon)
+                        case = reports["client"]["cases"][index]
+                        owner = case if leg < 0 else case["crossings"][leg]
+                        del owner["overview_mesh" if leg < 0 else "render_completeness"]
+                        self.write_reports(reports)
+                        with self.assertRaisesRegex(RuntimeError, "missing overview mesh receipt"):
+                            verify.validate_ship_reports(aeronautics=addon)
+
+    def test_ship_overview_receipts_bind_identity_token_dimension_and_complete_counts(self):
+        invalid = {
+            "view": (None, "panel"), "ship_id": (None, "other-ship"),
+            "token": (None, "0:-1", "2:1"), "dimension": (None, "minecraft:overworld"),
+            "expected_sections": (None, True, 0, -1, 41, 2.0, "2"),
+            "compiled_sections": (None, True, 0, 1, 3, 2.0, "2"),
+            "nonempty_sections": (None, True, 0, 1, 3, 2.0, "2"),
+            "complete": (None, False, 1, "true"),
+            "framed_all_exposed_static_sections": (None, False, 1, "true"),
+            "camera_plot_eye": (None, [1, 2], [1, 2, float("nan")], [True, 0, 0]),
+            "camera_plot_forward": (None, [0, 0, 0], [0, 1, 0], [float("inf"), 0, 0]),
+            "camera_plot_up": (None, [0, 0, 0], [0, 0, 1], [float("nan"), 0, 0]),
+            "vertical_fov_degrees": (None, True, 0, 180, float("nan"), "70"),
+            "aspect_ratio": (None, True, 0, -1, float("inf"), "1.5"),
+            "view_distance_blocks": (None, True, 0, -1, float("nan"), "160"),
+            "missing_sections": (None, False, {}, [[1280063, 8, 1280063]]),
+            "screenshot": (None, "overview-2--1.png", "../overview-2-0.png", "CONTROL-ordinary-0.png"),
+        }
+        for field, values in invalid.items():
+            for value in values:
+                with self.subTest(field=field, value=value):
+                    reports = self.reports()
+                    reports["client"]["cases"][2]["crossings"][0]["render_completeness"][field] = value
+                    self.write_reports(reports)
+                    with self.assertRaises(RuntimeError):
+                        verify.validate_ship_reports()
+
+    def test_ship_overview_section_sets_reject_missing_duplicate_extra_and_malformed_entries(self):
+        invalid_sets = (None, [], [[1, 2, 3]], [[1, 2, 3], [1, 2, 3]],
+                        [[1, 2, 3], None], [[1, 2, 3], [1, 2]], [[1, 2, 3], [True, 2, 3]],
+                        [[1, 2, 3], [1, 2, 3.0]], [[1, 2, 3], [1, 2, 2**31]])
+        for positions in invalid_sets:
+            with self.subTest(positions=positions):
+                reports = self.reports()
+                reports["client"]["cases"][2]["overview_mesh"]["expected_section_positions"] = positions
+                self.write_reports(reports)
+                with self.assertRaises(RuntimeError):
+                    verify.validate_ship_reports()
+        for mode in ("missing", "empty", "duplicate", "extra", "wrong", "malformed", "not_compiled", "empty_mesh", "truthy"):
+            with self.subTest(mode=mode):
+                reports = self.reports()
+                receipt = reports["client"]["cases"][2]["overview_mesh"]
+                results = receipt["section_results"]
+                if mode == "missing": del receipt["section_results"]
+                elif mode == "empty": receipt["section_results"] = []
+                elif mode == "duplicate": results[1] = dict(results[0])
+                elif mode == "extra": results.append(dict(position=[1, 2, 3], compiled=True, nonempty=True))
+                elif mode == "wrong": results[1]["position"] = [1, 2, 3]
+                elif mode == "malformed": results[1] = None
+                elif mode == "not_compiled": results[1]["compiled"] = False
+                elif mode == "empty_mesh": results[1]["nonempty"] = False
+                else: results[1]["compiled"] = 1
+                self.write_reports(reports)
+                with self.assertRaises(RuntimeError):
+                    verify.validate_ship_reports()
+        reports = self.reports()
+        reports["client"]["cases"][2]["overview_mesh"]["section_results"].reverse()
+        self.write_reports(reports)
+        verify.validate_ship_reports()  # Set identity is independent of iteration order.
+
+    def test_ship_overview_pngs_cannot_be_missing_corrupt_redirected_or_reused(self):
+        for leg in range(-1, 4):
+            for invalid in ("missing", "truncated", "symlink"):
+                with self.subTest(leg=leg, invalid=invalid):
+                    self.write_reports()
+                    screenshot = self.results / f"overview-2-{leg}.png"
+                    if screenshot.is_symlink(): screenshot.unlink()
+                    if invalid == "missing": screenshot.unlink()
+                    elif invalid == "truncated": screenshot.write_bytes(screenshot.read_bytes()[:24])
+                    else:
+                        screenshot.unlink()
+                        screenshot.symlink_to(self.results / "CONTROL-ordinary-0.png")
+                    with self.assertRaisesRegex(RuntimeError, "missing ship flight screenshot|invalid screenshot|redirected screenshot"):
+                        verify.validate_ship_reports()
+                    screenshot.unlink(missing_ok=True)
+        reports = self.reports()
+        reports["client"]["cases"][0]["screenshots"][0] = "overview-0--1.png"
+        self.write_reports(reports)
+        with self.assertRaisesRegex(RuntimeError, "reused screenshot"):
             verify.validate_ship_reports()
 
     def test_ship_crossing_requires_measured_pixels_and_its_own_screenshot(self):

@@ -983,6 +983,87 @@ def validate_ship_reports(aeronautics: bool = False, ship_size: str = "all") -> 
     def finite(value) -> bool:
         return type(value) in (int, float) and math.isfinite(value)
 
+    def screenshot_file(name, label):
+        require(isinstance(name, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*\.png", name) is not None
+                and name not in screenshot_names, f"{label}: invalid or reused screenshot name")
+        screenshot_names.add(name)
+        screenshot = RESULT_DIR / name
+        require(not screenshot.is_symlink(), f"{label}: redirected screenshot")
+        try:
+            with screenshot.open("rb") as image_file:
+                header = image_file.read(24)
+                length = image_file.seek(0, 2)
+                image_file.seek(max(0, length - 12))
+                footer = image_file.read()
+        except OSError as exc:
+            raise RuntimeError(f"missing ship flight screenshot: {name}") from exc
+        require(length >= 57 and len(header) == 24 and header[:8] == b"\x89PNG\r\n\x1a\n" and header[12:16] == b"IHDR"
+                and footer == b"\x00\x00\x00\x00IEND\xaeB`\x82"
+                and int.from_bytes(header[16:20], "big") > 0 and int.from_bytes(header[20:24], "big") > 0,
+                f"{label}: invalid screenshot {name}")
+
+    def overview_mesh(receipt, case, leg, label):
+        require(isinstance(receipt, dict), f"{label}: missing overview mesh receipt")
+        case_index = (0 if case["size"] == "CONTROL" else 2) + (case["route"] == "dimension-stack")
+        token = f"{case_index}:{leg}"
+        dimension = worlds[0] if leg < 0 else worlds[(leg + 1) % 2]
+        require(receipt.get("view") == "overview" and receipt.get("ship_id") == case["ship_id"]
+                and receipt.get("token") == token and receipt.get("dimension") == dimension,
+                f"{label}: overview identity/token/dimension mismatch")
+        require(receipt.get("framed_all_exposed_static_sections") is True,
+                f"{label}: overview did not frame all exposed static sections")
+        vectors = []
+        for field in ("camera_plot_eye", "camera_plot_forward", "camera_plot_up"):
+            vector = receipt.get(field)
+            require(isinstance(vector, list) and len(vector) == 3 and all(finite(v) for v in vector),
+                    f"{label}: invalid overview {field}")
+            vectors.append(vector)
+        forward, up = vectors[1:]
+        cross = [forward[1] * up[2] - forward[2] * up[1],
+                 forward[2] * up[0] - forward[0] * up[2],
+                 forward[0] * up[1] - forward[1] * up[0]]
+        require(all(finite(v) for v in cross) and math.hypot(*cross) > 1e-9,
+                f"{label}: degenerate overview camera basis")
+        require(finite(receipt.get("vertical_fov_degrees")) and 0 < receipt["vertical_fov_degrees"] < 180
+                and finite(receipt.get("aspect_ratio")) and receipt["aspect_ratio"] > 0
+                and finite(receipt.get("view_distance_blocks")) and receipt["view_distance_blocks"] > 0,
+                f"{label}: invalid overview projection")
+        expected = receipt.get("expected_sections")
+        require(positive_integer(expected)
+                and expected <= server_cases[(case["size"], case["route"])]["integrity_snapshot"]["plotSections"],
+                f"{label}: invalid expected overview section count")
+        require(all(type(receipt.get(field)) is int and receipt[field] == expected
+                    for field in ("compiled_sections", "nonempty_sections"))
+                and receipt.get("complete") is True and receipt.get("missing_sections") == [],
+                f"{label}: incomplete overview meshes")
+
+        def section_position(value):
+            require(isinstance(value, list) and len(value) == 3
+                    and all(type(v) is int and -(2**31) <= v < 2**31 for v in value),
+                    f"{label}: invalid overview section position")
+            return tuple(value)
+
+        positions = receipt.get("expected_section_positions")
+        require(isinstance(positions, list) and len(positions) == expected,
+                f"{label}: missing manifest-derived overview section set")
+        expected_set = {section_position(value) for value in positions}
+        require(len(expected_set) == expected, f"{label}: duplicate expected overview section")
+        results = receipt.get("section_results")
+        require(isinstance(results, list) and len(results) == expected,
+                f"{label}: missing complete overview section results")
+        actual = set()
+        for result in results:
+            require(isinstance(result, dict), f"{label}: invalid overview section result")
+            position = section_position(result.get("position"))
+            require(position in expected_set and position not in actual,
+                    f"{label}: unexpected or duplicate overview section result")
+            actual.add(position)
+            require(result.get("compiled") is True and result.get("nonempty") is True,
+                    f"{label}: missing compiled nonempty overview section")
+        name = receipt.get("screenshot")
+        require(name == f"overview-{case_index}-{leg}.png", f"{label}: wrong overview screenshot")
+        screenshot_file(name, label)
+
     def integrity_snapshot(snapshot, case, dimension, current_blocks, label):
         require(isinstance(snapshot, dict), f"{label}: missing integrity snapshot")
         require(snapshot.get("shipId") == case["ship_id"] and snapshot.get("size") == case["size"]
@@ -1165,6 +1246,10 @@ def validate_ship_reports(aeronautics: bool = False, ship_size: str = "all") -> 
             if side == "server":
                 server_cases[key] = case
             else:
+                overview_mesh(case.get("overview_mesh"), case, -1, label + "/source")
+                for crossing in crossings:
+                    overview_mesh(crossing.get("render_completeness"), case, crossing["leg"],
+                                  f"{label}/{crossing['leg']}")
                 require(positive_integer(case.get("snapshots"), 5), f"{label}: source and four arrival snapshots required")
                 screenshots = case.get("screenshots")
                 require(isinstance(screenshots, list) and len(screenshots) == case["snapshots"], f"{label}: missing graphical evidence")
@@ -1191,23 +1276,7 @@ def validate_ship_reports(aeronautics: bool = False, ship_size: str = "all") -> 
                             and blue * 20 >= area and yellow * 20 >= area,
                             f"{label}: panel pixels lack coverage or state contrast")
                 for name in screenshots:
-                    require(isinstance(name, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*\.png", name) is not None
-                            and name not in screenshot_names, f"{label}: invalid or reused screenshot name")
-                    screenshot_names.add(name)
-                    screenshot = RESULT_DIR / name
-                    require(not screenshot.is_symlink(), f"{label}: redirected screenshot")
-                    try:
-                        with screenshot.open("rb") as image_file:
-                            header = image_file.read(24)
-                            length = image_file.seek(0, 2)
-                            image_file.seek(max(0, length - 12))
-                            footer = image_file.read()
-                    except OSError as exc:
-                        raise RuntimeError(f"missing ship flight screenshot: {name}") from exc
-                    require(length >= 57 and len(header) == 24 and header[:8] == b"\x89PNG\r\n\x1a\n" and header[12:16] == b"IHDR"
-                            and footer == b"\x00\x00\x00\x00IEND\xaeB`\x82"
-                            and int.from_bytes(header[16:20], "big") > 0 and int.from_bytes(header[20:24], "big") > 0,
-                            f"{label}: invalid screenshot {name}")
+                    screenshot_file(name, label)
 
 
 def validate_results(client_exit: int, smoke: bool = False, ships: bool = False, aeronautics: bool = False,

@@ -77,4 +77,57 @@ class SableRiderPortalWitnessesTest {
         store.record(key(), 103); store.clear();
         assertFalse(store.has(key(), 104)); assertFalse(store.hasStableMount(key(), 104));
     }
+
+    @Test void exactPlaneContactsShareDismountMigrationAndCleanupInvalidation() {
+        for (int invalidation = 0; invalidation < 4; invalidation++) {
+            var store = new SableRiderPortalWitnesses(100);
+            Object before = new Object(), zero = new Object(), after = new Object();
+            assertFalse(store.samplePlaneContact(key(), before, zero, 100, 1, 0, true));
+            assertTrue(store.hasPlaneContact(key(), 100));
+            switch (invalidation) {
+                case 0 -> store.invalidatePlayer(player);
+                case 1 -> store.invalidateBody(body);
+                case 2 -> store.invalidate(key());
+                case 3 -> store.clear();
+            }
+            assertFalse(store.hasPlaneContact(key(), 101));
+            assertFalse(store.samplePlaneContact(key(), zero, after, 101, 0, -1, true));
+        }
+    }
+
+    @Test void mountGenerationChangeCannotReuseAnArmedPlaneContact() {
+        var store = new SableRiderPortalWitnesses(100);
+        Object before = new Object(), zero = new Object(), after = new Object();
+        store.observeMount(player, body, vehicle, source, 99);
+        store.samplePlaneContact(key(), before, zero, 100, 1, 0, true);
+        store.observeMount(player, body, UUID.randomUUID(), source, 101);
+        store.observeMount(player, body, vehicle, source, 102);
+        assertFalse(store.hasPlaneContact(key(), 102));
+        assertFalse(store.samplePlaneContact(key(), zero, after, 103, 0, -1, true));
+    }
+
+    @Test void planeContactsAreDimensionScopedExpireAndCannotCrossTargetIdentity() {
+        var store = new SableRiderPortalWitnesses(5);
+        Object before = new Object(), zero = new Object(), after = new Object();
+        store.samplePlaneContact(key(), before, zero, 100, 1, 0, true);
+        store.expire(destination, 1000);
+        assertTrue(store.hasPlaneContact(key(), 101));
+        var editedDestination = new SableRiderPortalWitnesses.Key(player, body, vehicle, portal, source, new Object());
+        assertFalse(store.samplePlaneContact(editedDestination, zero, after, 101, 0, -1, true));
+        store.expire(source, 106);
+        assertFalse(store.hasPlaneContact(key(), 106));
+        assertFalse(store.samplePlaneContact(key(), zero, after, 107, 0, -1, true));
+    }
+
+    @Test void recordingCrossingConsumesTheContactAndDoesNotAuthorizeAReplay() {
+        var store = new SableRiderPortalWitnesses(100);
+        Object before = new Object(), zero = new Object(), after = new Object();
+        store.samplePlaneContact(key(), before, zero, 100, 1, 0, true);
+        assertTrue(store.samplePlaneContact(key(), zero, after, 101, 0, -1, true));
+        store.record(key(), 101);
+        assertTrue(store.has(key(), 101)); assertFalse(store.hasPlaneContact(key(), 101));
+        store.invalidateBody(body);
+        assertFalse(store.samplePlaneContact(key(), zero, after, 102, 0, -1, true));
+        assertFalse(store.has(key(), 102));
+    }
 }

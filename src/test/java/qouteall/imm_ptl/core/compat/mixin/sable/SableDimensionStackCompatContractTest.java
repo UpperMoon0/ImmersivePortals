@@ -318,6 +318,9 @@ class SableDimensionStackCompatContractTest {
         }
         assertTrue(invocationIndex(capture, "hasStableMount") < invocationIndex(capture, "record"));
         assertTrue(invocationIndex(capture, "raytracePortalShapeByLocalPos") < invocationIndex(capture, "record"));
+        assertTrue(invokesNamed(capture, "planeContactInsideAperture"));
+        assertTrue(invokesNamed(capture, "samplePlaneContact"));
+        assertTrue(invocationIndex(capture, "samplePlaneContact") < invocationIndex(capture, "record"));
         assertTrue(invokesNamed(applicability, "getVehicle"));
         assertTrue(invokesNamed(applicability, "getDestDim"));
         assertTrue(invokesNamed(applicability, "isRiderBehindPortalAperture"));
