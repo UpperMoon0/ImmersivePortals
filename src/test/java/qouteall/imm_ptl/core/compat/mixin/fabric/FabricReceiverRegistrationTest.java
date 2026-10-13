@@ -159,12 +159,9 @@ class FabricReceiverRegistrationTest {
         }
     }
 
-    @Test void exceptionReleasesOnlyTheRegistrationLockAndVersionsAreStrictlyGated() {
+    @Test void exceptionReleasesOnlyTheRegistrationLock() {
         Map<Object, Object> map = new ConcurrentHashMap<>();
         assertThrows(IllegalStateException.class, () -> FabricReceiverRegistration.register(map, () -> { throw new IllegalStateException(); }));
         assertTrue(FabricReceiverRegistration.register(map, () -> true));
-        assertDoesNotThrow(() -> FabricReceiverRegistration.checkVersion("4.2.2+a92978fd19"));
-        for (String version : List.of("4.2.3", "4.2.2+unknown", "4.3.1", ""))
-            assertThrows(IllegalStateException.class, () -> FabricReceiverRegistration.checkVersion(version));
     }
 }

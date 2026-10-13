@@ -15,7 +15,7 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
 
-/** Forgified Fabric networking 4.2.2+a92978fd19; retain upstream callback/duplicate semantics. */
+/** Retain upstream callback/duplicate semantics across structurally compatible networking APIs. */
 @Pseudo
 @Mixin(targets = "org.sinytra.fabric.networking_api.NeoNetworkRegistrar$NeoPayloadHandler", remap = false)
 public class MixinFabricNeoPayloadHandler {

@@ -29,6 +29,7 @@ public final class SableServerFirstClientHandoff {
     private static final int POST_HANDOFF_TELEPORT_GUARD_TICKS = 2;
     private static Pending pending;
     private static ReadyToApply readyToApply;
+    private static SableRiderMovementHold movementHold;
 
     static {
         NeoForge.EVENT_BUS.addListener(ClientCleanupEvent.class, event -> clear());
@@ -46,6 +47,7 @@ public final class SableServerFirstClientHandoff {
         );
         pending = new Pending(handoffId, portal.getUUID(), null, interpolationTransform,
             TransformationManager.capturePlayerRotationContext(), player.getXRot(), player.getYRot(), captureRider(player));
+        startMovementHold(player, pending.rider(), portal.getDestDim());
         return handoffId;
     }
 
@@ -79,6 +81,27 @@ public final class SableServerFirstClientHandoff {
             player.getYRot(),
             captureRider(player)
         );
+        startMovementHold(player, pending.rider(), destinationDimension);
+    }
+
+    private static void startMovementHold(LocalPlayer player, RiderIdentity rider, ResourceKey<Level> destination) {
+        if (movementHold != null) movementHold.cancel();
+        movementHold = rider.vehicleId() == null ? null : new SableRiderMovementHold(player, rider.vehicleId(),
+            rider.sourceDimension(), destination, RIDER_SYNC_TIMEOUT_TICKS);
+    }
+
+    public static boolean shouldHoldDetachedMovement(LocalPlayer player) {
+        if (movementHold == null) return false;
+        boolean hold = movementHold.shouldHold(player,
+            player.getVehicle() == null ? null : player.getVehicle().getUUID(), player.level().dimension());
+        if (movementHold.invalidated() || !player.isAlive()) {
+            // Respawns replace LocalPlayer, whereas IP's correlated dimension transfer retains
+            // that instance. An unrelated player/frame/seat must also release portal gating.
+            clear();
+            clearClientPendingGate(player);
+            return false;
+        }
+        return hold;
     }
 
     /**
@@ -170,6 +193,7 @@ public final class SableServerFirstClientHandoff {
         if (player == null) return;
 
         if (!success) {
+            clearMovementHold();
             readyToApply = null;
             clearClientPendingGate(player);
             return;
@@ -189,6 +213,7 @@ public final class SableServerFirstClientHandoff {
                 "Sable server-first teleport {} for portal {} was acknowledged before the authoritative dimension switch (expected {}, got {})",
                 handoffId, portalId, destinationDimension.location(), player.level().dimension().location()
             );
+            clearMovementHold();
             clearClientPendingGate(player);
             return;
         }
@@ -205,9 +230,30 @@ public final class SableServerFirstClientHandoff {
     }
 
     private static void tick() {
-        ReadyToApply ready = readyToApply;
         LocalPlayer player = Minecraft.getInstance().player;
-        if (ready == null || player == null) return;
+        if (player == null) {
+            clear();
+            return;
+        }
+        // Mounted players need lifecycle observation too: aiStep may not execute while riding.
+        shouldHoldDetachedMovement(player);
+        if (movementHold != null) {
+            movementHold.tick();
+            if (movementHold.expired()) {
+                // Lost/rejected packet sequences must not leave movement or portal selection
+                // locked forever. This is the existing 100-tick rider synchronization limit.
+                LOGGER.warn("Timed out waiting for Sable rider handoff; releasing local movement hold");
+                clearMovementHold();
+                if (pending != null) {
+                    pending = null;
+                    clearClientPendingGate(player);
+                }
+                // Preserve the existing post-Ack seat timer and fallback transform;
+                // ending the movement hold must not discard an acknowledged rotation.
+            }
+        }
+        ReadyToApply ready = readyToApply;
+        if (ready == null) return;
 
         if (tryApplyReady(player)) return;
 
@@ -242,6 +288,7 @@ public final class SableServerFirstClientHandoff {
         ScaleUtilsClient.onClientPlayerTeleported(transformSnapshot);
         guardAgainstImmediatePortalRetrigger();
         readyToApply = null;
+        clearMovementHold();
         return true;
     }
 
@@ -281,7 +328,13 @@ public final class SableServerFirstClientHandoff {
         return transformSnapshot;
     }
 
+    private static void clearMovementHold() {
+        if (movementHold != null) movementHold.cancel();
+        movementHold = null;
+    }
+
     public static void clear() {
+        clearMovementHold();
         pending = null;
         readyToApply = null;
     }

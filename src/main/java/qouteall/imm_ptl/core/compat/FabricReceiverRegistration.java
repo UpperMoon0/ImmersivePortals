@@ -13,10 +13,4 @@ public final class FabricReceiverRegistration {
         }
     }
 
-    public static void checkVersion(String version) {
-        if (!"4.2.2+a92978fd19".equals(version)) {
-            throw new IllegalStateException("Immersive Portals: unsupported Forgified Fabric networking " + version
-                + "; receiver compatibility requires 4.2.2+a92978fd19 (bundled by owo-lib 0.12.15-beta.12).");
-        }
-    }
 }

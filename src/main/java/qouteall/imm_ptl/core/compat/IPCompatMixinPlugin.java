@@ -57,8 +57,17 @@ public class IPCompatMixinPlugin implements IMixinConfigPlugin {
         LoadingModList modList = LoadingModList.get();
         if (mixinClassName.contains(".fabric.")) {
             if (modList.getModFileById("fabric_networking_api_v1") == null) return false;
-            FabricReceiverRegistration.checkVersion(version(modList, "fabric_networking_api_v1"));
-            requireTarget(targetClassName, "Forgified Fabric networking 4.2.2+a92978fd19");
+            if (!checkedTargets.contains(targetClassName)) {
+                String apiVersion = version(modList, "fabric_networking_api_v1");
+                try {
+                    FabricNetworkingCompatibility.check(
+                        MixinService.getService().getBytecodeProvider().getClassNode(targetClassName), apiVersion);
+                    checkedTargets.add(targetClassName);
+                } catch (Exception exception) {
+                    throw new IllegalStateException("Immersive Portals: incompatible Forgified Fabric networking "
+                        + apiVersion + " target " + targetClassName, exception);
+                }
+            }
             return true;
         }
         if (mixinClassName.contains(".iris.") || mixinClassName.contains(".sodium.")

@@ -150,6 +150,8 @@ def localAeronauticsAvailable = localAeronauticsJars.every { it.exists() }
 def verificationRenderer = providers.gradleProperty('verificationRenderer').getOrElse('sodium')
 def verificationSable = providers.gradleProperty('verificationSable').getOrElse('true').toBoolean()
 def verificationRendererStaged = providers.gradleProperty('verificationRendererStaged').getOrElse('false').toBoolean()
+// Verification only: explicitly load newer networking modules alongside owo-lib's nested baseline.
+def verificationNetworking = providers.gradleProperty('verificationNetworking').getOrElse('bundled')
 if (!(verificationRenderer in ['vanilla', 'sodium', 'iris', 'iris-active', 'embeddium', 'neoculus', 'neoculus-active', 'veil'])) {
     throw new GradleException('Unknown verificationRenderer: ' + verificationRenderer)
 }
@@ -311,6 +313,18 @@ configurations {
 }
 
 dependencies {
+    // Separate configurations keep each real upstream ABI visible instead of resolving one winner.
+    ['4.2.2+a92978fd19', '4.3.0+5c124ecf19', '4.3.1+7e3d421f19'].eachWithIndex { version, index ->
+        def contract = configurations.create("fabricNetworkingContract${index}") {
+            canBeConsumed = false
+            canBeResolved = true
+            transitive = false
+        }
+        add(contract.name, "org.sinytra.forgified-fabric-api:fabric-networking-api-v1:${version}")
+    }
+    if (verificationNetworking != 'bundled') {
+        runtimeOnly("org.sinytra.forgified-fabric-api:fabric-networking-api-v1:${verificationNetworking}") { transitive = false }
+    }
     irisContract "maven.modrinth:iris:1.8.14-beta.1+1.21.1-neoforge"
     neoculusContract "maven.modrinth:neoculus:ZMibIRkN"
     implementation "net.neoforged:neoforge:${neo_version}"
@@ -332,7 +346,7 @@ dependencies {
     testImplementation "org.junit.jupiter:junit-jupiter"
     testImplementation "org.ow2.asm:asm-tree:9.7.1"
     // Execute the actual owo-lib bundled receiver handler in concurrency regressions.
-    testImplementation("org.sinytra.forgified-fabric-api:fabric-networking-api-v1:4.2.2+a92978fd19") { transitive = false }
+    testImplementation("org.sinytra.forgified-fabric-api:fabric-networking-api-v1:${verificationNetworking == 'bundled' ? '4.2.2+a92978fd19' : verificationNetworking}") { transitive = false }
     testImplementation("maven.modrinth:embeddium:1.0.15+mc1.21.1") { transitive = false }
     testImplementation("net.caffeinemc:sodium-neoforge-mod:0.8.12+mc1.21.1") { transitive = false }
     compileOnly "maven.modrinth:iris:1.8.14-beta.1+1.21.1-neoforge"
@@ -365,9 +379,17 @@ dependencies {
 
 tasks.named('test').configure {
     useJUnitPlatform()
+    if (verificationNetworking != 'bundled') {
+        reports.junitXml.outputLocation = layout.buildDirectory.dir("test-results/networking-${verificationNetworking}")
+        reports.html.outputLocation = layout.buildDirectory.dir("reports/tests/networking-${verificationNetworking}")
+    }
+    inputs.files((0..2).collect { configurations.getByName("fabricNetworkingContract${it}") })
     doFirst {
         systemProperty 'ip.irisJar', configurations.irisContract.singleFile.absolutePath
         systemProperty 'ip.neoculusJar', configurations.neoculusContract.singleFile.absolutePath
+        systemProperty 'ip.fabricNetworkingJars', (0..2).collect {
+            configurations.getByName("fabricNetworkingContract${it}").singleFile.absolutePath
+        }.join(File.pathSeparator)
     }
 }
 

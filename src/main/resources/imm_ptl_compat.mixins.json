@@ -55,6 +55,7 @@
     "neoculus.MixinNeOculusTextureInfoCache",
     "neoculus.MixinNeOculusShaderTransformer",
     "sable.MixinClientTeleportationManager_SableServerFirstAck",
+    "sable.MixinLocalPlayer_SableRiderMovementHold",
     "sable.MixinClientboundStartTrackingSubLevelPacket_SablePortalCompat",
     "sable.MixinSableClientPacketContext_SablePortalCompat",
     "sodium.IESodiumWorldRenderer",

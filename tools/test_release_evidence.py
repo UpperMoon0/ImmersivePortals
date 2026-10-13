@@ -184,14 +184,17 @@ class ReleaseEvidenceTest(unittest.TestCase):
         # CI's flow-map entries have simple scalars. Compare rendered job names
         # without adding a runtime YAML dependency to verification runners.
         workflow = (evidence.ROOT / ".github/workflows/ci.yml").read_text()
-        expected = ["Select integration checks", "Core verification", "Required verification",
-                    "Sable graphical E2E / udp", "Sable graphical E2E / tcp"]
+        expected = ["Select integration checks", "Core verification", "Required verification"]
+        for transport in ("udp", "tcp"):
+            for networking in ("bundled", "4.3.0+5c124ecf19", "4.3.1+7e3d421f19"):
+                expected.append(f"Sable graphical E2E / {transport} / {networking} / normal")
+            expected.append(f"Sable graphical E2E / {transport} / 4.3.1+7e3d421f19 / impaired")
         for group in ("portal-visual", "real-pack-visual"):
             block = re.split(r"\n  [a-z][\w-]*:\n", workflow.split(f"\n  {group}:\n", 1)[1], maxsplit=1)[0]
             for flow in re.findall(r"- \{ ([^}]+) \}", block):
                 values = [pair.split(": ", 1)[1] for pair in flow.split(", ")]
                 expected.append(f"{group} ({', '.join(values)}) / visual")
-        self.assertEqual(len(expected), 35)
+        self.assertEqual(len(expected), 41)
         self.assertCountEqual(evidence.required_jobs(), expected)
 
     def test_fresh_release_keeps_every_ci_visual_configuration(self):
@@ -200,8 +203,10 @@ class ReleaseEvidenceTest(unittest.TestCase):
                     for flow in re.findall(r"- \{ ([^}]+) \}", text)]
         ci = (evidence.ROOT / ".github/workflows/ci.yml").read_text()
         release = (evidence.ROOT / ".github/workflows/release.yml").read_text()
-        self.assertEqual(len(members(ci)), 30)
-        self.assertCountEqual(members(ci), members(release))
+        ci_visual = ci.split("\n  portal-visual:\n", 1)[1]
+        release_visual = release.split("\n  compatibility:\n", 1)[1]
+        self.assertEqual(len(members(ci_visual)), 30)
+        self.assertCountEqual(members(ci_visual), members(release_visual))
 
 
     def test_fresh_release_sable_transport_parity_and_aggregate_gate(self):
@@ -218,6 +223,13 @@ class ReleaseEvidenceTest(unittest.TestCase):
 
         self.assertEqual(transports(ci_job), ["udp", "tcp"])
         self.assertEqual(transports(release_job), transports(ci_job))
+        for key in ("networking", "network"):
+            pattern = rf"(?m)^\s*{key}:\s*\[([^]]+)\]\s*$"
+            self.assertEqual(re.findall(pattern, ci_job), re.findall(pattern, release_job))
+        self.assertCountEqual(re.findall(r"- \{ ([^}]+) \}", ci_job), re.findall(r"- \{ ([^}]+) \}", release_job))
+        for job in (ci_job, release_job):
+            self.assertIn("IP_VERIFICATION_NETWORKING: ${{ matrix.networking }}", job)
+            self.assertIn("IP_NETWORK_STRESS:", job)
         self.assertIn("fail-fast: false", release_job)
         self.assertIn("Sable dedicated graphical E2E / ${{ matrix.transport }}", release_job)
 
