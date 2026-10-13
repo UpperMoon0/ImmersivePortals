@@ -4,6 +4,7 @@
 Modes:
   core  - build + JUnit + NeoForge GameTests in one Gradle invocation
   e2e   - dedicated Sable server + real graphical client + marker validation
+  ships - separate complex Sable ship flight evidence (draft baseline)
   visual - real portal pixels + shader reload + runtime timing budgets
   full  - core followed by e2e and visual
   matrix - visual suite across renderer and optional-Sable configurations
@@ -45,6 +46,7 @@ DIAGNOSTIC_COMMAND_SECONDS = 8
 DIAGNOSTIC_MAX_JVMS = 4
 DIAGNOSTIC_MAX_BYTES = 2 * 1024 * 1024
 VISUAL_CLEANUP_SECONDS = 120
+SHIPS_CLIENT_SECONDS = 20 * 60
 MATRIX = (("vanilla", True), ("sodium", True), ("iris", True), ("iris-active", True),
           ("embeddium", False), ("neoculus", False), ("neoculus-active", False),
           ("veil", False), ("vanilla", False))
@@ -233,7 +235,7 @@ def launch_windows_interactive(
 
 
     wrapper = RESULT_DIR / "client-session.cmd"
-    inherited = ("IP_SABLE_E2E", "IP_SABLE_E2E_PORT", "IP_SABLE_E2E_RESULT_DIR", "GRADLE_USER_HOME",
+    inherited = ("IP_SABLE_E2E", "IP_SABLE_SHIPS", "IP_SABLE_E2E_PORT", "IP_SABLE_E2E_RESULT_DIR", "GRADLE_USER_HOME",
                  "IP_PORTAL_SMOKE", "IP_SHADOW_SMOKE", "IP_SMOKE_SAMPLES", "IP_SMOKE_RENDERER", "IP_SMOKE_SABLE",
                  "IP_SMOKE_NEGATIVE_CONTROL", "IP_SMOKE_FLYWHEEL_BACKEND", "IP_SMOKE_RENDER_MODE",
                  "IP_SMOKE_DISABLE_COPY_IMAGE", "IP_SMOKE_GL_CONTEXT", "MESA_GL_VERSION_OVERRIDE", "MESA_EXTENSION_OVERRIDE", "IP_SMOKE_SHADERPACK_NAME", "IP_SMOKE_DIAGNOSTIC_FIXTURE")
@@ -918,6 +920,8 @@ def prepare_e2e() -> dict[str, str]:
     env = os.environ.copy()
     env["IP_SABLE_E2E_PORT"] = str(port)
     env["IP_SABLE_E2E"] = "true"
+    # An inherited opt-in must never silently replace the established E2E suite.
+    env["IP_SABLE_SHIPS"] = "false"
     env["IP_SABLE_E2E_RESULT_DIR"] = str(RESULT_DIR.resolve())
     return env
 
@@ -940,11 +944,113 @@ def check_failures() -> None:
             raise RuntimeError(marker.read_text(encoding="utf-8", errors="replace").strip())
 
 
-def validate_results(client_exit: int, smoke: bool = False) -> None:
+def validate_ship_reports() -> None:
+    """Require independent server/client proof for every fixture and flight leg.
+
+    These structural checks certify the declared draft Sable/Create scenarios,
+    not arbitrary vehicle add-ons or screenshot pixel correctness.
+    """
+    dimensions = {"CONTROL": [7, 5, 11], "LARGE": [49, 17, 65]}
+    expected_cases = {(size, route) for size in dimensions for route in ("ordinary", "dimension-stack")}
+    worlds = ("minecraft:overworld", "minecraft:the_nether")
+    server_cases = {}
+    screenshot_names = set()
+
+    def require(condition: bool, detail: str) -> None:
+        if not condition:
+            raise RuntimeError("invalid ship flight evidence: " + detail)
+
+    def positive_integer(value, minimum: int = 1) -> bool:
+        return type(value) is int and value >= minimum
+
+    for side in ("server", "client"):
+        try:
+            report = json.loads((RESULT_DIR / f"{side}-ships.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise RuntimeError(f"missing or unreadable {side} ship flight report") from exc
+        require(isinstance(report, dict) and type(report.get("schema_version")) is int
+                and report["schema_version"] == 1, f"{side}: unsupported schema")
+        cases = report.get("cases")
+        require(isinstance(cases, list) and len(cases) == len(expected_cases), f"{side}: incomplete fixture matrix")
+        seen = set()
+        for case in cases:
+            require(isinstance(case, dict), f"{side}: invalid case")
+            size, route = case.get("size"), case.get("route")
+            require(isinstance(size, str) and isinstance(route, str), f"{side}: missing case identity")
+            key = (size, route)
+            require(key in expected_cases and key not in seen, f"{side}: unexpected or duplicate case {key}")
+            seen.add(key)
+            label = f"{side}/{size}/{route}"
+            shape = case.get("dimensions")
+            require(isinstance(shape, list) and all(type(value) is int for value in shape)
+                    and shape == dimensions[size], f"{label}: fixture dimensions")
+            ship_id = case.get("ship_id")
+            require(isinstance(ship_id, str) and bool(ship_id.strip()), f"{label}: missing ship identity")
+            require(case.get("assembled") is True, f"{label}: assembly was not observed")
+            require(positive_integer(case.get("blocks"), 3500 if size == "LARGE" else 1), f"{label}: block count")
+            require(positive_integer(case.get("chunks"), 12 if size == "LARGE" else 1), f"{label}: chunk count")
+            crossings = case.get("crossings")
+            require(isinstance(crossings, list) and len(crossings) == 4, f"{label}: four crossing legs required")
+            for leg, crossing in enumerate(crossings):
+                require(isinstance(crossing, dict) and type(crossing.get("leg")) is int
+                        and crossing["leg"] == leg, f"{label}: missing, duplicated or out-of-order leg {leg}")
+                require(crossing.get("from") == worlds[leg % 2] and crossing.get("to") == worlds[(leg + 1) % 2],
+                        f"{label}/{leg}: wrong crossing route")
+                if side == "server":
+                    require(positive_integer(crossing.get("native_motion_ticks"), 5), f"{label}/{leg}: native motion ticks")
+                    distance = crossing.get("native_distance")
+                    require(type(distance) in (int, float) and math.isfinite(distance) and distance >= 8,
+                            f"{label}/{leg}: native movement not observed")
+                    claims = ("unique_body", "rider_graph", "integrity", "velocity", "orientation", "client_ack")
+                else:
+                    claims = ("unique_body", "rider_graph", "blocks", "machinery", "mutation")
+                for claim in claims:
+                    require(crossing.get(claim) is True, f"{label}/{leg}: missing {claim} proof")
+            if side == "server":
+                require(all(other["ship_id"] != ship_id for other in server_cases.values()),
+                        f"{label}: reused fixture identity")
+                server_cases[key] = case
+            else:
+                source = server_cases[key]
+                require(all(case.get(field) == source.get(field) for field in ("ship_id", "blocks", "chunks", "dimensions")),
+                        f"{label}: client/server fixture mismatch")
+                require(positive_integer(case.get("snapshots"), 5), f"{label}: source and four arrival snapshots required")
+                screenshots = case.get("screenshots")
+                require(isinstance(screenshots, list) and len(screenshots) == case["snapshots"], f"{label}: missing graphical evidence")
+                leg_screenshots = set()
+                for crossing in crossings:
+                    name = crossing.get("screenshot")
+                    require(isinstance(name, str) and name in screenshots and name not in leg_screenshots,
+                            f"{label}: missing or reused crossing screenshot")
+                    leg_screenshots.add(name)
+                    require(positive_integer(crossing.get("panel_pixels"), 1000), f"{label}: missing panel pixel evidence")
+                for name in screenshots:
+                    require(isinstance(name, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*\.png", name) is not None
+                            and name not in screenshot_names, f"{label}: invalid or reused screenshot name")
+                    screenshot_names.add(name)
+                    screenshot = RESULT_DIR / name
+                    require(not screenshot.is_symlink(), f"{label}: redirected screenshot")
+                    try:
+                        with screenshot.open("rb") as image_file:
+                            header = image_file.read(24)
+                            length = image_file.seek(0, 2)
+                            image_file.seek(max(0, length - 12))
+                            footer = image_file.read()
+                    except OSError as exc:
+                        raise RuntimeError(f"missing ship flight screenshot: {name}") from exc
+                    require(length >= 57 and len(header) == 24 and header[:8] == b"\x89PNG\r\n\x1a\n" and header[12:16] == b"IHDR"
+                            and footer == b"\x00\x00\x00\x00IEND\xaeB`\x82"
+                            and int.from_bytes(header[16:20], "big") > 0 and int.from_bytes(header[20:24], "big") > 0,
+                            f"{label}: invalid screenshot {name}")
+
+
+def validate_results(client_exit: int, smoke: bool = False, ships: bool = False) -> None:
+    if smoke and ships:
+        raise ValueError("visual and ship verification are separate modes")
     check_failures()
     if client_exit != 0:
         raise RuntimeError(f"graphical client exited with status {client_exit}")
-    required = ("server-pass", "client-pass", "visual-pass") if smoke else (
+    required = ("server-pass", "client-pass") if ships else ("server-pass", "client-pass", "visual-pass") if smoke else (
         "server-pass", "client-pass", "client-source", "client-destination", "client-return", "client-recross", "client-dismount",
         "client-movement-hold", "client-movement-lifecycle", "client-movement-ack-timeout", "client-movement-soak", "client-movement-disconnect",
         "client-networking-api")
@@ -952,6 +1058,8 @@ def validate_results(client_exit: int, smoke: bool = False) -> None:
         marker = RESULT_DIR / f"{name}.txt"
         if not marker.exists() or not marker.read_text(encoding="utf-8").strip():
             raise RuntimeError(f"missing or empty authoritative result: {name}")
+    if ships:
+        validate_ship_reports()
 
 
 def client_progress_token() -> tuple:
@@ -959,6 +1067,7 @@ def client_progress_token() -> tuple:
     paths = {CLIENT_LOG, CLIENT_DIR / "logs/latest.log", RESULT_DIR / "runtime-evidence.json",
              RESULT_DIR / "scene-request.txt", RESULT_DIR / "scene-ready.txt", RESULT_DIR / "visual-pass.txt"}
     paths.update(RESULT_DIR.glob("client-*.txt"))
+    paths.update(RESULT_DIR.glob("client-ships*.json"))
     paths.update(RESULT_DIR.glob("*.png"))
     result = []
     for path in sorted(paths):
@@ -1161,7 +1270,8 @@ class ClientProgressReporter:
               f"remaining={max(0, self.deadline - now):.0f}s, last activity={now - last_progress:.0f}s ago", flush=True)
 
 
-def wait_for_client(server: subprocess.Popen, client: subprocess.Popen, timeout: float = 300, smoke: bool = False) -> None:
+def wait_for_client(server: subprocess.Popen, client: subprocess.Popen, timeout: float = 300,
+                    smoke: bool = False, ships: bool = False) -> None:
     started = time.monotonic()
     deadline = started + timeout
     last_progress = started
@@ -1182,14 +1292,14 @@ def wait_for_client(server: subprocess.Popen, client: subprocess.Popen, timeout:
             try:
                 # A successful client also disconnects while shutting down.
                 # Still wait for its actual exit code below.
-                validate_results(0, smoke=smoke)
+                validate_results(0, smoke=smoke, ships=ships)
             except RuntimeError:
                 collect_thread_diagnostics(server, client, "disconnect")
                 raise RuntimeError(f"graphical client disconnected: {disconnect}")
         if server.poll() is not None:
             raise RuntimeError(f"dedicated server exited during E2E (exit={server.returncode})")
         if client.poll() is not None:
-            validate_results(client.returncode, smoke=smoke)
+            validate_results(client.returncode, smoke=smoke, ships=ships)
             return
         current = client_progress_token()
         if current != progress:
@@ -1278,10 +1388,13 @@ def validate_metrics(samples: int) -> None:
 def run_e2e(smoke: bool = False, renderer: str = "sodium", sable: bool = True, samples: int = 200,
             negative_control: str = "none", flywheel_backend: str = "default", render_mode: str = "normal",
             disable_copy_image: bool = False, shaderpack_file: Path | None = None, shaderpack_profile: str | None = None,
-            gl_context: str = "default", shadow_fixture: bool = False) -> None:
-    print(f"[verify] {'visual ' + renderer if smoke else 'e2e'}: dedicated server + automated graphical client", flush=True)
+            gl_context: str = "default", shadow_fixture: bool = False, ships: bool = False) -> None:
+    if ships and (smoke or not sable):
+        raise ValueError("ship verification requires Sable and its own mode")
+    print(f"[verify] {'visual ' + renderer if smoke else 'ships' if ships else 'e2e'}: dedicated server + automated graphical client", flush=True)
     run_deadline = visual_run_deadline() if smoke else None
     env = prepare_e2e()
+    env["IP_SABLE_SHIPS"] = str(ships).lower()
     if smoke:
         env.update(IP_SABLE_E2E="false", IP_PORTAL_SMOKE="true", IP_SHADOW_SMOKE=str(shadow_fixture).lower(), IP_SMOKE_RENDERER=renderer,
                    IP_SMOKE_SABLE=str(sable).lower(), IP_SMOKE_SAMPLES=str(samples),
@@ -1341,11 +1454,11 @@ def run_e2e(smoke: bool = False, renderer: str = "sodium", sable: bool = True, s
 
         client, client_log = launch_graphical_client(client_command, env, creation)
         try:
-            timeout = (1800 if shadow_fixture else visual_timeout(renderer, samples, render_mode, fixture["diagnostic_fixture"])) if smoke else 300
+            timeout = (1800 if shadow_fixture else visual_timeout(renderer, samples, render_mode, fixture["diagnostic_fixture"])) if smoke else SHIPS_CLIENT_SECONDS if ships else 300
             if smoke:
                 timeout = min(timeout, max(0, run_deadline - time.monotonic() - VISUAL_CLEANUP_SECONDS))
                 print(f"[verify] Graphical client budget: {timeout:.0f}s; bounded by 120-minute job with diagnostics/cleanup reserve", flush=True)
-            wait_for_client(server, client, timeout=timeout, smoke=smoke)
+            wait_for_client(server, client, timeout=timeout, smoke=smoke, ships=ships)
         finally:
             stop_process_tree(client)
             if client_log is not None:
@@ -1375,6 +1488,18 @@ def run_e2e(smoke: bool = False, renderer: str = "sodium", sable: bool = True, s
             stop_process_tree(server)
         server_log.close()
         cleanup_staged_renderer_mods(staged_renderer_mods)
+
+
+def run_ships() -> None:
+    """Keep new flight evidence separate from the established dimension-stack gate."""
+    global RESULT_DIR, SERVER_LOG, CLIENT_LOG
+    previous = RESULT_DIR, SERVER_LOG, CLIENT_LOG
+    RESULT_DIR = ROOT / "build" / "sable-ship-flight-e2e"
+    SERVER_LOG, CLIENT_LOG = RESULT_DIR / "server.log", RESULT_DIR / "client.log"
+    try:
+        run_e2e(ships=True)
+    finally:
+        RESULT_DIR, SERVER_LOG, CLIENT_LOG = previous
 
 
 def run_visual(renderer: str, sable: bool, samples: int, negative_control: str = "none",
@@ -1431,7 +1556,7 @@ def run_visual(renderer: str, sable: bool, samples: int, negative_control: str =
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run the canonical Immersive Portals verification suite")
-    parser.add_argument("mode", choices=("core", "e2e", "visual", "full", "matrix", "staff"), nargs="?", default="full")
+    parser.add_argument("mode", choices=("core", "e2e", "ships", "visual", "full", "matrix", "staff"), nargs="?", default="full")
     parser.add_argument("--renderer", choices=RENDERERS, default="sodium")
     parser.add_argument("--negative-control", choices=("none", "pack-disabled", "clipping-disabled", "entity-clipping-disabled", "particle-clipping-disabled", "shadow-clipping-enabled"), default="none")
     parser.add_argument("--flywheel-backend", choices=("default", "off", "instancing", "indirect"), default="default")
@@ -1444,6 +1569,8 @@ def main() -> int:
     parser.add_argument("--samples", type=int, default=200)
     parser.add_argument("--shadow-fixture", action="store_true", help="Run owned actual shadow-map/receiver acceptance instead of ordinary smoke scenes")
     args = parser.parse_args()
+    if args.mode == "ships" and args.no_sable:
+        parser.error("ships requires Sable")
     if args.shadow_fixture and (args.mode != "visual" or args.renderer not in ACTIVE_RENDERERS or args.shaderpack_file is not None or args.render_mode != "normal" or args.negative_control not in ("none", "shadow-clipping-enabled")):
         parser.error("--shadow-fixture requires normal active-renderer visual mode and its own optional shadow negative")
     if args.negative_control == "shadow-clipping-enabled" and not args.shadow_fixture:
@@ -1477,6 +1604,8 @@ def main() -> int:
                     actions = [(name, action) for name, action in actions if args.mode in (name, "full")]
                     if args.mode == "staff":
                         actions = [("staff", run_staff)]
+                    elif args.mode == "ships":
+                        actions = [("ships", run_ships)]
                 for name, action in actions:
                     stage_started = time.monotonic()
                     stage = {"name": name, "status": "failed"}

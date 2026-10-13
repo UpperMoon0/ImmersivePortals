@@ -85,6 +85,79 @@ jobs:
             build/test-results/**
             runs/gameTestServer/logs/**
 
+  # Draft baseline coverage only. This does not replace an existing E2E lane
+  # or alter the Required verification/release acceptance contract.
+  sable-ship-flight:
+    name: Sable ship flight (draft) / ${{ matrix.transport }} / bundled
+    needs: changes
+    if: needs.changes.outputs.e2e == 'true'
+    runs-on: ubuntu-latest
+    # Twelve minutes for a cold dedicated-server startup, twenty for the client,
+    # plus setup, diagnostics, cleanup and always-uploaded artifacts.
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        transport: [udp, tcp]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@v6
+      - name: Ensure headless graphics runtime
+        run: |
+          if ! command -v xvfb-run >/dev/null 2>&1 || ! ldconfig -p | grep -F 'libGL.so.1' >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y xvfb libgl1-mesa-dri
+          fi
+      - name: Configure Sable transport
+        env:
+          TRANSPORT: ${{ matrix.transport }}
+        run: |
+          mkdir -p run-sable-e2e-server/config run-sable-e2e-client/config
+          if [[ "$TRANSPORT" == tcp ]]; then
+            cat > run-sable-e2e-server/config/sable-common.toml <<'EOF'
+          disable_udp_pipeline = true
+          attempt_udp_networking = false
+          EOF
+            cat > run-sable-e2e-client/config/sable-client.toml <<'EOF'
+          attempt_udp_networking = false
+          EOF
+          else
+            cat > run-sable-e2e-server/config/sable-common.toml <<'EOF'
+          disable_udp_pipeline = false
+          attempt_udp_networking = true
+          EOF
+            cat > run-sable-e2e-client/config/sable-client.toml <<'EOF'
+          attempt_udp_networking = true
+          EOF
+          fi
+          cp run-sable-e2e-server/config/sable-common.toml run-sable-e2e-client/config/sable-common.toml
+      - run: chmod +x ./gradlew
+      - name: Dedicated complex ship flight and graphical client
+        env:
+          IP_VERIFICATION_NETWORKING: bundled
+          IP_NETWORK_STRESS: 'false'
+        run: python3 tools/verify.py ships
+      - name: Upload ship flight evidence and diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sable-ship-flight-e2e-${{ matrix.transport }}-bundled
+          if-no-files-found: warn
+          path: |
+            build/verification-ships.json
+            build/sable-ship-flight-e2e/**
+            run-sable-e2e-server/config/sable-common.toml
+            run-sable-e2e-client/config/sable-common.toml
+            run-sable-e2e-client/config/sable-client.toml
+            run-sable-e2e-server/crash-reports/**
+            run-sable-e2e-client/crash-reports/**
+            run-sable-e2e-server/logs/**
+            run-sable-e2e-client/logs/**
+
   graphical-e2e:
     name: Sable graphical E2E / ${{ matrix.transport }} / ${{ matrix.networking }} / ${{ matrix.network }}
     needs: changes

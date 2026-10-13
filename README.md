@@ -84,6 +84,8 @@ python tools/verify.py e2e    # dedicated server + real graphical client
 python tools/verify.py full   # all layers
 ```
 
+A separate draft complex-vessel suite is available as `python tools/verify.py ships`. It assembles a 49×17×65 multi-chunk Sable ship with cargo, Create machinery and a rider, then exercises ordinary portals and dimension-stack crossings. See [fixture, evidence and limits](docs/compat/sable-complex-ships.md); it is not an Aeronautics propulsion certification.
+
 `core` runs the Python harness/policy regression tests, Java build and JUnit tests, and NeoForge GameTests. `full` runs `core`, Sable dedicated E2E, then the default Sodium visual test. Plain Gradle `build` only includes JUnit; `coreCheck` adds GameTests but not Python or graphical tests.
 
 Core verification rejects optional GameTest failures too. The development GameTest server loads fixture corrections for Sable 2.0.5: tests run near the origin, gravity expectations include the configured drag and physics steps, and sided inventories are snapshotted immediately before assembly. These corrections and their mixin configuration are excluded from the release JAR.

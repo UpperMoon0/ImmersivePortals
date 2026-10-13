@@ -19,11 +19,17 @@ public final class SableE2EEvents {
     public static final class Server {
         @SubscribeEvent
         public static void login(PlayerEvent.PlayerLoggedInEvent event) {
-            if (enabled()) SableDimensionStackDedicatedServerTest.onPlayerLogin(event);
+            if (enabled()) {
+                if (SableShipFlightTest.enabled()) SableShipFlightTest.onPlayerLogin(event);
+                else SableDimensionStackDedicatedServerTest.onPlayerLogin(event);
+            }
         }
         @SubscribeEvent
         public static void tick(ServerTickEvent.Post event) {
-            if (enabled()) SableDimensionStackDedicatedServerTest.onServerTick(event);
+            if (enabled()) {
+                if (SableShipFlightTest.enabled()) SableShipFlightTest.onServerTick(event);
+                else SableDimensionStackDedicatedServerTest.onServerTick(event);
+            }
         }
     }
 
@@ -31,7 +37,10 @@ public final class SableE2EEvents {
     public static final class Client {
         @SubscribeEvent
         public static void tick(ClientTickEvent.Post event) {
-            if (enabled()) SableDimensionStackDedicatedClientTest.onClientTick(event);
+            if (enabled()) {
+                if (SableShipFlightTest.enabled()) SableShipFlightClientTest.onClientTick(event);
+                else SableDimensionStackDedicatedClientTest.onClientTick(event);
+            }
         }
     }
 }

@@ -1,5 +1,6 @@
 """Fast regression tests for false passes and failed-process supervision."""
 import tempfile
+import base64
 import json
 import socket
 import subprocess
@@ -360,6 +361,7 @@ class VerificationHarnessTest(unittest.TestCase):
 
     def test_ci_transport_matrix_controls_common_and_client_udp_flags(self):
         workflow = (verify.ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        workflow = workflow.split("  graphical-e2e:\n", 1)[1].split("  portal-visual:\n", 1)[0]
         self.assertIn('transport: [udp, tcp]', workflow)
         self.assertIn('run-sable-e2e-client/config/sable-client.toml', workflow)
         self.assertEqual(workflow.count('disable_udp_pipeline = true'), 1)
@@ -986,6 +988,298 @@ class VerificationHarnessTest(unittest.TestCase):
         name = "sable.MixinClientboundStartTrackingSubLevelPacket_SablePortalCompat"
         self.assertNotIn(name, config.get("mixins", []))
         self.assertIn(name, config.get("client", []))
+
+
+class ShipVerificationHarnessTest(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.results = Path(self.temp.name)
+        patcher = patch.multiple(verify, RESULT_DIR=self.results,
+                                 SERVER_LOG=self.results / "server.log", CLIENT_LOG=self.results / "client.log")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def reports(self):
+        reports = {side: {"schema_version": 1, "cases": []} for side in ("server", "client")}
+        for size, dimensions, blocks, chunks in (("CONTROL", [7, 5, 11], 100, 1),
+                                                ("LARGE", [49, 17, 65], 4000, 20)):
+            for route in ("ordinary", "dimension-stack"):
+                common = dict(size=size, route=route, dimensions=dimensions, blocks=blocks, chunks=chunks,
+                              assembled=True, ship_id=f"ship-{size}-{route}")
+                server = dict(common, crossings=[])
+                client = dict(common, crossings=[], snapshots=5,
+                              screenshots=[f"{size}-{route}-{phase}.png" for phase in range(5)])
+                for leg in range(4):
+                    worlds = ("minecraft:overworld", "minecraft:the_nether")
+                    server["crossings"].append(dict(leg=leg, **{"from": worlds[leg % 2], "to": worlds[(leg + 1) % 2]},
+                        native_motion_ticks=20, native_distance=8.0, unique_body=True, rider_graph=True,
+                        integrity=True, velocity=True, orientation=True, client_ack=True))
+                    client["crossings"].append(dict(leg=leg, **{"from": worlds[leg % 2], "to": worlds[(leg + 1) % 2]},
+                        unique_body=True, rider_graph=True, blocks=True, machinery=True, mutation=True,
+                        panel_pixels=1200, screenshot=client["screenshots"][leg+1]))
+                reports["server"]["cases"].append(server)
+                reports["client"]["cases"].append(client)
+        return reports
+
+    def write_reports(self, reports=None):
+        if reports is None:
+            reports = self.reports()
+        for side, report in reports.items():
+            (self.results / f"{side}-ships.json").write_text(json.dumps(report))
+        for side in ("server", "client"):
+            (self.results / f"{side}-pass.txt").write_text("verified ship flight\n")
+        for case in self.reports()["client"]["cases"]:
+            for name in case["screenshots"]:
+                (self.results / name).write_bytes(base64.b64decode(
+                    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLttAAAAABJRU5ErkJggg=="))
+
+    def test_ships_require_independent_reports_without_old_phase_markers(self):
+        self.write_reports()
+        verify.validate_results(0, ships=True)
+        with self.assertRaisesRegex(RuntimeError, "client-source"):
+            verify.validate_results(0)
+        for side in ("server", "client"):
+            report = self.results / f"{side}-ships.json"
+            original = report.read_text()
+            report.unlink()
+            with self.assertRaisesRegex(RuntimeError, "ship flight report"):
+                verify.validate_results(0, ships=True)
+            report.write_text(original)
+            marker = self.results / f"{side}-pass.txt"
+            marker.write_text("")
+            with self.assertRaisesRegex(RuntimeError, "missing or empty"):
+                verify.validate_results(0, ships=True)
+            marker.write_text("verified")
+
+    def test_ships_fail_markers_and_actual_exit_override_reports(self):
+        self.write_reports()
+        for side in ("server", "client"):
+            marker = self.results / f"{side}-fail.txt"
+            marker.write_text(f"{side} flight failed")
+            with self.assertRaisesRegex(RuntimeError, f"{side} flight failed"):
+                verify.validate_results(0, ships=True)
+            marker.unlink()
+        with self.assertRaisesRegex(RuntimeError, "status 1"):
+            verify.validate_results(1, ships=True)
+        with self.assertRaises(ValueError):
+            verify.validate_results(0, smoke=True, ships=True)
+
+    def test_ships_disconnect_and_process_exit_use_ship_validation(self):
+        self.write_reports()
+        (self.results / "server.log").write_text("Dev lost connection: Disconnected\n")
+        server, client = Mock(), Mock()
+        server.poll.return_value = None
+        client.poll.return_value = client.returncode = 0
+        verify.wait_for_client(server, client, ships=True)
+        (self.results / "client-ships.json").unlink()
+        with patch.object(verify, "collect_thread_diagnostics") as diagnostic:
+            with self.assertRaisesRegex(RuntimeError, "graphical client disconnected"):
+                verify.wait_for_client(server, client, ships=True)
+            diagnostic.assert_called_once_with(server, client, "disconnect")
+
+    def test_ship_reports_reject_invalid_top_level_and_partial_matrix(self):
+        self.write_reports()
+        for side in ("server", "client"):
+            for invalid in ("not JSON", "null", "[]", "{}", '{"schema_version":true,"cases":[]}',
+                            '{"schema_version":2,"cases":[]}', '{"schema_version":1,"cases":[]}'):
+                with self.subTest(side=side, invalid=invalid):
+                    self.write_reports()
+                    (self.results / f"{side}-ships.json").write_text(invalid)
+                    with self.assertRaises(RuntimeError):
+                        verify.validate_ship_reports()
+            for change in (lambda cases: cases.pop(), lambda cases: cases.append(cases[0]),
+                           lambda cases: cases.__setitem__(1, cases[0]), lambda cases: cases.__setitem__(0, None)):
+                reports = self.reports()
+                change(reports[side]["cases"])
+                self.write_reports(reports)
+                with self.assertRaises(RuntimeError):
+                    verify.validate_ship_reports()
+
+    def test_ship_reports_reject_false_missing_or_truthy_crossing_claims(self):
+        for side, claims in (("server", ("unique_body", "rider_graph", "integrity", "velocity", "orientation", "client_ack")),
+                             ("client", ("unique_body", "rider_graph", "blocks", "machinery", "mutation"))):
+            for case_index in range(4):
+                for leg in range(4):
+                    for claim in claims:
+                        for value in (None, False, "true", 1):
+                            with self.subTest(side=side, case=case_index, leg=leg, claim=claim, value=value):
+                                reports = self.reports()
+                                crossing = reports[side]["cases"][case_index]["crossings"][leg]
+                                if value is None:
+                                    del crossing[claim]
+                                else:
+                                    crossing[claim] = value
+                                self.write_reports(reports)
+                                with self.assertRaisesRegex(RuntimeError, "proof"):
+                                    verify.validate_ship_reports()
+
+    def test_ship_reports_reject_incomplete_or_inconsistent_fixture_identity(self):
+        for side in ("server", "client"):
+            for field, value in (("size", "small"), ("route", "teleport"), ("assembled", False),
+                                 ("assembled", 1), ("blocks", 0), ("blocks", True), ("chunks", 0),
+                                 ("dimensions", [49, 1, 65]), ("dimensions", [49, 17.0, 65]),
+                                 ("ship_id", ""), ("ship_id", 1), ("crossings", []),
+                                 ("crossings", [None] * 4)):
+                with self.subTest(side=side, field=field, value=value):
+                    reports = self.reports()
+                    reports[side]["cases"][2][field] = value
+                    self.write_reports(reports)
+                    with self.assertRaises(RuntimeError):
+                        verify.validate_ship_reports()
+        for field, value in (("blocks", 3499), ("chunks", 11)):
+            reports = self.reports()
+            reports["server"]["cases"][2][field] = value
+            self.write_reports(reports)
+            with self.assertRaises(RuntimeError):
+                verify.validate_ship_reports()
+        reports = self.reports()
+        reports["client"]["cases"][0]["ship_id"] = "different-ship"
+        self.write_reports(reports)
+        with self.assertRaisesRegex(RuntimeError, "client/server fixture mismatch"):
+            verify.validate_ship_reports()
+        reports = self.reports()
+        reports["server"]["cases"][1]["ship_id"] = reports["server"]["cases"][0]["ship_id"]
+        self.write_reports(reports)
+        with self.assertRaisesRegex(RuntimeError, "reused fixture"):
+            verify.validate_ship_reports()
+
+    def test_ship_reports_reject_teleport_only_or_nonfinite_motion_and_wrong_legs(self):
+        for field, values in (("native_motion_ticks", (None, 0, 4, -1, True, 1.5, "20")),
+                              ("native_distance", (None, 0, 7.99, -1, True, float("nan"), float("inf"), "8")),
+                              ("from", ("minecraft:the_nether", None)),
+                              ("to", ("minecraft:overworld", None)),
+                              ("leg", (True, 1, "0", None))):
+            for value in values:
+                with self.subTest(field=field, value=value):
+                    reports = self.reports()
+                    reports["server"]["cases"][0]["crossings"][0][field] = value
+                    self.write_reports(reports)
+                    with self.assertRaises(RuntimeError):
+                        verify.validate_ship_reports()
+        reports = self.reports()
+        reports["client"]["cases"][0]["crossings"].reverse()
+        self.write_reports(reports)
+        with self.assertRaisesRegex(RuntimeError, "out-of-order"):
+            verify.validate_ship_reports()
+
+    def test_ship_reports_require_case_bound_graphical_artifacts_and_snapshots(self):
+        for field, values in (("snapshots", (None, True, 0, 3, 4, 6)),
+                              ("screenshots", (None, [], ["../other.png"], ["/other.png"], ["missing.png"],
+                                               ["CONTROL-dimension-stack-0.png"], [None]))):
+            for value in values:
+                with self.subTest(field=field, value=value):
+                    reports = self.reports()
+                    reports["client"]["cases"][0][field] = value
+                    self.write_reports(reports)
+                    with self.assertRaises(RuntimeError):
+                        verify.validate_ship_reports()
+        self.write_reports()
+        (self.results / "CONTROL-ordinary-0.png").write_bytes(b"not an image")
+        with self.assertRaisesRegex(RuntimeError, "invalid screenshot"):
+            verify.validate_ship_reports()
+
+    def test_ship_crossing_requires_measured_pixels_and_its_own_screenshot(self):
+        for field, values in (("panel_pixels", (None, True, 0, 999, "1200")),
+                              ("screenshot", (None, "missing.png", "CONTROL-ordinary-2.png"))):
+            for value in values:
+                with self.subTest(field=field, value=value):
+                    reports = self.reports()
+                    reports["client"]["cases"][0]["crossings"][0][field] = value
+                    self.write_reports(reports)
+                    with self.assertRaises(RuntimeError):
+                        verify.validate_ship_reports()
+        self.write_reports()
+        screenshot = self.results / "CONTROL-ordinary-0.png"
+        screenshot.write_bytes(screenshot.read_bytes()[:24])
+        with self.assertRaisesRegex(RuntimeError, "invalid screenshot"):
+            verify.validate_ship_reports()
+
+    def test_normal_preparation_clears_ambient_ship_opt_in(self):
+        root = self.results / "checkout"
+        with patch.multiple(verify, ROOT=root, RESULT_DIR=root / "results",
+                            SERVER_DIR=root / "server", CLIENT_DIR=root / "client"), \
+             patch.dict(verify.os.environ, IP_SABLE_SHIPS="true"):
+            env = verify.prepare_e2e()
+        self.assertEqual(env["IP_SABLE_SHIPS"], "false")
+        self.assertEqual(env["IP_SABLE_E2E"], "true")
+
+    def test_ship_launch_passes_mode_to_both_processes_and_uses_twenty_minutes(self):
+        for ships in (False, True):
+            self.write_reports()
+            server, client = Mock(), Mock()
+            with patch.object(verify, "prepare_e2e", return_value={"IP_SABLE_E2E_PORT": "25566"}), \
+                 patch.object(verify, "invalidate_generated_run_classpath"), \
+                 patch.object(verify.subprocess, "Popen", return_value=server) as launch_server, \
+                 patch.object(verify, "wait_for_server"), patch.object(verify, "wait_for_client") as wait, \
+                 patch.object(verify, "launch_graphical_client", return_value=(client, None)) as launch_client, \
+                 patch.object(verify, "stop_process_tree"), \
+                 patch.dict(verify.os.environ, DISPLAY=":99", IP_NETWORK_STRESS="false"):
+                verify.run_e2e(ships=ships)
+            self.assertEqual(launch_server.call_args.kwargs["env"]["IP_SABLE_SHIPS"], str(ships).lower())
+            self.assertEqual(launch_client.call_args.args[1]["IP_SABLE_SHIPS"], str(ships).lower())
+            self.assertIn("runSableE2EServer", launch_server.call_args.args[0])
+            self.assertIn("runSableE2EClient", launch_client.call_args.args[0])
+            wait.assert_called_once_with(server, client, timeout=1200 if ships else 300, smoke=False, ships=ships)
+
+    def test_windows_bridge_forwards_explicit_ship_mode(self):
+        with patch.object(verify.ctypes, "windll", Mock(), create=True):
+            verify.launch_windows_interactive(["gradlew.bat", "runSableE2EClient"],
+                                              {"IP_SABLE_E2E": "true", "IP_SABLE_SHIPS": "true"}, 7)
+        wrapper = (self.results / "client-session.cmd").read_text()
+        self.assertIn('set "IP_SABLE_SHIPS=true"', wrapper)
+
+    def test_ship_results_are_fresh_separate_and_paths_restore_after_failure(self):
+        root = self.results / "checkout"
+        old = root / "build/sable-dimension-stack-e2e/server-pass.txt"
+        old.parent.mkdir(parents=True)
+        old.write_text("established lane evidence")
+        fresh = root / "build/sable-ship-flight-e2e"
+        fresh.mkdir()
+        (fresh / "client-ships.json").write_text("stale evidence")
+        previous = verify.RESULT_DIR, verify.SERVER_LOG, verify.CLIENT_LOG
+        def run(**kwargs):
+            self.assertEqual(kwargs, {"ships": True})
+            self.assertEqual(verify.RESULT_DIR, fresh)
+            env = verify.prepare_e2e()
+            self.assertEqual(env["IP_SABLE_E2E_RESULT_DIR"], str(fresh.resolve()))
+            self.assertEqual(list(fresh.iterdir()), [])
+            raise RuntimeError("flight failed")
+        with patch.multiple(verify, ROOT=root, SERVER_DIR=root / "server", CLIENT_DIR=root / "client"), \
+             patch.object(verify, "run_e2e", side_effect=run):
+            with self.assertRaisesRegex(RuntimeError, "flight failed"):
+                verify.run_ships()
+        self.assertEqual((verify.RESULT_DIR, verify.SERVER_LOG, verify.CLIENT_LOG), previous)
+        self.assertEqual(old.read_text(), "established lane evidence")
+
+    def test_ships_cli_records_draft_stage_and_full_keeps_existing_stages(self):
+        for mode, expected in (("ships", ["ships"]), ("full", ["core", "e2e", "visual"])):
+            with patch.object(verify, "ROOT", self.results), patch.object(verify.sys, "argv", ["verify.py", mode]), \
+                 patch.object(verify, "run_core"), patch.object(verify, "run_e2e"), patch.object(verify, "run_visual"), \
+                 patch.object(verify, "run_ships") as ships:
+                self.assertEqual(verify.main(), 0)
+            report = json.loads((self.results / "build" / f"verification-{mode}.json").read_text())
+            self.assertEqual([stage["name"] for stage in report["stages"]], expected)
+            self.assertTrue(all(stage["status"] == "passed" for stage in report["stages"]))
+            self.assertEqual(ships.call_count, int(mode == "ships"))
+
+    def test_ship_ci_is_additive_preserves_both_transports_and_failure_artifacts(self):
+        workflow = (verify.ROOT / ".github/workflows/ci.yml").read_text()
+        ships = workflow.split("  sable-ship-flight:\n", 1)[1].split("  graphical-e2e:\n", 1)[0]
+        self.assertIn("transport: [udp, tcp]", ships)
+        self.assertIn("timeout-minutes: 45", ships)
+        self.assertIn("python3 tools/verify.py ships", ships)
+        self.assertIn("IP_VERIFICATION_NETWORKING: bundled", ships)
+        self.assertIn("if: always()", ships)
+        for artifact in ("build/verification-ships.json", "build/sable-ship-flight-e2e/**",
+                         "run-sable-e2e-server/crash-reports/**", "run-sable-e2e-client/logs/**"):
+            self.assertIn(artifact, ships)
+        for value in ("true", "false"):
+            self.assertIn(f"disable_udp_pipeline = {value}", ships)
+            self.assertGreaterEqual(ships.count(f"attempt_udp_networking = {value}"), 2)
+        required = workflow.split("  required:\n", 1)[1]
+        self.assertNotIn("sable-ship-flight", required)
+        self.assertIn("needs: [changes, core, graphical-e2e, portal-visual, real-pack-visual]", required)
 
 
 if __name__ == "__main__":
