@@ -37,7 +37,7 @@ import java.util.UUID;
 
 /** Real assembly and native-physics flight. No direct ship transfer; a separate stale-request negative regression must not migrate anything. */
 public final class SableShipFlightTest {
-    private enum Phase { LOGIN, ASSEMBLY, SETTLE, OBSERVE, FLY, CLEAR_SEAM, DONE }
+    private enum Phase { LOGIN, ASSEMBLY, SETTLE, OBSERVE, FLY, CLEAR_SEAM, STOPPED_ANIMATION, DONE }
     private static final Gson JSON = new Gson();
     private static final double SPEED = 48;
     private static ServerPlayer player;
@@ -60,6 +60,15 @@ public final class SableShipFlightTest {
     private static final List<Map<String, Object>> cases = new ArrayList<>();
     private static final List<Map<String, Object>> crossings = new ArrayList<>();
     private static String token;
+    private static Portal stoppedAnimationPortal;
+    private static String stoppedAnimationStage;
+    private static Vec3 stoppedAnimationEye;
+    private static Vector3d stoppedAnimationStart;
+    private static int stoppedAnimationDrainedTicks;
+    private static long stoppedAnimationStartTick;
+    private static long stoppedAnimationCrossedTick;
+    private static Vec3 stoppedAnimationPreviousOrigin;
+    private static Map<String,Object> stoppedAnimationReceipt;
 
     static boolean aeronautics() { return "true".equalsIgnoreCase(System.getenv("IP_SABLE_SHIPS_AERONAUTICS")); }
     static Map<String,String> addonVersions() { return Map.of("aeronautics","1.3.1","simulated","1.3.1","offroad","1.3.1"); }
@@ -89,9 +98,12 @@ public final class SableShipFlightTest {
                 case OBSERVE -> observe();
                 case FLY -> fly();
                 case CLEAR_SEAM -> clearSeam();
+                case STOPPED_ANIMATION -> stoppedAnimationProbe();
                 case DONE -> { }
             }
         } catch (Throwable error) {
+            if (stoppedAnimationPortal!=null) { stoppedAnimationPortal.discard(); stoppedAnimationPortal=null; }
+            if (stoppedAnimationStage!=null) writeStoppedAnimationControl("resume");
             checkpoint("failed", error.toString());
             phase = Phase.DONE;
             error.printStackTrace();
@@ -243,15 +255,12 @@ public final class SableShipFlightTest {
         if (leg >= 0) { crossing.put("client_ack", true); crossings.add(crossing); }
         checkpoint("running", "");
         if (leg == 3) {
-            caseReport.put("crossings", List.copyOf(crossings)); cases.add(caseReport);
-            cleanup(); caseIndex += aeronautics() ? 2 : 1;
-            if (caseIndex == lastCaseExclusive()) {
-                var report = new LinkedHashMap<String,Object>(); report.put("schema_version",1); report.put("cases",cases);
-                if (aeronautics()) report.put("addons",addonVersions());
-                PortalSmokeSupport.write("server-ships.json", JSON.toJson(report));
-                PortalSmokeSupport.write("server-pass.txt", expectedCases() + " assembled ship cases completed " + (expectedCases()*4) + " native crossings with rider/cargo/machinery continuity; aeronautics=" + aeronautics());
-                phase(Phase.DONE);
-            } else setup();
+            caseReport.put("crossings", List.copyOf(crossings));
+            if (!stack()) {
+                stoppedAnimationStage="pause";
+                writeStoppedAnimationControl("pause");
+                phase(Phase.STOPPED_ANIMATION);
+            } else finishCase();
             return;
         }
         leg++;
@@ -267,6 +276,141 @@ public final class SableShipFlightTest {
         previousVelocity = handle(body).getLinearVelocity(new Vector3d());
         previousOrientation = new Quaterniond(body.logicalPose().orientation());
         phase(Phase.FLY);
+    }
+    private static void finishCase() {
+        cases.add(caseReport);
+        cleanup(); caseIndex += aeronautics() ? 2 : 1;
+        if (caseIndex == lastCaseExclusive()) {
+            var report = new LinkedHashMap<String,Object>(); report.put("schema_version",1); report.put("cases",cases);
+            if (aeronautics()) report.put("addons",addonVersions());
+            PortalSmokeSupport.write("server-ships.json", JSON.toJson(report));
+            PortalSmokeSupport.write("server-pass.txt", expectedCases() + " assembled ship cases completed " + (expectedCases()*4) + " native crossings with rider/cargo/machinery continuity; aeronautics=" + aeronautics());
+            phase(Phase.DONE);
+        } else setup();
+    }
+    private static String stoppedAnimationToken() { return caseIndex+":stopped-animation"; }
+    private static void writeStoppedAnimationControl(String mode) {
+        PortalSmokeSupport.write("stopped-animation-control.json",JSON.toJson(Map.of(
+            "token",stoppedAnimationToken(),"mode",mode,"ship_id",fixture.id().toString(),
+            "seat_id",seatId.toString(),"source",source.dimension().location().toString(),
+            "destination",destination.dimension().location().toString(),"size",fixture.size().name(),
+            "route","ordinary")));
+    }
+    /** Held-body compatibility probe, deliberately outside and excluded from all four flight intervals. */
+    private static void stoppedAnimationProbe() {
+        var body=fixture.requireBody(current);
+        hold(body);
+        String ack=PortalSmokeSupport.read("stopped-animation-client-ack.txt");
+        if (stoppedAnimationStage.equals("pause")) {
+            if (!ack.equals(stoppedAnimationToken()+":paused")) return;
+            verifyRider(body);
+            // Finished route portals cannot interfere with this separately labelled regression.
+            forward.discard(); reverse.discard();
+            Entity seat=current.getEntity(seatId);
+            Vec3 localEye=seat.getPassengerRidingPosition(player).add(qouteall.imm_ptl.core.McHelper.getEyeOffset(player));
+            stoppedAnimationEye=body.logicalPose().transformPosition(localEye);
+            Vector3d center=body.logicalPose().transformPosition(new Vector3d(body.getSelfMassTracker().getCenterOfMass()));
+            Vector3d normal=new Vector3d(stoppedAnimationEye.x-center.x,stoppedAnimationEye.y-center.y,stoppedAnimationEye.z-center.z);
+            double eyeOffset=normal.length();
+            require(eyeOffset>.25,"stopped-animation fixture eye is indistinguishable from COM");
+            normal.normalize();
+            double sweepHalf=Math.min(.75,eyeOffset*.25);
+            Vector3d axisW=new Vector3d(Math.abs(normal.y)<.9?0:1,Math.abs(normal.y)<.9?1:0,0).cross(normal).normalize();
+            Vector3d axisH=new Vector3d(normal).cross(axisW).normalize();
+            Vec3 direction=new Vec3(normal.x,normal.y,normal.z);
+            stoppedAnimationPortal=Portal.ENTITY_TYPE.create(current);
+            require(stoppedAnimationPortal!=null,"cannot create animated regression portal");
+            stoppedAnimationPortal.setOriginPos(stoppedAnimationEye.subtract(direction.scale(sweepHalf)));
+            stoppedAnimationPortal.setOrientationAndSize(new Vec3(axisW.x,axisW.y,axisW.z),new Vec3(axisH.x,axisH.y,axisH.z),160,160);
+            stoppedAnimationPortal.setDestinationDimension(destination.dimension());
+            stoppedAnimationPortal.setDestination(new Vec3(0,aeronautics()?48:224,0));
+            require(current.addFreshEntity(stoppedAnimationPortal),"animated regression portal spawn failed");
+            stoppedAnimationPortal.addThisSideAnimationDriver(new qouteall.imm_ptl.core.portal.animation.NormalAnimation(
+                List.of(new qouteall.imm_ptl.core.portal.animation.NormalAnimation.Phase(20,
+                    new qouteall.imm_ptl.core.portal.animation.DeltaUnilateralPortalState(direction.scale(sweepHalf*2),null,null),
+                    qouteall.imm_ptl.core.portal.animation.TimingFunction.linear)),current.getGameTime(),1,false));
+            stoppedAnimationStart=new Vector3d(body.logicalPose().position());
+            stoppedAnimationStartTick=current.getGameTime(); stoppedAnimationDrainedTicks=0;
+            stoppedAnimationCrossedTick=-1;
+            stoppedAnimationPreviousOrigin=stoppedAnimationPortal.getOriginPos();
+            stoppedAnimationStage="animate";
+            return;
+        }
+        if (stoppedAnimationStage.equals("animate")) {
+            require(SubLevelContainer.getContainer(destination).getSubLevel(fixture.id())==null,
+                "held animated probe migrated before its delayed request");
+            Vector3d center=body.logicalPose().transformPosition(new Vector3d(body.getSelfMassTracker().getCenterOfMass()));
+            require(stoppedAnimationPortal.getDistanceToPlane(new Vec3(center.x,center.y,center.z))<-.05,
+                "animated probe COM must remain behind the source plane");
+            require(stoppedAnimationStart.distance(body.logicalPose().position())<1,
+                "held animated probe drifted instead of using source-plane motion");
+            if (stoppedAnimationCrossedTick<0 && stoppedAnimationPortal.getDistanceToPlane(stoppedAnimationEye)<0)
+                stoppedAnimationCrossedTick=current.getGameTime();
+            double sourcePlaneSpeed=stoppedAnimationPortal.getOriginPos().distanceTo(stoppedAnimationPreviousOrigin)*20;
+            stoppedAnimationPreviousOrigin=stoppedAnimationPortal.getOriginPos();
+            boolean drained=!stoppedAnimationPortal.animation.hasRunningAnimationDriver()
+                && stoppedAnimationPortal.animation.lastTickAnimatedState==null
+                && stoppedAnimationPortal.animation.thisTickAnimatedState==null;
+            stoppedAnimationDrainedTicks=drained?stoppedAnimationDrainedTicks+1:0;
+            if (stoppedAnimationDrainedTicks<4) return;
+            require(current.getGameTime()-stoppedAnimationStartTick>=23,"animation did not run before delayed request");
+            require(stoppedAnimationCrossedTick>=0 && current.getGameTime()-stoppedAnimationCrossedTick>=3,
+                "source plane did not actually sweep the held seated eye before stopping");
+            require(sourcePlaneSpeed==0,"source plane is still moving at delayed request");
+            // Eliminate instantaneous approach as an alternative success path. Native writes
+            // here belong only to this explicitly held compatibility probe, never flight.
+            setVelocity(body,new Vector3d());
+            double linearSpeed=handle(body).getLinearVelocity(new Vector3d()).length();
+            double angularSpeed=handle(body).getAngularVelocity(new Vector3d()).length();
+            require(linearSpeed==0 && angularSpeed==0,
+                "delayed animation witness requires zero current native motion");
+            var manager=qouteall.imm_ptl.core.teleportation.ServerTeleportationManager.of(player.server);
+            require(!manager.isJustTeleported(player,1),"stopped-animation request needs a quiet request interval");
+            manager.onPlayerTeleportedInClient(player,current.dimension(),stoppedAnimationEye,stoppedAnimationPortal.getUUID());
+            require(manager.isJustTeleported(player,1),"stopped-animation request did not resolve normal portal entry point");
+            require(SubLevelContainer.getContainer(source).getSubLevel(fixture.id())==null,
+                "stopped-animation delayed request failed to migrate the complete body");
+            current=destination;
+            var arrived=fixture.requireBody(current);
+            require(arrived!=body,"stopped-animation request did not create destination ownership");
+            verifyRider(arrived);
+            var integrity=fixture.verifyIntegrity(current,arrived);
+            hover=new Vector3d(arrived.logicalPose().position()); hold(arrived);
+            stoppedAnimationReceipt=new LinkedHashMap<>();
+            stoppedAnimationReceipt.put("kind","held_body_stopped_source_animation");
+            stoppedAnimationReceipt.put("counted_as_flight_crossing",false);
+            stoppedAnimationReceipt.put("driver","NormalAnimation");
+            stoppedAnimationReceipt.put("animation_ticks",20);
+            stoppedAnimationReceipt.put("drained_ticks_before_request",stoppedAnimationDrainedTicks);
+            stoppedAnimationReceipt.put("ticks_after_sweep",source.getGameTime()-stoppedAnimationCrossedTick);
+            stoppedAnimationReceipt.put("ship_id",fixture.id().toString()); stoppedAnimationReceipt.put("seat_id",seatId.toString());
+            stoppedAnimationReceipt.put("from",source.dimension().location().toString());
+            stoppedAnimationReceipt.put("to",destination.dimension().location().toString());
+            stoppedAnimationReceipt.put("native_linear_speed_at_request",linearSpeed);
+            stoppedAnimationReceipt.put("native_angular_speed_at_request",angularSpeed);
+            stoppedAnimationReceipt.put("source_plane_speed_at_request",sourcePlaneSpeed);
+            stoppedAnimationReceipt.put("zero_native_motion_at_request",true);
+            stoppedAnimationReceipt.put("request_resolved",true);
+            stoppedAnimationReceipt.put("unique_body",true); stoppedAnimationReceipt.put("rider_graph",true);
+            stoppedAnimationReceipt.put("integrity_snapshot",integrity);
+            stoppedAnimationStage="verify"; writeStoppedAnimationControl("verify");
+            return;
+        }
+        if (stoppedAnimationStage.equals("verify")) {
+            verifyRider(body);
+            if (!ack.equals(stoppedAnimationToken()+":arrived")) return;
+            stoppedAnimationReceipt.put("client_ack",true);
+            stoppedAnimationStage="resume"; writeStoppedAnimationControl("resume");
+            return;
+        }
+        require(stoppedAnimationStage.equals("resume"),"unknown stopped-animation probe phase");
+        if (!ack.equals(stoppedAnimationToken()+":resumed")) return;
+        stoppedAnimationReceipt.put("prediction_restored",true);
+        caseReport.put("stopped_animation_witness",stoppedAnimationReceipt);
+        PortalSmokeSupport.write("stopped-animation-"+caseIndex+".json",JSON.toJson(stoppedAnimationReceipt));
+        writeStoppedAnimationControl("idle");
+        stoppedAnimationPortal.discard(); stoppedAnimationPortal=null; stoppedAnimationStage=null;
+        finishCase();
     }
     private static void fly() {
         flightTicks++;

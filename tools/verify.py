@@ -1055,6 +1055,10 @@ def validate_ship_reports(aeronautics: bool = False, ship_size: str = "all") -> 
                 require(case.get("stale_request_rejected") is True, f"{label}: missing stale request rejection proof")
                 final_integrity = case.get("integrity_snapshot")
                 final_cargo = integrity_snapshot(final_integrity, case, worlds[0], case["blocks"], label)
+            else:
+                source = server_cases[key]
+                require(all(case.get(field) == source.get(field) for field in ("ship_id", "blocks", "chunks", "dimensions")),
+                        f"{label}: client/server fixture mismatch")
             engines = 8 if size == "CONTROL" else 252
             if aeronautics and side == "server":
                 budget = case.get("lift_budget")
@@ -1122,12 +1126,42 @@ def validate_ship_reports(aeronautics: bool = False, ship_size: str = "all") -> 
                         claims += ("propellers",)
                 for claim in claims:
                     require(crossing.get(claim) is True, f"{label}/{leg}: missing {claim} proof")
+            if route == "ordinary":
+                probe = case.get("stopped_animation_witness")
+                require(isinstance(probe, dict), f"{label}: missing stopped-animation witness probe")
+                require(probe.get("kind") == "held_body_stopped_source_animation"
+                        and probe.get("counted_as_flight_crossing") is False,
+                        f"{label}: stopped-animation probe must remain separate from powered/native flight")
+                require(probe.get("ship_id") == ship_id and isinstance(probe.get("seat_id"), str)
+                        and bool(probe["seat_id"].strip()) and probe.get("from") == worlds[0] and probe.get("to") == worlds[1],
+                        f"{label}: stopped-animation probe identity/route mismatch")
+                probe_claims = ("unique_body", "rider_graph", "prediction_restored")
+                if side == "server":
+                    probe_claims += ("zero_native_motion_at_request", "request_resolved", "client_ack")
+                    require(probe.get("driver") == "NormalAnimation" and type(probe.get("animation_ticks")) is int
+                            and probe["animation_ticks"] == 20, f"{label}: missing real stopped-animation driver")
+                    drained, elapsed = probe.get("drained_ticks_before_request"), probe.get("ticks_after_sweep")
+                    require(positive_integer(drained, 4) and positive_integer(elapsed, 3)
+                            and drained <= elapsed <= 100, f"{label}: invalid stopped-animation witness delay")
+                    for field in ("native_linear_speed_at_request", "native_angular_speed_at_request", "source_plane_speed_at_request"):
+                        # The live approach gate accepts arbitrarily small inward motion. A
+                        # tolerance here would let current motion masquerade as witness proof.
+                        require(finite(probe.get(field)) and probe[field] == 0,
+                                f"{label}: stopped-animation probe did not isolate historical witness: {field}")
+                    probe_integrity = probe.get("integrity_snapshot")
+                    probe_cargo = integrity_snapshot(probe_integrity, case, worlds[1], case["blocks"], label + "/stopped-animation")
+                    require(probe_cargo == final_cargo and all(probe_integrity[field] == final_integrity[field]
+                            for field in ("plotSections", "blockEntities")), f"{label}: stopped-animation integrity/cargo mismatch")
+                else:
+                    probe_claims += ("blocks", "machinery", "mutation")
+                    source_probe = server_cases[key]["stopped_animation_witness"]
+                    require(all(probe.get(field) == source_probe[field] for field in ("ship_id", "seat_id", "from", "to"))
+                            and probe.get("dimension") == worlds[1], f"{label}: client/server stopped-animation mismatch")
+                for claim in probe_claims:
+                    require(probe.get(claim) is True, f"{label}: missing stopped-animation {claim} proof")
             if side == "server":
                 server_cases[key] = case
             else:
-                source = server_cases[key]
-                require(all(case.get(field) == source.get(field) for field in ("ship_id", "blocks", "chunks", "dimensions")),
-                        f"{label}: client/server fixture mismatch")
                 require(positive_integer(case.get("snapshots"), 5), f"{label}: source and four arrival snapshots required")
                 screenshots = case.get("screenshots")
                 require(isinstance(screenshots, list) and len(screenshots) == case["snapshots"], f"{label}: missing graphical evidence")

@@ -85,8 +85,8 @@ jobs:
             build/test-results/**
             runs/gameTestServer/logs/**
 
-  # Draft baseline coverage only. This does not replace an existing E2E lane
-  # or alter the Required verification/release acceptance contract.
+  # Additive ship coverage. Every configured row is mandatory whenever E2E is
+  # selected, including the separately staged optional Aeronautics runtime.
   sable-ship-flight:
     name: Sable ship flight (draft) / ${{ matrix.mode }} / ${{ matrix.transport }} / ${{ matrix.ship_size }} / bundled
     needs: changes
@@ -313,7 +313,7 @@ jobs:
   required:
     name: Required verification
     if: always()
-    needs: [changes, core, graphical-e2e, portal-visual, real-pack-visual]
+    needs: [changes, core, graphical-e2e, sable-ship-flight, portal-visual, real-pack-visual]
     runs-on: ubuntu-latest
     steps:
       - name: Enforce all selected checks
@@ -321,6 +321,7 @@ jobs:
           SELECT: ${{ needs.changes.result }}
           CORE: ${{ needs.core.result }}
           HEAVY: ${{ needs.graphical-e2e.result }}
+          SHIPS: ${{ needs.sable-ship-flight.result }}
           VISUAL: ${{ needs.portal-visual.result }}
           REAL_PACKS: ${{ needs.real-pack-visual.result }}
           REQUIRED: ${{ needs.changes.outputs.e2e }}
@@ -328,7 +329,7 @@ jobs:
           [[ "$SELECT" == success && "$CORE" == success ]]
           [[ "$REQUIRED" == true || "$REQUIRED" == false ]]
           if [[ "$REQUIRED" == true ]]; then
-            [[ "$HEAVY" == success && "$VISUAL" == success && "$REAL_PACKS" == success ]]
+            [[ "$HEAVY" == success && "$SHIPS" == success && "$VISUAL" == success && "$REAL_PACKS" == success ]]
           else
-            [[ "$HEAVY" == skipped && "$VISUAL" == skipped && "$REAL_PACKS" == skipped ]]
+            [[ "$HEAVY" == skipped && "$SHIPS" == skipped && "$VISUAL" == skipped && "$REAL_PACKS" == skipped ]]
           fi

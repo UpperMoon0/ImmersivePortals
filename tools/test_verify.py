@@ -1053,6 +1053,18 @@ class ShipVerificationHarnessTest(unittest.TestCase):
                                 endVerticalVelocity=direction * 4.0, dimension=worlds[leg % 2],
                                 againstGravity=direction > 0))
                         client["crossings"][-1]["propellers"] = True
+                if route == "ordinary":
+                    probe = dict(kind="held_body_stopped_source_animation", counted_as_flight_crossing=False,
+                                 ship_id=common["ship_id"], seat_id=f"seat-{size}",
+                                 **{"from": "minecraft:overworld", "to": "minecraft:the_nether"},
+                                 unique_body=True, rider_graph=True, prediction_restored=True)
+                    server["stopped_animation_witness"] = dict(probe, driver="NormalAnimation", animation_ticks=20,
+                        drained_ticks_before_request=4, ticks_after_sweep=12, native_linear_speed_at_request=0.0,
+                        native_angular_speed_at_request=0.0, source_plane_speed_at_request=0.0,
+                        zero_native_motion_at_request=True, request_resolved=True, client_ack=True,
+                        integrity_snapshot=snapshot("minecraft:the_nether"))
+                    client["stopped_animation_witness"] = dict(probe, dimension="minecraft:the_nether",
+                                                              blocks=True, machinery=True, mutation=True)
                 reports["server"]["cases"].append(server)
                 reports["client"]["cases"].append(client)
         return reports
@@ -1217,6 +1229,91 @@ class ShipVerificationHarnessTest(unittest.TestCase):
                 self.write_reports(reports)
                 with self.assertRaisesRegex(RuntimeError, "stale request rejection"):
                     verify.validate_ship_reports(aeronautics=addon)
+
+    def test_stopped_animation_probe_is_required_only_for_every_ordinary_case(self):
+        for addon in (False, True):
+            reports = self.reports(addon)
+            self.assertTrue(all("stopped_animation_witness" not in case for side in reports.values()
+                                for case in side["cases"] if case["route"] == "dimension-stack"))
+            self.write_reports(reports)
+            verify.validate_ship_reports(aeronautics=addon)
+            for side in ("server", "client"):
+                for index, case in enumerate(reports[side]["cases"]):
+                    if case["route"] != "ordinary":
+                        continue
+                    for value in (None, True, [], {}):
+                        broken = self.reports(addon)
+                        broken[side]["cases"][index]["stopped_animation_witness"] = value
+                        self.write_reports(broken)
+                        with self.subTest(addon=addon, side=side, case=index, value=value), self.assertRaises(RuntimeError):
+                            verify.validate_ship_reports(aeronautics=addon)
+
+    def test_stopped_animation_probe_requires_literal_success_and_separate_flight_accounting(self):
+        common = ("unique_body", "rider_graph", "prediction_restored")
+        for side, extra in (("server", ("zero_native_motion_at_request", "request_resolved", "client_ack")),
+                            ("client", ("blocks", "machinery", "mutation"))):
+            for claim in common + extra:
+                for value in (None, False, "true", 1):
+                    reports = self.reports()
+                    reports[side]["cases"][0]["stopped_animation_witness"][claim] = value
+                    self.write_reports(reports)
+                    with self.subTest(side=side, claim=claim, value=value), self.assertRaisesRegex(RuntimeError, "proof"):
+                        verify.validate_ship_reports()
+            for value in (None, True, 0, "false"):
+                reports = self.reports()
+                reports[side]["cases"][0]["stopped_animation_witness"]["counted_as_flight_crossing"] = value
+                self.write_reports(reports)
+                with self.assertRaises(RuntimeError):
+                    verify.validate_ship_reports()
+
+    def test_stopped_animation_probe_requires_measured_exact_zero_and_bounded_delay(self):
+        fields = [(name, value) for name in ("native_linear_speed_at_request", "native_angular_speed_at_request",
+                                           "source_plane_speed_at_request")
+                  for value in (None, True, "0", -1, 1e-20, float("nan"), float("inf"))]
+        fields += [("driver", "native_velocity"), ("animation_ticks", True), ("animation_ticks", 20.0),
+                   ("animation_ticks", 19), ("drained_ticks_before_request", 3),
+                   ("drained_ticks_before_request", 4.0), ("drained_ticks_before_request", True),
+                   ("drained_ticks_before_request", 13), ("ticks_after_sweep", 2),
+                   ("ticks_after_sweep", 101), ("ticks_after_sweep", 12.0), ("ticks_after_sweep", True)]
+        for addon in (False, True):
+            for field, value in fields:
+                reports = self.reports(addon)
+                reports["server"]["cases"][0]["stopped_animation_witness"][field] = value
+                self.write_reports(reports)
+                with self.subTest(addon=addon, field=field, value=value), self.assertRaises(RuntimeError):
+                    verify.validate_ship_reports(aeronautics=addon)
+            reports = self.reports(addon)
+            reports["server"]["cases"][0]["stopped_animation_witness"]["ticks_after_sweep"] = 100
+            self.write_reports(reports)
+            verify.validate_ship_reports(aeronautics=addon)
+
+    def test_stopped_animation_probe_binds_both_sides_and_preserves_exact_cargo(self):
+        for side in ("server", "client"):
+            for field, value in (("kind", "ordinary_flight"), ("ship_id", "different-ship"), ("seat_id", ""),
+                                 ("seat_id", True), ("from", "minecraft:the_nether"), ("to", "minecraft:overworld")):
+                reports = self.reports()
+                reports[side]["cases"][0]["stopped_animation_witness"][field] = value
+                self.write_reports(reports)
+                with self.subTest(side=side, field=field, value=value), self.assertRaises(RuntimeError):
+                    verify.validate_ship_reports()
+        for field, value in (("seat_id", "different-seat"), ("dimension", "minecraft:overworld")):
+            reports = self.reports()
+            reports["client"]["cases"][0]["stopped_animation_witness"][field] = value
+            self.write_reports(reports)
+            with self.assertRaisesRegex(RuntimeError, "client/server stopped-animation mismatch"):
+                verify.validate_ship_reports()
+        for field, value in (("dimension", "minecraft:overworld"), ("currentBlocks", 175), ("cargoItems", 98),
+                             ("plotSections", 2), ("blockEntities", 10), ("cargoManifest", [])):
+            reports = self.reports()
+            reports["server"]["cases"][0]["stopped_animation_witness"]["integrity_snapshot"][field] = value
+            self.write_reports(reports)
+            with self.subTest(field=field), self.assertRaises(RuntimeError):
+                verify.validate_ship_reports()
+        reports = self.reports()
+        reports["server"]["cases"][0]["stopped_animation_witness"]["integrity_snapshot"]["cargoManifest"][0]["components"] = "{changed}"
+        self.write_reports(reports)
+        with self.assertRaisesRegex(RuntimeError, "integrity/cargo mismatch"):
+            verify.validate_ship_reports()
 
     def test_every_server_integrity_snapshot_is_required_and_typed(self):
         for addon in (False, True):
@@ -1735,8 +1832,10 @@ class ShipVerificationHarnessTest(unittest.TestCase):
             self.assertIn(f"disable_udp_pipeline = {value}", ships)
             self.assertGreaterEqual(ships.count(f"attempt_udp_networking = {value}"), 2)
         required = workflow.split("  required:\n", 1)[1]
-        self.assertNotIn("sable-ship-flight", required)
-        self.assertIn("needs: [changes, core, graphical-e2e, portal-visual, real-pack-visual]", required)
+        self.assertIn("needs: [changes, core, graphical-e2e, sable-ship-flight, portal-visual, real-pack-visual]", required)
+        self.assertIn("SHIPS: ${{ needs.sable-ship-flight.result }}", required)
+        self.assertIn("if: needs.changes.outputs.e2e == 'true'", ships)
+
 
 
 if __name__ == "__main__":

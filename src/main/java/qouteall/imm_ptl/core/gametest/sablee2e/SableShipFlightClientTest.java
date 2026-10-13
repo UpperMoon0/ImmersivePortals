@@ -36,6 +36,7 @@ public final class SableShipFlightClientTest {
     private static int overviewTicks;
     private static net.minecraft.world.entity.Entity overviewCamera;
     private static net.minecraft.world.entity.Entity panelCamera;
+    private static boolean stoppedAnimationPredictionPaused, previousDisableTeleportation;
     private static final Map<String,Map<String,Object>> cases = new LinkedHashMap<>();
     private static final Map<String,List<Map<String,Object>>> crossings = new LinkedHashMap<>();
     private static final Map<String,List<String>> screenshots = new LinkedHashMap<>();
@@ -46,6 +47,7 @@ public final class SableShipFlightClientTest {
         try {
             if (++ticks > 20000) throw new IllegalStateException("graphical ship test timeout, token=" + pendingToken);
             if (mc.player == null || mc.level == null) {
+                restoreStoppedAnimationPrediction();
                 if (!connecting && mc.screen != null) {
                     connecting = true;
                     String address = "127.0.0.1:" + System.getenv().getOrDefault("IP_SABLE_E2E_PORT","25565");
@@ -54,6 +56,7 @@ public final class SableShipFlightClientTest {
                 }
                 return;
             }
+            if (handleStoppedAnimationProbe(mc)) return;
             if (PortalSmokeSupport.exists("server-pass.txt")) {
                 require(cases.size() == SableShipFlightTest.expectedCases(), "server completed before expected client cases");
                 for (String key : cases.keySet()) {
@@ -66,7 +69,7 @@ public final class SableShipFlightClientTest {
                 if (SableShipFlightTest.aeronautics()) report.put("addons",SableShipFlightTest.addonVersions());
                 PortalSmokeSupport.write("client-ships.json",new Gson().toJson(report));
                 PortalSmokeSupport.write("client-pass.txt","Real client observed " + (SableShipFlightTest.expectedCases()*4) + " assembled-ship crossings, live block/kinetic mutations and contrasting framebuffer states");
-                restorePlayerCamera(mc); done = true; mc.stop(); return;
+                restoreStoppedAnimationPrediction(); restorePlayerCamera(mc); done = true; mc.stop(); return;
             }
             String text = PortalSmokeSupport.read("ship-observe.json");
             if (text.isBlank()) return;
@@ -176,10 +179,81 @@ public final class SableShipFlightClientTest {
                 PortalSmokeSupport.write("ship-client-ack.txt",token); observedToken=token;
             }
         } catch (Throwable error) {
-            done=true; restorePlayerCamera(mc); error.printStackTrace();
+            done=true; restoreStoppedAnimationPrediction(); restorePlayerCamera(mc); error.printStackTrace();
             PortalSmokeSupport.write("client-fail.txt","ships token="+pendingToken+": "+error);
             mc.stop();
         }
+    }
+    /** Test-only delayed prediction; authoritative position and riding packets continue normally. */
+    private static boolean handleStoppedAnimationProbe(Minecraft mc) {
+        String text=PortalSmokeSupport.read("stopped-animation-control.json");
+        if (text.isBlank()) return false;
+        JsonObject control=JsonParser.parseString(text).getAsJsonObject();
+        String mode=control.get("mode").getAsString(), probeToken=control.get("token").getAsString();
+        if (mode.equals("idle")) { restoreStoppedAnimationPrediction(); return false; }
+        if (mode.equals("resume")) {
+            restoreStoppedAnimationPrediction(); restorePlayerCamera(mc);
+            String key=control.get("size").getAsString()+":ordinary";
+            if (cases.containsKey(key) && cases.get(key).get("stopped_animation_witness") instanceof Map<?,?> receipt) {
+                @SuppressWarnings("unchecked") var writable=(Map<String,Object>)receipt;
+                writable.put("prediction_restored",true);
+            }
+            PortalSmokeSupport.write("stopped-animation-client-ack.txt",probeToken+":resumed");
+            return true;
+        }
+        require(mode.equals("pause") || mode.equals("verify"),"unknown stopped-animation client phase");
+        if (!stoppedAnimationPredictionPaused) {
+            previousDisableTeleportation=qouteall.imm_ptl.core.IPGlobal.disableTeleportation;
+            stoppedAnimationPredictionPaused=true;
+            restorePlayerCamera(mc);
+        }
+        // The short teleport cooldown is insufficient: retained-rider requests precede
+        // that check. This client-only top-level gate suppresses prediction, not packets.
+        qouteall.imm_ptl.core.IPGlobal.disableTeleportation=true;
+        if (mode.equals("pause")) {
+            PortalSmokeSupport.write("stopped-animation-client-ack.txt",probeToken+":paused");
+            return true;
+        }
+        String source=control.get("source").getAsString(), destination=control.get("destination").getAsString();
+        if (!mc.level.dimension().location().toString().equals(destination)) return true;
+        UUID id=UUID.fromString(control.get("ship_id").getAsString());
+        var container=SubLevelContainer.getContainer(mc.level);
+        var body=container==null?null:container.getSubLevel(id);
+        if (!(body instanceof ClientSubLevel)) return true;
+        var seat=mc.player.getVehicle();
+        if (seat==null || !seat.getUUID().toString().equals(control.get("seat_id").getAsString())
+            || !seat.getPassengers().contains(mc.player) || Sable.HELPER.getContaining(seat)!=body) return true;
+        for (var dimension:ClientWorldLoader.getServerDimensions()) {
+            if (!dimension.location().toString().equals(source)) continue;
+            var old=SubLevelContainer.getContainer(ClientWorldLoader.getWorld(dimension));
+            if (old!=null && old.getSubLevel(id)!=null) return true;
+        }
+        var priorObservation=JsonParser.parseString(PortalSmokeSupport.read("ship-observe.json")).getAsJsonObject();
+        for (var entry:priorObservation.getAsJsonArray("blocks_manifest")) {
+            var row=entry.getAsJsonArray();
+            BlockPos position=body.getPlot().getCenterBlock().offset(row.get(0).getAsInt(),row.get(1).getAsInt(),row.get(2).getAsInt());
+            if (Block.getId(mc.level.getBlockState(position))!=row.get(3).getAsInt()) return true;
+        }
+        for (var entry:priorObservation.getAsJsonArray("kinetics")) {
+            var row=entry.getAsJsonArray();
+            var entity=mc.level.getBlockEntity(body.getPlot().getCenterBlock().offset(row.get(0).getAsInt(),row.get(1).getAsInt(),row.get(2).getAsInt()));
+            if (!(entity instanceof KineticBlockEntity kinetic) || !Float.isFinite(kinetic.getSpeed())
+                || Math.abs(kinetic.getSpeed()-row.get(3).getAsFloat())>.01) return true;
+        }
+        var receipt=new LinkedHashMap<String,Object>();
+        receipt.put("kind","held_body_stopped_source_animation"); receipt.put("counted_as_flight_crossing",false);
+        receipt.put("ship_id",id.toString()); receipt.put("seat_id",seat.getUUID().toString());
+        receipt.put("from",source); receipt.put("to",destination); receipt.put("dimension",mc.level.dimension().location().toString());
+        receipt.put("unique_body",true); receipt.put("rider_graph",true); receipt.put("blocks",true);
+        receipt.put("machinery",true); receipt.put("mutation",true);
+        cases.get(control.get("size").getAsString()+":ordinary").put("stopped_animation_witness",receipt);
+        PortalSmokeSupport.write("stopped-animation-client-ack.txt",probeToken+":arrived");
+        return true;
+    }
+    private static void restoreStoppedAnimationPrediction() {
+        if (!stoppedAnimationPredictionPaused) return;
+        qouteall.imm_ptl.core.IPGlobal.disableTeleportation=previousDisableTeleportation;
+        stoppedAnimationPredictionPaused=false;
     }
     private static org.joml.Vector3d shipPoint(ClientSubLevel body,BlockPos center,SableShipObservationCamera.Point point) {
         var absolute=point.inPlot(center.getX(),center.getY(),center.getZ());
@@ -190,9 +264,16 @@ public final class SableShipFlightClientTest {
         org.joml.Vector3d eye,org.joml.Vector3d target) {
         var look=new org.joml.Vector3d(target).sub(eye);
         require(eye.isFinite() && look.isFinite() && look.lengthSquared()>1.0e-6,"invalid ship observation camera");
+        float yaw=(float)Math.toDegrees(Math.atan2(-look.x,look.z));
         camera.moveTo(eye.x,eye.y-camera.getEyeHeight(),eye.z,
-            (float)Math.toDegrees(Math.atan2(-look.x,look.z)),
+            yaw,
             (float)-Math.toDegrees(Math.atan2(look.y,Math.hypot(look.x,look.z))));
+        // LivingEntity view interpolation uses its head yaw, independently of Entity.yRot.
+        // This camera is an ArmorStand; moveTo alone does not synchronize those fields.
+        if (camera instanceof net.minecraft.world.entity.LivingEntity living) {
+            living.yHeadRot=yaw; living.yHeadRotO=yaw;
+            living.yBodyRot=yaw; living.yBodyRotO=yaw;
+        }
         camera.setOldPosAndRot();
         mc.options.hideGui=true;
         mc.options.setCameraType(net.minecraft.client.CameraType.FIRST_PERSON);

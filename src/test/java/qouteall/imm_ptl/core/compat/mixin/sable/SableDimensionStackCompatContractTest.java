@@ -196,7 +196,7 @@ class SableDimensionStackCompatContractTest {
     }
 
     @Test
-    void pendingHandoffRejectsIndependentRiderReturnButAllowsCompletedAcknowledgement() throws Exception {
+    void stagedHandoffRejectsRiderTransferButCommittedCleanupStillRequiresFullMigration() throws Exception {
         ClassNode compat = readClass(
             "qouteall/imm_ptl/core/compat/sable/SableDimensionStackCompat.class"
         );
@@ -204,21 +204,23 @@ class SableDimensionStackCompatContractTest {
         assertNotNull(prepare);
 
         FieldInsnNode handoffs = null;
+        FieldInsnNode committed = null;
         for (var instruction : prepare.instructions) {
             if (instruction instanceof FieldInsnNode field && field.name.equals("CLIENT_HANDOFFS")) {
                 handoffs = field;
-                break;
             }
+            if (instruction instanceof FieldInsnNode field && field.name.equals("committed")) committed = field;
         }
         assertNotNull(handoffs, "rider requests must check the pending body handoff");
-        AbstractInsnNode contains = nextExecutable(nextExecutable(nextExecutable(handoffs)));
-        MethodInsnNode containsCall = assertInstanceOf(MethodInsnNode.class, contains);
-        assertEquals("java/util/Map", containsCall.owner);
-        assertEquals("containsKey", containsCall.name);
-        JumpInsnNode pendingBranch = assertInstanceOf(JumpInsnNode.class, nextExecutable(contains));
-        assertEquals(Opcodes.IFEQ, pendingBranch.getOpcode());
+        assertNotNull(committed, "committed cleanup must be distinguished from incomplete staging");
+        AbstractInsnNode lookup = nextExecutable(nextExecutable(nextExecutable(handoffs)));
+        MethodInsnNode lookupCall = assertInstanceOf(MethodInsnNode.class, lookup);
+        assertEquals("java/util/Map", lookupCall.owner);
+        assertEquals("get", lookupCall.name);
+        JumpInsnNode pendingBranch = assertInstanceOf(JumpInsnNode.class, nextExecutable(committed));
+        assertEquals(Opcodes.IFNE, pendingBranch.getOpcode());
         assertEquals(Opcodes.ICONST_0, nextExecutable(pendingBranch).getOpcode(),
-            "an existing handoff must reject an independent player/seat transfer");
+            "uncommitted staging must reject an independent player/seat transfer");
         assertEquals(Opcodes.IRETURN, nextExecutable(nextExecutable(pendingBranch)).getOpcode());
 
         int destination = invocationIndex(prepare, "getDestDim");
@@ -234,7 +236,9 @@ class SableDimensionStackCompatContractTest {
             "a matching completed body migration must still acknowledge successfully");
         assertEquals(Opcodes.IRETURN, nextExecutable(nextExecutable(destinationBranch)).getOpcode());
         assertTrue(prepare.instructions.indexOf(pendingBranch.label) < migration,
-            "requests without a pending handoff must retain the real body migration path");
+            "committed cleanup must proceed through evidence checks and real body migration");
+        assertTrue(prepare.instructions.indexOf(pendingBranch.label)
+            < invocationIndex(prepare, "isRiddenBodyApproachingPortal"));
     }
 
     @Test
@@ -249,22 +253,33 @@ class SableDimensionStackCompatContractTest {
         assertNotNull(approach);
         assertNotNull(substep);
 
-        int pending = invocationIndex(prepare, "containsKey");
+        int pending = invocationIndex(prepare, "get");
         int direction = invocationIndex(prepare, "isRiddenBodyApproachingPortal");
         int migration = invocationIndex(prepare, "migrateSubLevel");
         assertTrue(pending >= 0 && pending < direction && direction < migration,
             "the independent motion guard must apply after handoff cleanup, before migration");
-        JumpInsnNode noHandoff = assertInstanceOf(JumpInsnNode.class,
-            nextExecutable(prepare.instructions.get(pending)));
-        assertEquals(Opcodes.IFEQ, noHandoff.getOpcode());
+        JumpInsnNode noHandoff = null;
+        for (int i = pending + 1; i < direction; i++) {
+            if (prepare.instructions.get(i) instanceof JumpInsnNode branch
+                && branch.getOpcode() == Opcodes.IFNULL) { noHandoff = branch; break; }
+        }
+        assertNotNull(noHandoff, "absence of a handoff must skip only the staging rejection");
         assertTrue(prepare.instructions.indexOf(noHandoff.label) < direction,
             "absence of a handoff must lead through the native motion check");
         JumpInsnNode approaching = assertInstanceOf(JumpInsnNode.class,
             nextExecutable(prepare.instructions.get(direction)));
         assertEquals(Opcodes.IFNE, approaching.getOpcode());
-        assertEquals(Opcodes.ICONST_0, nextExecutable(approaching).getOpcode());
-        assertEquals(Opcodes.IRETURN, nextExecutable(nextExecutable(approaching)).getOpcode(),
-            "a stale outward/tangential request must not continue into body migration");
+        int witness = invocationIndex(prepare, "hasAnimatedRiderCrossing");
+        assertTrue(direction < witness && witness < migration,
+            "stopped animated crossings require a separate authoritative witness");
+        JumpInsnNode witnessed = assertInstanceOf(JumpInsnNode.class,
+            nextExecutable(prepare.instructions.get(witness)));
+        assertEquals(Opcodes.IFNE, witnessed.getOpcode());
+        assertEquals(approaching.label, witnessed.label,
+            "either current native approach or a valid historical crossing permits migration");
+        assertEquals(Opcodes.ICONST_0, nextExecutable(witnessed).getOpcode());
+        assertEquals(Opcodes.IRETURN, nextExecutable(nextExecutable(witnessed)).getOpcode(),
+            "without native approach or a valid witness, a stale request must be rejected");
 
         int portalLevel = invocationIndex(approach, "level");
         int bodyLevel = invocationIndex(approach, "getLevel");
@@ -286,6 +301,37 @@ class SableDimensionStackCompatContractTest {
             "client/rider-local movement must not stand in for native rigid-body motion");
         assertFalse(invokesNamed(substep, "isRiddenBodyApproachingPortal"),
             "genuine swept native crossings must remain independent of the client-request gate");
+    }
+
+    @Test
+    void animatedWitnessRequiresActualApertureCrossingStableMountAndCommitInvalidation() throws Exception {
+        ClassNode compat = readClass("qouteall/imm_ptl/core/compat/sable/SableDimensionStackCompat.class");
+        MethodNode capture = findMethodByName(compat, "captureAnimatedRiderCrossings");
+        MethodNode applicability = findMethodByName(compat, "isStoredRiderCrossingApplicable");
+        MethodNode aperture = findMethodByName(compat, "isRiderBehindPortalAperture");
+        MethodNode migrate = findMethodByName(compat, "migrateSubLevel");
+        assertNotNull(capture); assertNotNull(applicability); assertNotNull(aperture); assertNotNull(migrate);
+        for (String name : List.of("observeMount", "hasStableMount", "canTeleportEntity",
+            "getPassengerRidingPosition", "getEyeOffset", "lastPose", "logicalPose",
+            "worldPosToPortalLocalPos", "raytracePortalShapeByLocalPos", "record")) {
+            assertTrue(invokesNamed(capture, name), "missing authoritative witness input: " + name);
+        }
+        assertTrue(invocationIndex(capture, "hasStableMount") < invocationIndex(capture, "record"));
+        assertTrue(invocationIndex(capture, "raytracePortalShapeByLocalPos") < invocationIndex(capture, "record"));
+        assertTrue(invokesNamed(applicability, "getVehicle"));
+        assertTrue(invokesNamed(applicability, "getDestDim"));
+        assertTrue(invokesNamed(applicability, "isRiderBehindPortalAperture"));
+        assertTrue(invokesNamed(aperture, "canTeleportEntity"));
+        assertTrue(invokesNamed(aperture, "getPassengerRidingPosition"));
+        assertTrue(invokesNamed(aperture, "raytracePortalShapeByLocalPos"),
+            "an old witness must not authorize return to the front side or leaving the aperture");
+        assertTrue(invocationIndex(migrate, "commitClientHandoff") < invocationIndex(migrate, "invalidateBody"),
+            "committed body transfers invalidate every witness before another request can replay it");
+        assertFalse(invokesNamed(findMethodByName(compat, "afterPhysicsSubstep"), "captureAnimatedRiderCrossings"),
+            "witness capture must not multiply portal/player scans by native substeps");
+        ClassNode optional = readClass("qouteall/imm_ptl/core/compat/sable/SableInterface$OnSablePresent.class");
+        assertTrue(invokesNamed(findMethodByName(optional, "<init>"), "initAnimatedRiderWitnesses"),
+            "capture/lifecycle listeners must only initialize when Sable is present");
     }
 
     @Test

@@ -189,12 +189,16 @@ class ReleaseEvidenceTest(unittest.TestCase):
             for networking in ("bundled", "4.3.0+5c124ecf19", "4.3.1+7e3d421f19"):
                 expected.append(f"Sable graphical E2E / {transport} / {networking} / normal")
             expected.append(f"Sable graphical E2E / {transport} / 4.3.1+7e3d421f19 / impaired")
+        ships = workflow.split("  sable-ship-flight:\n", 1)[1].split("  graphical-e2e:\n", 1)[0]
+        for flow in re.findall(r"- \{ ([^}]+) \}", ships):
+            row = dict(pair.split(": ", 1) for pair in flow.split(", "))
+            expected.append(f"Sable ship flight (draft) / {row['mode']} / {row['transport']} / {row['ship_size']} / bundled")
         for group in ("portal-visual", "real-pack-visual"):
             block = re.split(r"\n  [a-z][\w-]*:\n", workflow.split(f"\n  {group}:\n", 1)[1], maxsplit=1)[0]
             for flow in re.findall(r"- \{ ([^}]+) \}", block):
                 values = [pair.split(": ", 1)[1] for pair in flow.split(", ")]
                 expected.append(f"{group} ({', '.join(values)}) / visual")
-        self.assertEqual(len(expected), 41)
+        self.assertEqual(len(expected), 47)
         self.assertCountEqual(evidence.required_jobs(), expected)
 
     def test_fresh_release_keeps_every_ci_visual_configuration(self):
@@ -269,15 +273,43 @@ class ReleaseEvidenceTest(unittest.TestCase):
         block = workflow.split("      - name: Enforce reused or fresh coverage\n", 1)[1].split("\n  release:", 1)[0]
         script = "\n".join(line[10:] for line in block.split("        run: |\n", 1)[1].splitlines())
         for reuse in ("true", "false", ""):
-            for values in itertools.product(("success", "skipped", "failure", "cancelled"), repeat=3):
-                env = dict(os.environ, REUSE=reuse, EVIDENCE="success", **dict(zip(("CORE", "E2E", "VISUAL"), values)))
+            for values in itertools.product(("success", "skipped", "failure", "cancelled"), repeat=4):
+                env = dict(os.environ, REUSE=reuse, EVIDENCE="success", **dict(zip(("CORE", "E2E", "SHIPS", "VISUAL"), values)))
                 result = subprocess.run([bash, "-e", "-c", script], env=env, capture_output=True)
                 expected = reuse in ("true", "false") and all(v == ("skipped" if reuse == "true" else "success") for v in values)
                 self.assertEqual(result.returncode == 0, expected, (reuse, values))
-        env = dict(os.environ, EVIDENCE="failure", REUSE="true", CORE="skipped", E2E="skipped", VISUAL="skipped")
+        env = dict(os.environ, EVIDENCE="failure", REUSE="true", CORE="skipped", E2E="skipped", SHIPS="skipped", VISUAL="skipped")
         self.assertNotEqual(subprocess.run([bash, "-e", "-c", script], env=env).returncode, 0)
         publish = workflow.split("\n  release:\n", 1)[1]
         self.assertIn("!cancelled() && needs.evidence.result == 'success' && needs.verified.result == 'success'", publish)
+
+    def test_fresh_release_requires_all_six_ship_rows_or_complete_reused_evidence(self):
+        ci = (evidence.ROOT / ".github/workflows/ci.yml").read_text()
+        release = (evidence.ROOT / ".github/workflows/release.yml").read_text()
+        def ships(text):
+            return text.split("\n  sable-ship-flight:\n", 1)[1].split("\n  graphical-e2e:\n", 1)[0]
+        ci_job, release_job = ships(ci), ships(release)
+        rows = lambda job: re.findall(r"- \{ ([^}]+) \}", job)
+        self.assertEqual(len(rows(release_job)), 6)
+        self.assertCountEqual(rows(ci_job), rows(release_job))
+        self.assertIn("needs: evidence", release_job)
+        self.assertIn("if: needs.evidence.outputs.reuse != 'true'", release_job)
+        self.assertIn("ref: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || github.ref }}", release_job)
+        self.assertIn("fail-fast: false", release_job)
+        self.assertNotIn("continue-on-error", release_job)
+        self.assertIn("if: always()", release_job)
+        self.assertIn('python3 tools/verify.py "${{ matrix.mode }}" --ship-size "${{ matrix.ship_size }}"', release_job)
+        configure = lambda job: job.split("      - name: Configure Sable transport\n", 1)[1].split(
+            "      - run: chmod +x ./gradlew\n", 1)[0]
+        self.assertEqual(configure(ci_job), configure(release_job))
+        for path in ("build/verification-ships*.json", "build/sable-ship-flight*-e2e/**",
+                     "${{ env.SHIP_RUNTIME_PREFIX }}-server/crash-reports/**", "${{ env.SHIP_RUNTIME_PREFIX }}-client/logs/**"):
+            self.assertIn(path, release_job)
+        gate = release.split("\n  verified:\n", 1)[1].split("\n  release:\n", 1)[0]
+        self.assertIn("needs: [evidence, core-verification, graphical-e2e, sable-ship-flight, compatibility]", gate)
+        self.assertIn("SHIPS: ${{ needs.sable-ship-flight.result }}", gate)
+        self.assertIn('"$SHIPS" == success', gate)
+        self.assertIn('"$SHIPS" == skipped', gate)
 
     def test_workflow_provenance_is_bound_to_core_artifact_and_source_run(self):
         ci = (evidence.ROOT / ".github/workflows/ci.yml").read_text()

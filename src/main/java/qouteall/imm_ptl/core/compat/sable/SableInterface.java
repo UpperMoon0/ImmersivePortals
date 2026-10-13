@@ -67,6 +67,10 @@ public class SableInterface {
     public static Invoker invoker = new Invoker();
 
     public static class OnSablePresent extends Invoker {
+        public OnSablePresent() {
+            SableDimensionStackCompat.initAnimatedRiderWitnesses();
+        }
+
         @Override
         public @Nullable List<ServerPlayer> getPlotChunkBroadcastPlayers(ServerLevel level, ChunkPos chunkPos) {
             dev.ryanhcode.sable.api.sublevel.SubLevelContainer container =

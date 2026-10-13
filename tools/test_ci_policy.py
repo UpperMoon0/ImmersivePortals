@@ -21,7 +21,7 @@ class CIPolicyTest(unittest.TestCase):
     def test_empty_change_list_fails_closed(self):
         self.assertTrue(needs_e2e([]))
 
-    def test_required_workflow_gate_rejects_skipped_or_failed_real_packs(self):
+    def test_required_workflow_gate_rejects_skipped_or_failed_ship_and_renderer_matrices(self):
         # Windows' bash.exe can be a WSL launcher with no installed distro.
         # Prefer Git's bundled Bash there; this test executes GitHub's Bash gate.
         bash = shutil.which("bash")
@@ -38,16 +38,16 @@ class CIPolicyTest(unittest.TestCase):
         statuses = ("success", "failure", "cancelled", "skipped")
         for required in ("true", "false", ""):
             expected_status = "success" if required == "true" else "skipped"
-            for heavy, visual, real_packs in itertools.product(statuses, repeat=3):
+            for heavy, ships, visual, real_packs in itertools.product(statuses, repeat=4):
                 env = dict(os.environ, SELECT="success", CORE="success", REQUIRED=required,
-                           HEAVY=heavy, VISUAL=visual, REAL_PACKS=real_packs)
+                           HEAVY=heavy, SHIPS=ships, VISUAL=visual, REAL_PACKS=real_packs)
                 result = subprocess.run([bash, "-e", "-c", script], env=env, capture_output=True)
                 expected = required in ("true", "false") and all(
-                    value == expected_status for value in (heavy, visual, real_packs))
-                self.assertEqual(result.returncode == 0, expected, (required, heavy, visual, real_packs))
+                    value == expected_status for value in (heavy, ships, visual, real_packs))
+                self.assertEqual(result.returncode == 0, expected, (required, heavy, ships, visual, real_packs))
         for key in ("SELECT", "CORE"):
             env = dict(os.environ, SELECT="success", CORE="success", REQUIRED="true",
-                       HEAVY="success", VISUAL="success", REAL_PACKS="success")
+                       HEAVY="success", SHIPS="success", VISUAL="success", REAL_PACKS="success")
             env[key] = "failure"
             self.assertNotEqual(subprocess.run([bash, "-e", "-c", script], env=env).returncode, 0)
 
@@ -71,5 +71,5 @@ class CIPolicyTest(unittest.TestCase):
         self.assertNotIn("always()", slow)
         self.assertEqual(slow.count("real_pack: makeup"), 2)
         self.assertEqual(slow.count("real_pack: complementary"), 2)
-        self.assertIn("needs: [changes, core, graphical-e2e, portal-visual, real-pack-visual]", required)
+        self.assertIn("needs: [changes, core, graphical-e2e, sable-ship-flight, portal-visual, real-pack-visual]", required)
         self.assertIn("REAL_PACKS: ${{ needs.real-pack-visual.result }}", required)

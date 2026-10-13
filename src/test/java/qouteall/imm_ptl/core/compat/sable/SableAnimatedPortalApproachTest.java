@@ -3,11 +3,17 @@ package qouteall.imm_ptl.core.compat.sable;
 import net.minecraft.world.phys.Vec3;
 import org.junit.jupiter.api.Test;
 import qouteall.imm_ptl.core.portal.PortalState;
+import qouteall.imm_ptl.core.portal.shape.RectangularPortalShape;
 import qouteall.imm_ptl.core.teleportation.TeleportationUtil;
 import qouteall.q_misc_util.my_util.DQuaternion;
+import qouteall.q_misc_util.my_util.RayTraceResult;
+
+import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class SableAnimatedPortalApproachTest {
@@ -123,6 +129,111 @@ class SableAnimatedPortalApproachTest {
             "Seat and plane velocities cancel exactly after the native angular contribution");
         assertFalse(approaches(after, velocity, linear, Vec3.ZERO, seatOffset),
             "Ignoring seat rotation would incorrectly reject the first case");
+    }
+
+    @Test void translatedSourcePlaneSweepsStationarySeatThroughActualAperture() {
+        PortalState before = state(SOURCE, DESTINATION, DQuaternion.identity, DQuaternion.identity, 1);
+        PortalState after = state(SOURCE.add(0, 0, 1), DESTINATION, DQuaternion.identity, DQuaternion.identity, 1);
+        Vec3 stationarySeat = SOURCE.add(2, 3, 0.5);
+
+        assertVector(new Vec3(2, 3, 0.5), before.worldPosToPortalLocalPos(stationarySeat));
+        assertVector(new Vec3(2, 3, -0.5), after.worldPosToPortalLocalPos(stationarySeat));
+        RayTraceResult hit = sweepStationarySeat(before, after, stationarySeat);
+        assertNotNull(hit);
+        assertEquals(0.5, hit.t(), POSITION_EPSILON);
+        assertVector(new Vec3(2, 3, 0), hit.hitPos());
+        assertVector(new Vec3(0, 0, 1), hit.surfaceNormal());
+    }
+
+    @Test void rotatedSourcePlaneSweepsStationarySeatThroughActualAperture() {
+        PortalState before = state(SOURCE, DESTINATION, DQuaternion.identity, DQuaternion.identity, 1);
+        PortalState after = state(
+            SOURCE, DESTINATION,
+            DQuaternion.rotationByDegrees(new Vec3(0, 1, 0), 90), DQuaternion.identity, 1
+        );
+        Vec3 stationarySeat = SOURCE.add(-2, 1, 1);
+
+        assertVector(new Vec3(-2, 1, 1), before.worldPosToPortalLocalPos(stationarySeat));
+        assertVector(new Vec3(-1, 1, -2), after.worldPosToPortalLocalPos(stationarySeat));
+        RayTraceResult hit = sweepStationarySeat(before, after, stationarySeat);
+        assertNotNull(hit);
+        assertEquals(1.0 / 3, hit.t(), POSITION_EPSILON);
+        assertVector(new Vec3(-5.0 / 3, 1, 0), hit.hitPos());
+    }
+
+    @Test void behindOnlyAndWrongDirectionDoNotWitnessASeatCrossing() {
+        PortalState before = state(SOURCE, DESTINATION, DQuaternion.identity, DQuaternion.identity, 1);
+        PortalState after = state(SOURCE.add(0, 0, 1), DESTINATION, DQuaternion.identity, DQuaternion.identity, 1);
+        Vec3 crossedSeat = SOURCE.add(2, 3, 0.5);
+
+        assertNull(sweepStationarySeat(before, after, SOURCE.add(2, 3, -0.5)),
+            "Being behind both source planes is not evidence of a crossing");
+        assertNull(sweepStationarySeat(after, before, crossedSeat),
+            "A back-to-front sweep cannot authorize a forward migration");
+        assertNull(sweepStationarySeat(after, after, crossedSeat),
+            "A delayed sample behind a stopped portal cannot create a new witness");
+        assertNull(sweepStationarySeat(before, before, crossedSeat));
+    }
+
+    @Test void sourcePlaneSweepOutsideApertureDoesNotWitnessASeatCrossing() {
+        PortalState before = state(SOURCE, DESTINATION, DQuaternion.identity, DQuaternion.identity, 1);
+        PortalState after = state(SOURCE.add(0, 0, 1), DESTINATION, DQuaternion.identity, DQuaternion.identity, 1);
+        for (Vec3 offset : new Vec3[] {
+            new Vec3(6.01, 0, 0.5), new Vec3(-6.01, 0, 0.5),
+            new Vec3(0, 5.01, 0.5), new Vec3(0, -5.01, 0.5),
+            new Vec3(6, 0, 0.5), new Vec3(0, 5, 0.5)
+        }) {
+            assertNull(sweepStationarySeat(before, after, SOURCE.add(offset)),
+                "Crossing the infinite plane outside its strict aperture cannot authorize migration: " + offset);
+        }
+    }
+
+    @Test void translatedSweepWitnessSurvivesStoppedAnimationUntilExpiry() {
+        PortalState before = state(SOURCE, DESTINATION, DQuaternion.identity, DQuaternion.identity, 1);
+        PortalState after = state(SOURCE.add(0, 0, 1), DESTINATION, DQuaternion.identity, DQuaternion.identity, 1);
+        assertSweepWitnessSurvivesStoppedAnimation(before, after, SOURCE.add(2, 3, 0.5));
+    }
+
+    @Test void rotatedSweepWitnessSurvivesStoppedAnimationUntilExpiry() {
+        PortalState before = state(SOURCE, DESTINATION, DQuaternion.identity, DQuaternion.identity, 1);
+        PortalState after = state(
+            SOURCE, DESTINATION,
+            DQuaternion.rotationByDegrees(new Vec3(0, 1, 0), 90), DQuaternion.identity, 1
+        );
+        assertSweepWitnessSurvivesStoppedAnimation(before, after, SOURCE.add(-2, 1, 1));
+    }
+
+    private static void assertSweepWitnessSurvivesStoppedAnimation(
+        PortalState before, PortalState stopped, Vec3 stationarySeat
+    ) {
+        SableRiderPortalWitnesses witnesses = new SableRiderPortalWitnesses(5);
+        SableRiderPortalWitnesses.Key key = new SableRiderPortalWitnesses.Key(
+            new UUID(0, 1), new UUID(0, 2), new UUID(0, 3), new UUID(0, 4), new Object(), new Object()
+        );
+        assertFalse(witnesses.has(key, 100));
+        assertNotNull(sweepStationarySeat(before, stopped, stationarySeat));
+        witnesses.record(key, 100);
+
+        // Both authoritative states now describe the settled portal. Its instantaneous
+        // velocity and a fresh sweep provide no evidence, but the earlier real hit remains.
+        Vec3 local = stopped.worldPosToPortalLocalPos(stationarySeat);
+        var settledVelocity = TeleportationUtil.getPortalPointVelocity(
+            stopped, stopped, new Vec3(local.x, local.y, 0)
+        );
+        assertVector(Vec3.ZERO, settledVelocity.thisSidePointVelocity());
+        assertFalse(approaches(stopped, settledVelocity, Vec3.ZERO));
+        assertNull(sweepStationarySeat(stopped, stopped, stationarySeat));
+        assertTrue(witnesses.has(key, 101), "A delayed request still has its authoritative crossing witness");
+        assertTrue(witnesses.has(key, 104));
+        assertTrue(witnesses.has(key, 105), "The crossing is retained through the inclusive maximum age");
+        assertFalse(witnesses.has(key, 106), "A stopped portal cannot extend the old crossing indefinitely");
+    }
+
+    private static RayTraceResult sweepStationarySeat(PortalState before, PortalState after, Vec3 worldSeat) {
+        return RectangularPortalShape.INSTANCE.raytracePortalShapeByLocalPos(
+            after.getThisSideState(),
+            before.worldPosToPortalLocalPos(worldSeat), after.worldPosToPortalLocalPos(worldSeat), 0
+        );
     }
 
     private static void assertStationarySourceDecisions(
