@@ -28,9 +28,13 @@ import java.util.UUID;
 /** Graphical client: full multi-chunk payload, live kinetic updates, rider ownership and pixel-state transitions. */
 public final class SableShipFlightClientTest {
     private static boolean connecting, done;
+    private static final Map<String,SableAeronauticsShipDrive> drives=new LinkedHashMap<>();
     private static String observedToken = "";
     private static int ticks, stable;
     private static String pendingToken = "";
+    private static String overviewToken = "";
+    private static int overviewTicks;
+    private static net.minecraft.world.entity.Entity overviewCamera;
     private static final Map<String,Map<String,Object>> cases = new LinkedHashMap<>();
     private static final Map<String,List<Map<String,Object>>> crossings = new LinkedHashMap<>();
     private static final Map<String,List<String>> screenshots = new LinkedHashMap<>();
@@ -50,15 +54,17 @@ public final class SableShipFlightClientTest {
                 return;
             }
             if (PortalSmokeSupport.exists("server-pass.txt")) {
-                require(cases.size() == 4, "server completed before four client cases");
+                require(cases.size() == SableShipFlightTest.expectedCases(), "server completed before expected client cases");
                 for (String key : cases.keySet()) {
                     require(crossings.get(key).size() == 4,"missing client crossings for " + key);
                     cases.get(key).put("crossings",crossings.get(key));
                     cases.get(key).put("screenshots",screenshots.get(key));
                     cases.get(key).put("snapshots",screenshots.get(key).size());
                 }
-                PortalSmokeSupport.write("client-ships.json",new Gson().toJson(Map.of("schema_version",1,"cases",cases.values())));
-                PortalSmokeSupport.write("client-pass.txt","Real client observed all sixteen assembled-ship crossings, block/kinetic mutations and contrasting framebuffer states");
+                var report=new LinkedHashMap<String,Object>(); report.put("schema_version",1); report.put("cases",cases.values());
+                if (SableShipFlightTest.aeronautics()) report.put("addons",SableShipFlightTest.addonVersions());
+                PortalSmokeSupport.write("client-ships.json",new Gson().toJson(report));
+                PortalSmokeSupport.write("client-pass.txt","Real client observed " + (SableShipFlightTest.expectedCases()*4) + " assembled-ship crossings, live block/kinetic mutations and contrasting framebuffer states");
                 done = true; mc.stop(); return;
             }
             String text = PortalSmokeSupport.read("ship-observe.json");
@@ -90,6 +96,33 @@ public final class SableShipFlightClientTest {
                 var row = item.getAsJsonArray();
                 var be = mc.level.getBlockEntity(center.offset(row.get(0).getAsInt(),row.get(1).getAsInt(),row.get(2).getAsInt()));
                 if (!(be instanceof KineticBlockEntity kinetic) || !Float.isFinite(kinetic.getSpeed()) || Math.abs(kinetic.getSpeed()-row.get(3).getAsFloat())>.01) { waiting("kinetic mismatch relative="+row+" actual="+(be instanceof KineticBlockEntity k?k.getSpeed():be)); return; }
+            }
+            if (SableShipFlightTest.aeronautics()) {
+                String size=request.get("size").getAsString();
+                var drive=drives.computeIfAbsent(size, key -> SableAeronauticsShipDrive.create(key.equals("LARGE")));
+                try { drive.verifyThrust(mc.level,body,request.get("propeller_rpm").getAsInt()); }
+                catch (IllegalStateException pending) { waiting("propeller update: "+pending.getMessage()); return; }
+            }
+            // An independent client-only camera preserves the real player/seat graph while documenting the whole vessel.
+            if (request.get("leg").getAsInt()==-1 && !overviewToken.equals(token)) {
+                if (overviewCamera==null) {
+                    var dimensions=request.getAsJsonArray("dimensions");
+                    double width=dimensions.get(0).getAsDouble(), height=dimensions.get(1).getAsDouble(), length=dimensions.get(2).getAsDouble();
+                    var target=body.logicalPose().transformPosition(new org.joml.Vector3d(0,height/2,0));
+                    var position=new org.joml.Vector3d(target).add(Math.max(12,width*.8),Math.max(8,height*1.5),Math.max(16,length*.8));
+                    var look=new org.joml.Vector3d(target).sub(position);
+                    overviewCamera=net.minecraft.world.entity.EntityType.ARMOR_STAND.create(mc.level);
+                    require(overviewCamera!=null,"cannot create client overview camera");
+                    overviewCamera.moveTo(position.x,position.y,position.z,
+                        (float)Math.toDegrees(Math.atan2(-look.x,look.z)),
+                        (float)-Math.toDegrees(Math.atan2(look.y,Math.hypot(look.x,look.z))));
+                    mc.options.hideGui=true; mc.setCameraEntity(overviewCamera); overviewTicks=0;
+                }
+                if (++overviewTicks<25) return;
+                try (NativeImage overview=Screenshot.takeScreenshot(mc.getMainRenderTarget())) {
+                    overview.writeToFile(PortalSmokeSupport.directory().resolve("overview-"+token.replace(':','-')+".png"));
+                }
+                mc.setCameraEntity(mc.player); overviewCamera=null; overviewToken=token; stable=0; return;
             }
             // The view is local to the retained Create seat. Let normal render frames settle after camera input.
             mc.options.hideGui = true;
@@ -130,6 +163,7 @@ public final class SableShipFlightClientTest {
                     var record=new LinkedHashMap<String,Object>();
                     record.put("leg",leg); record.put("from",request.get("from").getAsString()); record.put("to",request.get("to").getAsString());
                     for (String field:List.of("unique_body","rider_graph","blocks","machinery","mutation")) record.put(field,true);
+                    if (SableShipFlightTest.aeronautics()) record.put("propellers",true);
                     record.put("panel_pixels",mutated?red:green); record.put("opposing_panel_pixels",mutated?green:red);
                     record.put("panel_roi_pixels",roi); record.put("blue_panel_pixels",blue); record.put("yellow_panel_pixels",yellow); record.put("screenshot",file);
                     crossings.get(key).add(record);
@@ -137,7 +171,7 @@ public final class SableShipFlightClientTest {
                 PortalSmokeSupport.write("ship-client-ack.txt",token); observedToken=token;
             }
         } catch (Throwable error) {
-            done=true; error.printStackTrace();
+            done=true; if(mc.player!=null) mc.setCameraEntity(mc.player); error.printStackTrace();
             PortalSmokeSupport.write("client-fail.txt","ships token="+pendingToken+": "+error);
             mc.stop();
         }

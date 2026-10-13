@@ -1,6 +1,7 @@
 """Fast regression tests for false passes and failed-process supervision."""
 import tempfile
 import base64
+from contextlib import contextmanager
 import json
 import socket
 import subprocess
@@ -1000,14 +1001,24 @@ class ShipVerificationHarnessTest(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def reports(self):
+    def reports(self, aeronautics=False, ship_size="all"):
         reports = {side: {"schema_version": 1, "cases": []} for side in ("server", "client")}
+        if aeronautics:
+            for report in reports.values():
+                report["addons"] = dict(verify.aeronautics_bundle.BUNDLE["mods"])
         for size, dimensions, blocks, chunks in (("CONTROL", [7, 5, 11], 100, 1),
                                                 ("LARGE", [49, 17, 65], 4000, 20)):
-            for route in ("ordinary", "dimension-stack"):
+            if ship_size != "all" and size.lower() != ship_size:
+                continue
+            for route in (("ordinary",) if aeronautics else ("ordinary", "dimension-stack")):
                 common = dict(size=size, route=route, dimensions=dimensions, blocks=blocks, chunks=chunks,
                               assembled=True, ship_id=f"ship-{size}-{route}")
                 server = dict(common, crossings=[])
+                if aeronautics:
+                    server["lift_budget"] = dict(mass=1000.0, gravityY=-10.0, weight=10000.0,
+                        maximumStaticLift=15000.0, staticLiftWeightRatio=1.5, minimumAirPressure=0.9,
+                        atmosphereModified=False, engineCount=8 if size == "CONTROL" else 252,
+                        trimMomentX=30.0, trimMomentZ=-40.0)
                 client = dict(common, crossings=[], snapshots=5,
                               screenshots=[f"{size}-{route}-{phase}.png" for phase in range(5)])
                 for leg in range(4):
@@ -1020,6 +1031,16 @@ class ShipVerificationHarnessTest(unittest.TestCase):
                         panel_pixels=1200, opposing_panel_pixels=40, panel_roi_pixels=5000,
                         blue_panel_pixels=500, yellow_panel_pixels=500,
                         screenshot=client["screenshots"][leg+1]))
+                    if aeronautics:
+                        direction = -1 if leg % 2 == 0 else 1
+                        server["crossings"][-1].update(powered_thrust=True, propeller_count=8 if size == "CONTROL" else 252,
+                            peak_vertical_acceleration=-20.0 if direction < 0 else 5.0,
+                            gravity_y=-10.0, force_samples=5, no_native_velocity_writes=True,
+                            powered_motion=dict(ticks=10, verticalDisplacement=direction * 2.0,
+                                verticalVelocityChange=direction * 4.0, startVerticalVelocity=0.0,
+                                endVerticalVelocity=direction * 4.0, dimension=worlds[leg % 2],
+                                againstGravity=direction > 0))
+                        client["crossings"][-1]["propellers"] = True
                 reports["server"]["cases"].append(server)
                 reports["client"]["cases"].append(client)
         return reports
@@ -1246,13 +1267,17 @@ class ShipVerificationHarnessTest(unittest.TestCase):
         root = self.results / "checkout"
         with patch.multiple(verify, ROOT=root, RESULT_DIR=root / "results",
                             SERVER_DIR=root / "server", CLIENT_DIR=root / "client"), \
-             patch.dict(verify.os.environ, IP_SABLE_SHIPS="true"):
+             patch.dict(verify.os.environ, IP_SABLE_SHIPS="true", IP_SABLE_SHIPS_AERONAUTICS="true", IP_SABLE_SHIPS_SIZE="large"):
             env = verify.prepare_e2e()
         self.assertEqual(env["IP_SABLE_SHIPS"], "false")
+        self.assertEqual(env["IP_SABLE_SHIPS_AERONAUTICS"], "false")
+        self.assertEqual(env["IP_SABLE_SHIPS_SIZE"], "all")
+        self.assertEqual(env["IP_SABLE_E2E_SERVER_DIR"], str((root / "server").resolve()))
+        self.assertEqual(env["IP_SABLE_E2E_CLIENT_DIR"], str((root / "client").resolve()))
         self.assertEqual(env["IP_SABLE_E2E"], "true")
 
     def test_ship_launch_passes_mode_to_both_processes_and_uses_twenty_minutes(self):
-        for ships in (False, True):
+        for ships, ship_size in ((False, "all"), (True, "all"), (True, "control"), (True, "large")):
             self.write_reports()
             server, client = Mock(), Mock()
             with patch.object(verify, "prepare_e2e", return_value={"IP_SABLE_E2E_PORT": "25566"}), \
@@ -1262,19 +1287,97 @@ class ShipVerificationHarnessTest(unittest.TestCase):
                  patch.object(verify, "launch_graphical_client", return_value=(client, None)) as launch_client, \
                  patch.object(verify, "stop_process_tree"), \
                  patch.dict(verify.os.environ, DISPLAY=":99", IP_NETWORK_STRESS="false"):
-                verify.run_e2e(ships=ships)
+                verify.run_e2e(ships=ships, ship_size=ship_size)
             self.assertEqual(launch_server.call_args.kwargs["env"]["IP_SABLE_SHIPS"], str(ships).lower())
             self.assertEqual(launch_client.call_args.args[1]["IP_SABLE_SHIPS"], str(ships).lower())
+            self.assertEqual(launch_server.call_args.kwargs["env"]["IP_SABLE_SHIPS_SIZE"], ship_size)
+            self.assertEqual(launch_client.call_args.args[1]["IP_SABLE_SHIPS_SIZE"], ship_size)
             self.assertIn("runSableE2EServer", launch_server.call_args.args[0])
             self.assertIn("runSableE2EClient", launch_client.call_args.args[0])
-            wait.assert_called_once_with(server, client, timeout=1200 if ships else 300, smoke=False, ships=ships)
+            wait.assert_called_once_with(server, client, timeout=1200 if ships else 300, smoke=False, ships=ships,
+                                         aeronautics=False, ship_size=ship_size)
 
     def test_windows_bridge_forwards_explicit_ship_mode(self):
         with patch.object(verify.ctypes, "windll", Mock(), create=True):
             verify.launch_windows_interactive(["gradlew.bat", "runSableE2EClient"],
-                                              {"IP_SABLE_E2E": "true", "IP_SABLE_SHIPS": "true"}, 7)
+                                              {"IP_SABLE_E2E": "true", "IP_SABLE_SHIPS": "true", "IP_SABLE_SHIPS_AERONAUTICS": "true",
+                                               "IP_SABLE_SHIPS_SIZE": "large", "IP_SABLE_E2E_SERVER_DIR": "server-path",
+                                               "IP_SABLE_E2E_CLIENT_DIR": "client-path"}, 7)
         wrapper = (self.results / "client-session.cmd").read_text()
         self.assertIn('set "IP_SABLE_SHIPS=true"', wrapper)
+        self.assertIn('set "IP_SABLE_SHIPS_AERONAUTICS=true"', wrapper)
+        self.assertIn('set "IP_SABLE_SHIPS_SIZE=large"', wrapper)
+        self.assertIn('set "IP_SABLE_E2E_SERVER_DIR=server-path"', wrapper)
+        self.assertIn('set "IP_SABLE_E2E_CLIENT_DIR=client-path"', wrapper)
+
+    def test_selected_ship_size_requires_exact_subset_without_relaxing_other_evidence(self):
+        for addon in (False, True):
+            for size in ("control", "large"):
+                with self.subTest(addon=addon, size=size):
+                    reports = self.reports(aeronautics=addon, ship_size=size)
+                    self.write_reports(reports)
+                    verify.validate_ship_reports(aeronautics=addon, ship_size=size)
+                    with self.assertRaisesRegex(RuntimeError, "expected .* ship cases"):
+                        verify.validate_ship_reports(aeronautics=addon)
+                    with self.assertRaisesRegex(RuntimeError, "unexpected or duplicate"):
+                        verify.validate_ship_reports(aeronautics=addon, ship_size="large" if size == "control" else "control")
+                    reports["server"]["cases"][0]["crossings"][0]["integrity"] = False
+                    self.write_reports(reports)
+                    with self.assertRaisesRegex(RuntimeError, "integrity"):
+                        verify.validate_ship_reports(aeronautics=addon, ship_size=size)
+                    self.write_reports(self.reports(aeronautics=addon))
+                    with self.assertRaisesRegex(RuntimeError, "expected .* ship cases"):
+                        verify.validate_ship_reports(aeronautics=addon, ship_size=size)
+        with self.assertRaises(ValueError):
+            verify.validate_ship_reports(ship_size="typo")
+
+    def test_size_runs_have_fresh_separate_worlds_results_and_restore_runtime_paths(self):
+        previous = verify.RESULT_DIR, verify.SERVER_DIR, verify.CLIENT_DIR
+        protected = self.results / "protected-evidence.txt"
+        protected.write_text("keep")
+        for addon in (False, True):
+            for size in ("control", "large"):
+                name = "sable-ship-flight" + ("-aeronautics" if addon else "") + "-" + size
+                results = self.results / "build" / (name + "-e2e")
+                server = self.results / ("run-" + name + "-server")
+                client = self.results / ("run-" + name + "-client")
+                for directory in (results, server / "world", client / "logs"):
+                    directory.mkdir(parents=True)
+                    (directory / "old.txt").write_text("stale")
+                def run(**kwargs):
+                    self.assertEqual(kwargs, dict(ships=True, aeronautics=addon, ship_size=size))
+                    self.assertEqual((verify.RESULT_DIR, verify.SERVER_DIR, verify.CLIENT_DIR), (results, server, client))
+                    env = verify.prepare_e2e()
+                    self.assertEqual(env["IP_SABLE_E2E_SERVER_DIR"], str(server.resolve()))
+                    self.assertEqual(env["IP_SABLE_E2E_CLIENT_DIR"], str(client.resolve()))
+                    self.assertFalse((server / "world").exists())
+                    self.assertFalse((client / "logs").exists())
+                    self.assertEqual(list(results.iterdir()), [])
+                    (results / "this-run.txt").write_text(size)
+                with patch.object(verify, "ROOT", self.results), patch.object(verify, "run_e2e", side_effect=run):
+                    verify.run_ships(aeronautics=addon, ship_size=size)
+                self.assertEqual((verify.RESULT_DIR, verify.SERVER_DIR, verify.CLIENT_DIR), previous)
+        self.assertEqual(protected.read_text(), "keep")
+        self.assertEqual(len(list(self.results.glob("build/sable-ship-flight*-e2e/this-run.txt"))), 4)
+
+    def test_later_large_success_never_overwrites_failed_control_summary(self):
+        for mode in ("ships", "ships-aeronautics"):
+            for size in ("control", "large"):
+                with patch.object(verify, "ROOT", self.results), \
+                     patch.object(verify.sys, "argv", ["verify.py", mode, "--ship-size", size]), \
+                     patch.object(verify, "run_ships", side_effect=RuntimeError("control failed") if size == "control" else None):
+                    self.assertEqual(verify.main(), 1 if size == "control" else 0)
+            for size in ("control", "large"):
+                report = json.loads((self.results / "build" / f"verification-{mode}-{size}.json").read_text())
+                self.assertEqual(report["stages"][0]["status"], "failed" if size == "control" else "passed")
+                self.assertEqual(report["stages"][0]["name"], f"{mode}-{size}")
+
+    def test_ship_size_cli_rejects_unrelated_modes_and_bad_sizes(self):
+        for args in (("e2e", "--ship-size", "large"), ("ships", "--ship-size", "typo")):
+            with patch.object(verify.sys, "argv", ["verify.py", *args]), patch.object(verify.sys, "stderr"):
+                with self.assertRaises(SystemExit) as error:
+                    verify.main()
+                self.assertEqual(error.exception.code, 2)
 
     def test_ship_results_are_fresh_separate_and_paths_restore_after_failure(self):
         root = self.results / "checkout"
@@ -1286,7 +1389,7 @@ class ShipVerificationHarnessTest(unittest.TestCase):
         (fresh / "client-ships.json").write_text("stale evidence")
         previous = verify.RESULT_DIR, verify.SERVER_LOG, verify.CLIENT_LOG
         def run(**kwargs):
-            self.assertEqual(kwargs, {"ships": True})
+            self.assertEqual(kwargs, {"ships": True, "aeronautics": False, "ship_size": "all"})
             self.assertEqual(verify.RESULT_DIR, fresh)
             env = verify.prepare_e2e()
             self.assertEqual(env["IP_SABLE_E2E_RESULT_DIR"], str(fresh.resolve()))
@@ -1300,7 +1403,8 @@ class ShipVerificationHarnessTest(unittest.TestCase):
         self.assertEqual(old.read_text(), "established lane evidence")
 
     def test_ships_cli_records_draft_stage_and_full_keeps_existing_stages(self):
-        for mode, expected in (("ships", ["ships"]), ("full", ["core", "e2e", "visual"])):
+        for mode, expected in (("ships", ["ships"]), ("ships-aeronautics", ["ships-aeronautics"]),
+                               ("full", ["core", "e2e", "visual"])):
             with patch.object(verify, "ROOT", self.results), patch.object(verify.sys, "argv", ["verify.py", mode]), \
                  patch.object(verify, "run_core"), patch.object(verify, "run_e2e"), patch.object(verify, "run_visual"), \
                  patch.object(verify, "run_ships") as ships:
@@ -1308,18 +1412,234 @@ class ShipVerificationHarnessTest(unittest.TestCase):
             report = json.loads((self.results / "build" / f"verification-{mode}.json").read_text())
             self.assertEqual([stage["name"] for stage in report["stages"]], expected)
             self.assertTrue(all(stage["status"] == "passed" for stage in report["stages"]))
-            self.assertEqual(ships.call_count, int(mode == "ships"))
+            self.assertEqual(ships.call_count, int(mode.startswith("ships")))
+            if mode == "ships-aeronautics":
+                ships.assert_called_once_with(aeronautics=True, ship_size="all")
+
+    def test_aeronautics_requires_independent_exact_runtime_receipts(self):
+        self.write_reports(self.reports(aeronautics=True))
+        verify.validate_results(0, ships=True, aeronautics=True)
+        for side in ("server", "client"):
+            for mods in (None, {}, "loaded", {"aeronautics": "1.3.1"},
+                         {"aeronautics": "1.3.2", "simulated": "1.3.1", "offroad": "1.3.1"}):
+                with self.subTest(side=side, mods=mods):
+                    reports = self.reports(aeronautics=True)
+                    reports[side]["addons"] = mods
+                    self.write_reports(reports)
+                    with self.assertRaisesRegex(RuntimeError, "runtime versions"):
+                        verify.validate_results(0, ships=True, aeronautics=True)
+        self.write_reports()
+        with self.assertRaisesRegex(RuntimeError, "runtime versions"):
+            verify.validate_results(0, ships=True, aeronautics=True)
+        with self.assertRaisesRegex(ValueError, "requires ship mode"):
+            verify.validate_results(0, aeronautics=True)
+
+    def test_aeronautics_requires_powered_travel_without_native_velocity_writes(self):
+        for field, values in (("powered_thrust", (None, False, 1, "true")),
+                              ("no_native_velocity_writes", (None, False, 1, "true")),
+                              ("propeller_count", (None, 0, -1, True, 2.0, 7, 9, 251, 253)),
+                              ("force_samples", (None, 0, 4, True, 5.0)),
+                              ("gravity_y", (None, 0, 10, True, "-10", float("nan"), float("inf"))),
+                              ("peak_vertical_acceleration", (None, 0, True, "0.5", float("nan"), float("inf")))):
+            for value in values:
+                for case in range(2):
+                    for leg in range(4):
+                        with self.subTest(field=field, value=value, case=case, leg=leg):
+                            reports = self.reports(aeronautics=True)
+                            reports["server"]["cases"][case]["crossings"][leg][field] = value
+                            self.write_reports(reports)
+                            with self.assertRaises(RuntimeError):
+                                verify.validate_ship_reports(aeronautics=True)
+        for leg in range(4):
+            reports = self.reports(aeronautics=True)
+            reports["server"]["cases"][0]["crossings"][leg]["peak_vertical_acceleration"] *= -1
+            self.write_reports(reports)
+            with self.assertRaisesRegex(RuntimeError, "directional powered acceleration"):
+                verify.validate_ship_reports(aeronautics=True)
+        for value in (None, False, 1, "true"):
+            reports = self.reports(aeronautics=True)
+            reports["client"]["cases"][0]["crossings"][0]["propellers"] = value
+            self.write_reports(reports)
+            with self.assertRaisesRegex(RuntimeError, "propellers"):
+                verify.validate_ship_reports(aeronautics=True)
+
+    def test_aeronautics_requires_two_powered_ordinary_cases_without_changing_baseline_matrix(self):
+        powered = self.reports(aeronautics=True)
+        self.assertEqual([(case["size"], case["route"]) for case in powered["server"]["cases"]],
+                         [("CONTROL", "ordinary"), ("LARGE", "ordinary")])
+        self.write_reports(powered)
+        verify.validate_ship_reports(aeronautics=True)
+        with self.assertRaisesRegex(RuntimeError, "expected 4 ship cases"):
+            verify.validate_ship_reports()
+        self.write_reports()
+        verify.validate_ship_reports()
+        for side in ("server", "client"):
+            for index in range(2):
+                reports = self.reports(aeronautics=True)
+                reports[side]["cases"][index]["route"] = "dimension-stack"
+                self.write_reports(reports)
+                with self.assertRaisesRegex(RuntimeError, "unexpected or duplicate case"):
+                    verify.validate_ship_reports(aeronautics=True)
+            reports = self.reports(aeronautics=True)
+            reports[side]["cases"] += reports[side]["cases"]
+            self.write_reports(reports)
+            with self.assertRaisesRegex(RuntimeError, "expected 2 ship cases"):
+                verify.validate_ship_reports(aeronautics=True)
+
+    def test_aeronautics_requires_measured_powered_motion_in_every_leg(self):
+        for field, values in (("ticks", (None, True, 0, 4, 5.0)),
+                              ("verticalDisplacement", (None, True, 0, "2", float("nan"), float("inf"))),
+                              ("verticalVelocityChange", (None, True, 0, "4", float("nan"), float("inf"))),
+                              ("startVerticalVelocity", (None, True, "0", float("nan"), float("inf"))),
+                              ("endVerticalVelocity", (None, True, "4", float("nan"), float("inf"))),
+                              ("dimension", (None, "minecraft:the_end")),
+                              ("againstGravity", (None, 0, 1, "false"))):
+            for value in values:
+                for case in range(2):
+                    for leg in range(4):
+                        with self.subTest(field=field, value=value, case=case, leg=leg):
+                            reports = self.reports(aeronautics=True)
+                            reports["server"]["cases"][case]["crossings"][leg]["powered_motion"][field] = value
+                            self.write_reports(reports)
+                            with self.assertRaises(RuntimeError):
+                                verify.validate_ship_reports(aeronautics=True)
+        for value in (None, {}, True, []):
+            reports = self.reports(aeronautics=True)
+            reports["server"]["cases"][0]["crossings"][0]["powered_motion"] = value
+            self.write_reports(reports)
+            with self.assertRaisesRegex(RuntimeError, "measured powered motion interval"):
+                verify.validate_ship_reports(aeronautics=True)
+        for leg in range(4):
+            direction = -1 if leg % 2 == 0 else 1
+            for field, value in (("verticalDisplacement", direction * 0.05),
+                                  ("verticalVelocityChange", direction * 0.05),
+                                  ("verticalDisplacement", -direction * 2),
+                                  ("verticalVelocityChange", -direction * 4),
+                                  ("startVerticalVelocity", 10.0),
+                                  ("endVerticalVelocity", direction * 8.0),
+                                  ("againstGravity", direction < 0)):
+                with self.subTest(leg=leg, field=field, value=value):
+                    reports = self.reports(aeronautics=True)
+                    reports["server"]["cases"][0]["crossings"][leg]["powered_motion"][field] = value
+                    self.write_reports(reports)
+                    with self.assertRaises(RuntimeError):
+                        verify.validate_ship_reports(aeronautics=True)
+
+    def test_aeronautics_rejects_gravity_only_descent_and_unaccelerated_ascent(self):
+        for leg, acceleration, valid in ((0, -10.0, False), (2, -11.0, False), (0, -11.01, True),
+                                         (1, 0.05, False), (3, 0.049, False), (1, 0.051, True)):
+            with self.subTest(leg=leg, acceleration=acceleration):
+                reports = self.reports(aeronautics=True)
+                reports["server"]["cases"][0]["crossings"][leg]["peak_vertical_acceleration"] = acceleration
+                self.write_reports(reports)
+                if valid:
+                    verify.validate_ship_reports(aeronautics=True)
+                else:
+                    with self.assertRaisesRegex(RuntimeError, "beyond gravity"):
+                        verify.validate_ship_reports(aeronautics=True)
+
+    def test_aeronautics_lift_budget_requires_finite_native_measurements(self):
+        fields = ("mass", "gravityY", "weight", "maximumStaticLift", "staticLiftWeightRatio",
+                  "minimumAirPressure", "trimMomentX", "trimMomentZ")
+        for field in fields:
+            for value in (None, True, "1.5", float("nan"), float("inf")):
+                for case in range(2):
+                    with self.subTest(field=field, value=value, case=case):
+                        reports = self.reports(aeronautics=True)
+                        reports["server"]["cases"][case]["lift_budget"][field] = value
+                        self.write_reports(reports)
+                        with self.assertRaisesRegex(RuntimeError, "invalid lift budget"):
+                            verify.validate_ship_reports(aeronautics=True)
+        for value in (None, {}, True, []):
+            reports = self.reports(aeronautics=True)
+            reports["server"]["cases"][0]["lift_budget"] = value
+            self.write_reports(reports)
+            with self.assertRaisesRegex(RuntimeError, "lift budget"):
+                verify.validate_ship_reports(aeronautics=True)
+
+    def test_aeronautics_lift_budget_checks_mass_lift_atmosphere_engines_and_trim(self):
+        invalid = (("mass", 0), ("mass", -1), ("mass", 500), ("gravityY", 0), ("gravityY", 10),
+                   ("weight", -1), ("weight", 5000), ("maximumStaticLift", 0),
+                   ("maximumStaticLift", 11000), ("staticLiftWeightRatio", 1.1),
+                   ("staticLiftWeightRatio", 2.0), ("minimumAirPressure", 0),
+                   ("minimumAirPressure", -1), ("atmosphereModified", True),
+                   ("atmosphereModified", None), ("atmosphereModified", 0),
+                   ("engineCount", None), ("engineCount", True), ("engineCount", 8.0),
+                   ("engineCount", 7), ("engineCount", 251), ("engineCount", 253),
+                   ("trimMomentX", 300), ("trimMomentZ", -300))
+        for field, value in invalid:
+            for case in range(2):
+                with self.subTest(field=field, value=value, case=case):
+                    reports = self.reports(aeronautics=True)
+                    reports["server"]["cases"][case]["lift_budget"][field] = value
+                    self.write_reports(reports)
+                    with self.assertRaises(RuntimeError):
+                        verify.validate_ship_reports(aeronautics=True)
+        for moment, valid in ((299.9, True), (300.0, False)):
+            reports = self.reports(aeronautics=True)
+            reports["server"]["cases"][0]["lift_budget"].update(trimMomentX=moment, trimMomentZ=0.0)
+            self.write_reports(reports)
+            if valid:
+                verify.validate_ship_reports(aeronautics=True)
+            else:
+                with self.assertRaisesRegex(RuntimeError, "unbalanced static thrust moment"):
+                    verify.validate_ship_reports(aeronautics=True)
+
+    def test_aeronautics_stages_both_processes_and_cleans_after_they_stop(self):
+        self.write_reports(self.reports(aeronautics=True))
+        events = []
+        @contextmanager
+        def stage(root, results, runs):
+            self.assertEqual(results, self.results)
+            self.assertEqual(runs, (verify.SERVER_DIR, verify.CLIENT_DIR))
+            events.append("stage")
+            try:
+                yield {}
+            finally:
+                events.append("cleanup")
+        server, client = Mock(), Mock()
+        with patch.object(verify, "prepare_e2e", return_value={"IP_SABLE_E2E_PORT": "25566"}), \
+             patch.object(verify, "invalidate_generated_run_classpath"), \
+             patch.object(verify.subprocess, "Popen", side_effect=lambda *a, **k: events.append("server") or server) as launch, \
+             patch.object(verify, "wait_for_server"), patch.object(verify, "wait_for_client") as wait, \
+             patch.object(verify, "launch_graphical_client", return_value=(client, None)) as launch_client, \
+             patch.object(verify, "stop_process_tree", side_effect=lambda proc: events.append("stop")), \
+             patch.object(verify.aeronautics_bundle, "stage", side_effect=stage), \
+             patch.dict(verify.os.environ, DISPLAY=":99", IP_NETWORK_STRESS="false"):
+            verify.run_e2e(ships=True, aeronautics=True)
+        self.assertEqual(events, ["stage", "server", "stop", "stop", "cleanup"])
+        self.assertEqual(launch.call_args.kwargs["env"]["IP_SABLE_SHIPS_AERONAUTICS"], "true")
+        self.assertEqual(launch_client.call_args.args[1]["IP_SABLE_SHIPS_AERONAUTICS"], "true")
+        wait.assert_called_once_with(server, client, timeout=1200, smoke=False, ships=True, aeronautics=True, ship_size="all")
+
+    def test_aeronautics_results_never_overwrite_baseline_evidence(self):
+        root = self.results / "checkout"
+        baseline = root / "build/sable-ship-flight-e2e/server-pass.txt"
+        baseline.parent.mkdir(parents=True)
+        baseline.write_text("baseline evidence")
+        def run(**kwargs):
+            self.assertEqual(kwargs, {"ships": True, "aeronautics": True, "ship_size": "all"})
+            self.assertEqual(verify.RESULT_DIR, root / "build/sable-ship-flight-aeronautics-e2e")
+        with patch.object(verify, "ROOT", root), patch.object(verify, "run_e2e", side_effect=run):
+            verify.run_ships(aeronautics=True)
+        self.assertEqual(baseline.read_text(), "baseline evidence")
 
     def test_ship_ci_is_additive_preserves_both_transports_and_failure_artifacts(self):
         workflow = (verify.ROOT / ".github/workflows/ci.yml").read_text()
         ships = workflow.split("  sable-ship-flight:\n", 1)[1].split("  graphical-e2e:\n", 1)[0]
-        self.assertIn("transport: [udp, tcp]", ships)
+        for transport in ("udp", "tcp"):
+            for size in ("control", "large"):
+                self.assertIn(f"{{ transport: {transport}, mode: ships, ship_size: {size} }}", ships)
+        for size in ("control", "large"):
+            self.assertIn(f"{{ transport: udp, mode: ships-aeronautics, ship_size: {size} }}", ships)
+        self.assertIn("fail-fast: false", ships)
+        self.assertNotIn("continue-on-error", ships)
         self.assertIn("timeout-minutes: 45", ships)
-        self.assertIn("python3 tools/verify.py ships", ships)
+        self.assertIn('python3 tools/verify.py "${{ matrix.mode }}"', ships)
         self.assertIn("IP_VERIFICATION_NETWORKING: bundled", ships)
         self.assertIn("if: always()", ships)
-        for artifact in ("build/verification-ships.json", "build/sable-ship-flight-e2e/**",
-                         "run-sable-e2e-server/crash-reports/**", "run-sable-e2e-client/logs/**"):
+        for artifact in ("build/verification-ships*.json", "build/sable-ship-flight*-e2e/**",
+                         "${{ env.SHIP_RUNTIME_PREFIX }}-server/crash-reports/**", "${{ env.SHIP_RUNTIME_PREFIX }}-client/logs/**"):
             self.assertIn(artifact, ships)
         for value in ("true", "false"):
             self.assertIn(f"disable_udp_pipeline = {value}", ships)

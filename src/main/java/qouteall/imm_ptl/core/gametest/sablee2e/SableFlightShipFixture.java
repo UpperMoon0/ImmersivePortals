@@ -49,6 +49,7 @@ public final class SableFlightShipFixture {
     private static final int INITIAL_RPM = 32;
 
     private final UUID id;
+    private final SableAeronauticsShipDrive drive;
     private final Size size;
     private final SableFlightShipLayout layout;
     private final Map<BlockPos, BlockState> expectedStates;
@@ -60,7 +61,8 @@ public final class SableFlightShipFixture {
 
     private SableFlightShipFixture(UUID id, Size size, SableFlightShipLayout layout,
         Map<BlockPos, BlockState> states, Map<BlockPos, String> blockEntities,
-        Map<BlockPos, List<ItemStack>> inventories, BlockPos plotCenter) {
+        Map<BlockPos, List<ItemStack>> inventories, BlockPos plotCenter, SableAeronauticsShipDrive drive) {
+        this.drive = drive;
         this.id = id;
         this.size = size;
         this.layout = layout;
@@ -82,6 +84,7 @@ public final class SableFlightShipFixture {
 
     public static SableFlightShipFixture assemble(ServerLevel level, BlockPos origin, Size size) {
         var layout = SableFlightShipLayout.create(size == Size.LARGE);
+        var drive = SableShipFlightTest.aeronautics() ? SableAeronauticsShipDrive.create(size == Size.LARGE) : null;
         var states = new LinkedHashMap<BlockPos, BlockState>();
         var blockEntities = new LinkedHashMap<BlockPos, String>();
         var inventories = new LinkedHashMap<BlockPos, List<ItemStack>>();
@@ -100,6 +103,12 @@ public final class SableFlightShipFixture {
             require(level.getBlockState(absolute).isAir(), "staging position is occupied: " + absolute);
             BlockState state = resolveState(entry.getValue());
             states.put(relative, state);
+
+        }
+        if (drive != null) states.putAll(drive.additionalBlocks());
+        for (BlockPos relative : states.keySet()) {
+            BlockPos absolute = origin.offset(relative);
+            require(level.getBlockState(absolute).isAir(), "addon staging position is occupied: " + absolute);
             sourcePositions.add(absolute);
         }
         for (var entry : states.entrySet()) {
@@ -141,7 +150,7 @@ public final class SableFlightShipFixture {
         require(level.getEntitiesOfClass(ItemEntity.class, bounds.inflate(2)).stream()
             .allMatch(item -> previousDrops.contains(item.getUUID())), "assembly duplicated cargo or blocks into item drops");
         var fixture = new SableFlightShipFixture(assembled.getUniqueId(), size, layout,
-            states, blockEntities, inventories, assembled.getPlot().getCenterBlock());
+            states, blockEntities, inventories, assembled.getPlot().getCenterBlock(), drive);
         if (size == Size.LARGE) {
             require(fixture.assembledBlockCount >= 3500 && fixture.plotChunks >= 12 && fixture.plotSections > fixture.plotChunks,
                 "large fixture did not occupy enough real blocks/chunks/vertical sections");
@@ -151,6 +160,7 @@ public final class SableFlightShipFixture {
         return fixture;
     }
 
+    public SableAeronauticsShipDrive drive() { return drive; }
     public UUID id() { return id; }
     public Size size() { return size; }
     public SableFlightShipLayout layout() { return layout; }
@@ -206,8 +216,8 @@ public final class SableFlightShipFixture {
     /** Toggle actual world blocks/redstone. Allow at least four normal ticks before asserting lamp-off. */
     public void mutateProbe(ServerLevel level, ServerSubLevel body, boolean enabled) {
         setExpected(level, body, REMOVED_PROBE, enabled ? Blocks.AIR.defaultBlockState() : Blocks.WHITE_CONCRETE.defaultBlockState());
-        for (int x = 0; x <= 0; x++) for (int y = 2; y <= 4; y++) {
-            setExpected(level, body, new BlockPos(x, y, 2),
+        for (int y = 2; y <= 4; y++) {
+            setExpected(level, body, new BlockPos(0, y, 2),
                 (enabled ? Blocks.RED_CONCRETE : Blocks.LIME_CONCRETE).defaultBlockState());
         }
         BlockState lever = expectedStates.get(LEVER_PROBE).setValue(BlockStateProperties.POWERED, enabled);

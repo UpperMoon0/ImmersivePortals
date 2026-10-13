@@ -4,9 +4,13 @@ This development-only suite extends the existing six-block rider E2E; it does no
 Run `python tools/verify.py ships` with Java 21 and a graphical desktop or Xvfb.
 Only run the harness in a disposable checkout: its server/client worlds and results are fresh each run.
 
+Use `python tools/verify.py ships --ship-size control` or `--ship-size large` to run one size independently; the default `--ship-size all` runs both. Each selected baseline size still requires its ordinary and dimension-stack routes, four legs each. The same option works with `ships-aeronautics`, where each size requires its powered ordinary route. Separate sizes use separate server/client directories, fresh worlds, processes, result directories and summary records, so a control failure cannot prevent a large-size CI job from running or be hidden by its success. Baseline CI runs all four UDP/TCP × control/large jobs with fail-fast disabled.
+
+For example, `ships --ship-size large` writes `build/sable-ship-flight-large-e2e/` and `build/verification-ships-large.json`, using `run-sable-ship-flight-large-server/` and `run-sable-ship-flight-large-client/`. Powered paths additionally include `-aeronautics` before the size. Runs without a size filter retain the original evidence directory names and use their own mode-specific server/client directories.
+
 ## Scope
 
-- A 7×5×11 control and a 49×17×65 large ship, genuinely placed in a server world and moved into a Sable sublevel by `SubLevelAssemblyHelper.assembleBlocks`.
+- A 176-block 7×5×11 control and a 4,185-block 49×17×65 large ship, genuinely placed in a server world and moved into a Sable sublevel by `SubLevelAssemblyHelper.assembleBlocks`.
 - The large fixture must contain at least 3,500 blocks, occupy at least 12 actual plot chunks, and occupy more vertical sections than horizontal chunks. Dimensions are fixed, not inferred from a tiny sparse surrogate.
 - Continuous hull/deck, longitudinal spine, ribs, glass canopy, distinct extremity markers, two powered Create motor/shaft/cog drive trains, a real Create seat and player, two loaded barrels and a loaded item drain.
 - Ordinary finite portals and dimension-stack boundaries, with 90-degree yaw transforms and four alternating crossings per size/route (16 crossings total).
@@ -18,10 +22,26 @@ Reports are `build/sable-ship-flight-e2e/server-ships.json` and `client-ships.js
 
 ## Important limits
 
-The fixture is an actual assembled Sable vessel with native physics and functional Create machinery. Its launch/hover controller is explicit test input. The motors do not generate aerodynamic lift. Aeronautics, Simulated and Offroad are currently optional local-development jars, not pinned hosted-CI inputs; this suite does **not** certify their balloons, burners, analog controls, fuel consumption or aerodynamic model. The public report about stale burner/lever graphics and a balloon remaining behind at a dimension-stack seam is a motivation, not a reproduced diagnosis.
+The fixture is an actual assembled Sable vessel with native physics and functional Create machinery. Its launch/hover controller is explicit test input. The motors do not generate aerodynamic lift. The pinned optional lane below tests wooden propellers; it does **not** certify balloons, burners, analog controls, fuel consumption or every aerodynamic configuration. The public report about stale burner/lever graphics and a balloon remaining behind at a dimension-stack seam is a motivation, not a reproduced diagnosis.
 
 Panel pixels exercise live block-remeshing; exact lever/lamp/removed-block client states are checked separately. These assertions do not by themselves certify each block's animation or every viewing angle, shader, rendering backend, nested portal, or an unseated walking passenger. Two transport lanes use the pinned baseline runtime, not all networking versions or impairment profiles. Existing renderer and rider-lifecycle suites remain independently required.
 
 ## Validation status
 
-This branch is intentionally a draft while actual Java compilation and native graphical CI execute. Python harness regressions run locally; full Gradle startup in the orchestration workspace is blocked by unreachable dependency transport. A harness pass or source inspection is not a runtime compatibility pass. Actual run receipts and any new reproduced product defects will be recorded as the draft progresses.
+This branch is intentionally a draft while actual Java compilation and native graphical CI execute. Python harness regressions run locally; local full Gradle startup reaches a denied (HTTP 403) NeoForged dependency download, so full compilation and native runs use repository CI. A harness pass or source inspection is not a runtime compatibility pass. Actual run receipts and any new reproduced product defects will be recorded as the draft progresses.
+
+## Optional genuine Aeronautics propulsion
+
+`python tools/verify.py ships-aeronautics` stages the official Create Aeronautics 1.3.1 bundle from Modrinth version `Vzp221Un`, SHA-256 `b531dbe1081ee354f6e47ba4e0443b9caa648dfb8c82013a591a20836245bd84`. It contains Aeronautics, Simulated and Offroad 1.3.1; no duplicate Sable or Veil. Source release pin: `d3007b79b8e571fbb2cbaf91f2269869f864d711`. Download and staged copies are size/hash checked; provenance is recorded. Owned addon files are removed after both processes stop; baseline runs reject leftovers. The bundled LICENSE.md distinguishes MIT code from all-rights-reserved assets. This repository downloads the unchanged official release for tests and does not vendor or publish the addon jar/assets; CI uploads test receipts and screenshots only.
+
+This mode adds eight real motor/shaft/wooden-propeller engines to CONTROL (189 blocks), and 252 to LARGE (4,941 blocks). Only ordinary Create RPM controls are written during powered travel; Aeronautics actors apply actual native thrust. Both sides verify addon versions, propeller block entities, kinetic speeds and thrust. Server evidence requires native acceleration and displacement during intervals with no direct velocity/force/pose writes. Upward legs prove movement against gravity. Velocity-feedback observation holds remain explicitly outside these powered intervals.
+
+Powered mode has **two ordinary-portal cases / eight crossings**; the baseline retains all four cases / sixteen crossings including dimension stacks. The lower powered route uses Overworld origin y32 and portal y-8 to Nether portal y48. Native atmospheric configuration is unchanged. Sable's air-pressure curve reaches zero at the Nether logical ceiling, so the high baseline route and an arbitrary powered stack return are not valid propulsion controls. Actual mass, gravity, pressure and trimmed lift budget must pass before release. An additive UDP addon CI lane is draft until genuine runtime evidence passes.
+
+The framebuffer target has blue and yellow flanking columns and a red/lime mutable center. All three colors, substantial coverage and rejection of stale opposite-color pixels are mandatory; bare red Nether background is insufficient.
+
+## Reproduced pre-fix discrepancy
+
+At head `7076aa8c327b21babc9f7073c5676eb49f2c76d2`, UDP and TCP in [CI run 38422971061](https://github.com/UpperMoon0/ImmersivePortals/actions/runs/38422971061) assembled the control ship and verified server cargo/machinery. After normal Create motor control changed 32 RPM to 16 RPM, the client stayed at 32 until timeout before the first crossing. The unchanged assertion remains the runtime regression. At fix head `f5d9757f01d7d67befb0a1135c619683b5d81daf`, both transports in [CI run 38425215900](https://github.com/UpperMoon0/ImmersivePortals/actions/runs/38425215900) passed those unchanged live-RPM and framebuffer assertions and all four ordinary control crossings. The fix preserves Sable's own hidden-plot watcher list rather than selecting regular-world watchers at hidden coordinates. Independent source reviews checked recipient visibility, deduplication, lifecycle and the unchanged non-Sable path.
+
+Both fixed-head lanes then failed after the fourth dimension-stack control crossing: the native body returned to Overworld, followed by a player correction back to Nether 33 ms later, and the retained seat disappeared before the post-crossing observation. This is a separate open rider-lifecycle regression; the failing-before receipt is preserved. Those runs never reached the large cases. Independent fresh-world size lanes and partial progress reports prevent this control failure from hiding large-fixture evidence. No full-suite pass or equivalence to the public balloon/burner report is claimed.

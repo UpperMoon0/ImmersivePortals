@@ -197,7 +197,7 @@ runs {
 
     sableE2EServer {
         runType 'server'
-        workingDirectory project.file('run-sable-e2e-server')
+        workingDirectory project.file(System.getenv('IP_SABLE_E2E_SERVER_DIR') ?: 'run-sable-e2e-server')
         arguments '--nogui'
         systemProperty 'ip.sable.e2e', 'true'
         systemProperty 'ip.sable.e2e.resultDir', project.file('build/sable-dimension-stack-e2e').absolutePath
@@ -205,7 +205,7 @@ runs {
 
     sableE2EClient {
         runType 'client'
-        workingDirectory project.file('run-sable-e2e-client')
+        workingDirectory project.file(System.getenv('IP_SABLE_E2E_CLIENT_DIR') ?: 'run-sable-e2e-client')
         systemProperty 'ip.sable.e2e', 'true'
         systemProperty 'ip.sable.e2e.resultDir', project.file('build/sable-dimension-stack-e2e').absolutePath
         dependencies {

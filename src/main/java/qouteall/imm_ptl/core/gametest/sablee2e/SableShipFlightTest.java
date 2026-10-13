@@ -49,6 +49,11 @@ public final class SableShipFlightTest {
     private static int ticks, phaseTicks, caseIndex, leg;
     private static int flightTicks;
     private static double observedFlightDistance;
+    private static int forceSamples;
+    private static double peakSignedAcceleration;
+    private static double flightGravityY;
+    private static SableAeronauticsShipDrive.MotionSample poweredStart;
+    private static Map<String,Object> poweredMotion;
     private static Vector3d hover, launch, previousVelocity;
     private static Quaterniond previousOrientation;
     private static Map<String, Object> caseReport, crossing;
@@ -56,9 +61,16 @@ public final class SableShipFlightTest {
     private static final List<Map<String, Object>> crossings = new ArrayList<>();
     private static String token;
 
+    static boolean aeronautics() { return "true".equalsIgnoreCase(System.getenv("IP_SABLE_SHIPS_AERONAUTICS")); }
+    static Map<String,String> addonVersions() { return Map.of("aeronautics","1.3.1","simulated","1.3.1","offroad","1.3.1"); }
+    static String selectedSize() { return System.getenv().getOrDefault("IP_SABLE_SHIPS_SIZE", "all"); }
+    static int expectedCases() { return (selectedSize().equals("all") ? 2 : 1) * (aeronautics() ? 1 : 2); }
+    private static int lastCaseExclusive() { return selectedSize().equals("control") ? 2 : 4; }
     static boolean enabled() { return "true".equalsIgnoreCase(System.getenv("IP_SABLE_SHIPS")); }
     public static void onPlayerLogin(PlayerEvent.PlayerLoggedInEvent event) {
         if (!enabled() || !(event.getEntity() instanceof ServerPlayer joined)) return;
+        require(List.of("all", "control", "large").contains(selectedSize()), "invalid ship size filter");
+        caseIndex = selectedSize().equals("large") ? 2 : 0;
         player = joined;
         source = joined.server.getLevel(Level.OVERWORLD);
         destination = joined.server.getLevel(Level.NETHER);
@@ -80,6 +92,7 @@ public final class SableShipFlightTest {
                 case DONE -> { }
             }
         } catch (Throwable error) {
+            checkpoint("failed", error.toString());
             phase = Phase.DONE;
             error.printStackTrace();
             PortalSmokeSupport.write("server-fail.txt", "ships case=" + caseIndex + " leg=" + leg + ": " + error);
@@ -105,7 +118,14 @@ public final class SableShipFlightTest {
                         destination.setBlock(position, Blocks.AIR.defaultBlockState(), 2);
                 }
         }
-        int y = stack() ? source.getMinBuildHeight() + 40 : 160;
+        if (aeronautics()) {
+            // Natural atmospheric pressure is required for real propellers; the baseline high-altitude route is a vacuum.
+            for (int x=-48;x<=48;x++) for (int z=-48;z<=48;z++) for (int clearY=0;clearY<=80;clearY++) {
+                BlockPos position=new BlockPos(x,clearY,z);
+                if (!destination.getBlockState(position).isAir()) destination.setBlock(position,Blocks.AIR.defaultBlockState(),2);
+            }
+        }
+        int y = stack() ? source.getMinBuildHeight() + 40 : aeronautics() ? 32 : 160;
         if (stack()) {
             VerticalConnectingPortal.connectMutually(Level.OVERWORLD, Level.NETHER, false);
             forward = VerticalConnectingPortal.getConnectingPortal(source, VerticalConnectingPortal.ConnectorType.floor);
@@ -120,11 +140,11 @@ public final class SableShipFlightTest {
         } else {
             forward = Portal.ENTITY_TYPE.create(source);
             require(forward != null, "cannot create ordinary portal");
-            forward.setOriginPos(new Vec3(0, 120, 0));
+            forward.setOriginPos(new Vec3(0, aeronautics() ? -8 : 120, 0));
             // X cross -Z gives +Y, so the vessel approaches the front while descending.
             forward.setOrientationAndSize(new Vec3(1, 0, 0), new Vec3(0, 0, -1), 160, 160);
             forward.setDestinationDimension(Level.NETHER);
-            forward.setDestination(new Vec3(0, 224, 0));
+            forward.setDestination(new Vec3(0, aeronautics() ? 48 : 224, 0));
             forward.setRotation(DQuaternion.rotationByDegrees(new Vec3(0, 1, 0), 90));
             require(source.addFreshEntity(forward), "ordinary portal spawn failed");
             reverse = PortalManipulation.createReversePortal(forward, Portal.ENTITY_TYPE);
@@ -141,7 +161,7 @@ public final class SableShipFlightTest {
         caseReport.put("dimensions", caseIndex < 2 ? List.of(7,5,11) : List.of(49,17,65));
         caseReport.put("blocks", fixture.assembledBlockCount());
         caseReport.put("chunks", fixture.plotChunks());
-        caseReport.put("propulsion", "native rigid-body velocity launch; not an Aeronautics engine acceptance test");
+        caseReport.put("propulsion", aeronautics() ? "real Aeronautics propeller actors; no native velocity writes during powered intervals" : "native rigid-body velocity launch; not an Aeronautics engine acceptance test");
         phase(Phase.ASSEMBLY);
     }
     private static void mountWhenReady() {
@@ -160,19 +180,31 @@ public final class SableShipFlightTest {
         require(player.startRiding(seat, true), "rider could not mount assembled ship");
         fixture.setMotorSpeed(current, body, rpm());
         fixture.mutateProbe(current, body, mutated());
+        prepareDrive(body);
         phase(Phase.SETTLE);
+    }
+    private static int nextDriveCommand() { return (leg + 1) % 2 == 0 ? -256 : 256; }
+    private static void prepareDrive(ServerSubLevel body) {
+        if (aeronautics()) fixture.drive().setVerticalCommand(current,body,nextDriveCommand());
     }
     private static int rpm() { return leg % 2 == 0 ? -32 : 16; }
     private static boolean mutated() { return leg % 2 == 0; }
     private static void settle() {
         var body = fixture.requireBody(current); hold(body);
-        if (phaseTicks < 30) return;
+        if (phaseTicks < (aeronautics() ? 60 : 30)) return;
         fixture.verifyIntegrity(current, body);
         fixture.verifyMachinery(current, body, rpm());
         verifyRider(body);
+        if (aeronautics()) {
+            var budget=fixture.drive().liftBudget(current,body);
+            require(((Number)budget.get("staticLiftWeightRatio")).doubleValue()>1.1,"powered fixture has insufficient natural-atmosphere lift reserve: "+budget);
+            caseReport.put("lift_budget",budget);
+            fixture.drive().verifyThrust(current,body,-nextDriveCommand());
+        }
         token = caseIndex + ":" + leg;
         var request = new LinkedHashMap<String,Object>(caseReport);
         request.put("token", token); request.put("leg", leg); request.put("dimension", current.dimension().location().toString());
+        if (aeronautics()) request.put("propeller_rpm",-nextDriveCommand());
         request.put("seat_id", seatId.toString()); request.put("rpm", rpm()); request.put("mutated", mutated());
         request.put("blocks_manifest", fixture.expectedBlockStates().entrySet().stream().map(entry -> {
             BlockPos p = entry.getKey();
@@ -194,12 +226,15 @@ public final class SableShipFlightTest {
         var body = fixture.requireBody(current); hold(body);
         if (!PortalSmokeSupport.read("ship-client-ack.txt").equals(token)) return;
         if (leg >= 0) { crossing.put("client_ack", true); crossings.add(crossing); }
+        checkpoint("running", "");
         if (leg == 3) {
             caseReport.put("crossings", List.copyOf(crossings)); cases.add(caseReport);
-            cleanup(); caseIndex++;
-            if (caseIndex == 4) {
-                PortalSmokeSupport.write("server-ships.json", JSON.toJson(Map.of("schema_version",1,"cases",cases)));
-                PortalSmokeSupport.write("server-pass.txt", "Four genuinely assembled ship cases completed sixteen native crossings with rider/cargo/machinery continuity");
+            cleanup(); caseIndex += aeronautics() ? 2 : 1;
+            if (caseIndex == lastCaseExclusive()) {
+                var report = new LinkedHashMap<String,Object>(); report.put("schema_version",1); report.put("cases",cases);
+                if (aeronautics()) report.put("addons",addonVersions());
+                PortalSmokeSupport.write("server-ships.json", JSON.toJson(report));
+                PortalSmokeSupport.write("server-pass.txt", expectedCases() + " assembled ship cases completed " + (expectedCases()*4) + " native crossings with rider/cargo/machinery continuity; aeronautics=" + aeronautics());
                 phase(Phase.DONE);
             } else setup();
             return;
@@ -208,7 +243,12 @@ public final class SableShipFlightTest {
         launch = new Vector3d(body.logicalPose().position()); flightTicks = 0; observedFlightDistance = 0;
         // Nonzero lateral components make the yaw-rotated velocity assertion nonvacuous.
         // The reverse launch points back along the transformed outward trajectory.
-        setVelocity(body, leg % 2 == 0 ? new Vector3d(8, -SPEED, 4) : new Vector3d(-4, SPEED, 8));
+        if (aeronautics()) {
+            poweredStart = fixture.drive().sample(body); forceSamples=0; peakSignedAcceleration=0; poweredMotion=null;
+            flightGravityY=((Number)fixture.drive().liftBudget(current,body).get("gravityY")).doubleValue();
+            // Motors have spooled under the explicitly separate observation hold. Release feedback now.
+            // No direct velocity, force, pose or gravity writes occur through FLY or the seam-clearance interval.
+        } else setVelocity(body, leg % 2 == 0 ? new Vector3d(8, -SPEED, 4) : new Vector3d(-4, SPEED, 8));
         previousVelocity = handle(body).getLinearVelocity(new Vector3d());
         previousOrientation = new Quaterniond(body.logicalPose().orientation());
         phase(Phase.FLY);
@@ -219,6 +259,13 @@ public final class SableShipFlightTest {
         var arriving = SubLevelContainer.getContainer(target).getSubLevel(fixture.id());
         if (!(arriving instanceof ServerSubLevel body)) {
             var active = fixture.requireBody(current);
+            if (aeronautics()) {
+                int direction=leg%2==0?-1:1;
+                fixture.drive().verifyThrust(current,active,-direction*256); forceSamples++;
+                double acceleration=(handle(active).getLinearVelocity(new Vector3d()).y-previousVelocity.y)*20;
+                peakSignedAcceleration=Math.max(peakSignedAcceleration,direction*acceleration);
+                if (flightTicks>=10) poweredMotion=fixture.drive().verifyPoweredMotion(poweredStart,active,direction);
+            }
             observedFlightDistance = Math.max(observedFlightDistance, launch.distance(active.logicalPose().position()));
             previousVelocity = handle(active).getLinearVelocity(new Vector3d());
             previousOrientation = new Quaterniond(active.logicalPose().orientation());
@@ -247,6 +294,16 @@ public final class SableShipFlightTest {
         crossing.put("unique_body",true); crossing.put("rider_graph",true); crossing.put("integrity",true);
         crossing.put("velocity",true); crossing.put("orientation",true);
         crossing.put("arrival_speed",actual.length());
+        if (aeronautics()) {
+            require(forceSamples>=5 && poweredMotion!=null && peakSignedAcceleration>.05,"no genuine powered-motion witness");
+            require(leg%2!=0 || peakSignedAcceleration>-flightGravityY+1,
+                "downhill interval is indistinguishable from gravity alone; propeller actor may not be applying force");
+            crossing.put("powered_thrust",true); crossing.put("no_native_velocity_writes",true);
+            crossing.put("propeller_count",fixture.drive().engineCount()); crossing.put("force_samples",forceSamples);
+            crossing.put("peak_vertical_acceleration",(leg%2==0?-1:1)*peakSignedAcceleration);
+            crossing.put("gravity_y",flightGravityY);
+            crossing.put("powered_motion",poweredMotion);
+        }
         phase(Phase.CLEAR_SEAM);
     }
     private static void clearSeam() {
@@ -256,15 +313,31 @@ public final class SableShipFlightTest {
         require(phaseTicks < 300,"ship failed to clear seam");
         if (clearance < 28) return;
         hover = new Vector3d(body.logicalPose().position()); hold(body);
-        fixture.setMotorSpeed(current,body,rpm()); fixture.mutateProbe(current,body,mutated());
+        fixture.setMotorSpeed(current,body,rpm()); fixture.mutateProbe(current,body,mutated()); prepareDrive(body);
         phase(Phase.SETTLE);
     }
     private static void verifyRider(ServerSubLevel body) {
         Entity seat = current.getEntity(seatId);
-        require(seat != null && Sable.HELPER.getContaining(seat) == body,"retained seat missing from ship");
+        require(seat != null && Sable.HELPER.getContaining(seat) == body,"retained seat missing from ship: " + riderDiagnostics(body));
         require(player.serverLevel() == current && player.getVehicle() == seat && seat.getPassengers().contains(player),"rider separated from vessel");
         ServerLevel other = current == source ? destination : source;
         require(other.getEntity(seatId) == null,"duplicated retained seat");
+    }
+    private static String riderDiagnostics(ServerSubLevel body) {
+        Entity here=current.getEntity(seatId);
+        Entity there=(current==source?destination:source).getEntity(seatId);
+        return "seat="+seatId+" here="+here+" other="+there+" body="+fixture.id()
+            +" bodyPose="+body.logicalPose().position()+" player="+player.position()
+            +" playerDimension="+player.serverLevel().dimension().location()+" vehicle="+player.getVehicle()
+            +" seatContaining="+(here==null?null:Sable.HELPER.getContaining(here));
+    }
+    private static void checkpoint(String status, String failure) {
+        var report=new LinkedHashMap<String,Object>();
+        report.put("status",status); report.put("failure",failure); report.put("case_index",caseIndex);
+        report.put("leg",leg); report.put("phase",phase.name()); report.put("completed_cases",List.copyOf(cases));
+        if (caseReport!=null) { var active=new LinkedHashMap<>(caseReport);
+            active.put("crossings",List.copyOf(crossings)); report.put("active_case",active); }
+        PortalSmokeSupport.write("server-progress.json",JSON.toJson(report));
     }
     private static void hold(ServerSubLevel body) {
         // Stationkeeping is native velocity feedback only. There is no ship teleport, even at observation barriers.

@@ -5,6 +5,7 @@ Modes:
   core  - build + JUnit + NeoForge GameTests in one Gradle invocation
   e2e   - dedicated Sable server + real graphical client + marker validation
   ships - separate complex Sable ship flight evidence (draft baseline)
+  ships-aeronautics - opt-in pinned Aeronautics powered ship flight evidence
   visual - real portal pixels + shader reload + runtime timing budgets
   full  - core followed by e2e and visual
   matrix - visual suite across renderer and optional-Sable configurations
@@ -29,6 +30,7 @@ import subprocess
 import sys
 import time
 import zipfile
+import aeronautics_bundle
 
 ROOT = Path(__file__).resolve().parents[1]
 RESULT_DIR = ROOT / "build" / "sable-dimension-stack-e2e"
@@ -235,7 +237,8 @@ def launch_windows_interactive(
 
 
     wrapper = RESULT_DIR / "client-session.cmd"
-    inherited = ("IP_SABLE_E2E", "IP_SABLE_SHIPS", "IP_SABLE_E2E_PORT", "IP_SABLE_E2E_RESULT_DIR", "GRADLE_USER_HOME",
+    inherited = ("IP_SABLE_E2E", "IP_SABLE_SHIPS", "IP_SABLE_SHIPS_AERONAUTICS", "IP_SABLE_SHIPS_SIZE",
+                 "IP_SABLE_E2E_PORT", "IP_SABLE_E2E_RESULT_DIR", "IP_SABLE_E2E_SERVER_DIR", "IP_SABLE_E2E_CLIENT_DIR", "GRADLE_USER_HOME",
                  "IP_PORTAL_SMOKE", "IP_SHADOW_SMOKE", "IP_SMOKE_SAMPLES", "IP_SMOKE_RENDERER", "IP_SMOKE_SABLE",
                  "IP_SMOKE_NEGATIVE_CONTROL", "IP_SMOKE_FLYWHEEL_BACKEND", "IP_SMOKE_RENDER_MODE",
                  "IP_SMOKE_DISABLE_COPY_IMAGE", "IP_SMOKE_GL_CONTEXT", "MESA_GL_VERSION_OVERRIDE", "MESA_EXTENSION_OVERRIDE", "IP_SMOKE_SHADERPACK_NAME", "IP_SMOKE_DIAGNOSTIC_FIXTURE")
@@ -874,6 +877,7 @@ def choose_tcp_udp_port(attempts: int = 64) -> int:
 
 
 def prepare_e2e() -> dict[str, str]:
+    aeronautics_bundle.require_clean_runs((SERVER_DIR, CLIENT_DIR))
     # Resolve every disposable target before deleting; never follow a redirected
     # run directory outside this checkout, and never hide cleanup errors.
     for target in (RESULT_DIR, SERVER_DIR / "world", SERVER_DIR / "logs", CLIENT_DIR / "logs", CLIENT_DIR / ".mixin.out"):
@@ -922,7 +926,11 @@ def prepare_e2e() -> dict[str, str]:
     env["IP_SABLE_E2E"] = "true"
     # An inherited opt-in must never silently replace the established E2E suite.
     env["IP_SABLE_SHIPS"] = "false"
+    env["IP_SABLE_SHIPS_AERONAUTICS"] = "false"
+    env["IP_SABLE_SHIPS_SIZE"] = "all"
     env["IP_SABLE_E2E_RESULT_DIR"] = str(RESULT_DIR.resolve())
+    env["IP_SABLE_E2E_SERVER_DIR"] = str(SERVER_DIR.resolve())
+    env["IP_SABLE_E2E_CLIENT_DIR"] = str(CLIENT_DIR.resolve())
     return env
 
 
@@ -944,14 +952,20 @@ def check_failures() -> None:
             raise RuntimeError(marker.read_text(encoding="utf-8", errors="replace").strip())
 
 
-def validate_ship_reports() -> None:
+def validate_ship_reports(aeronautics: bool = False, ship_size: str = "all") -> None:
     """Require independent server/client proof for every fixture and flight leg.
 
     These structural checks certify the declared draft Sable/Create scenarios,
     not arbitrary vehicle add-ons or screenshot pixel correctness.
     """
     dimensions = {"CONTROL": [7, 5, 11], "LARGE": [49, 17, 65]}
-    expected_cases = {(size, route) for size in dimensions for route in ("ordinary", "dimension-stack")}
+    if ship_size not in ("all", "control", "large"):
+        raise ValueError("unknown ship size")
+    sizes = dimensions if ship_size == "all" else (ship_size.upper(),)
+    # Powered acceptance uses atmospheric ordinary portals. The native-motion
+    # baseline still requires both ordinary and dimension-stack routes.
+    routes = ("ordinary",) if aeronautics else ("ordinary", "dimension-stack")
+    expected_cases = {(size, route) for size in sizes for route in routes}
     worlds = ("minecraft:overworld", "minecraft:the_nether")
     server_cases = {}
     screenshot_names = set()
@@ -963,6 +977,9 @@ def validate_ship_reports() -> None:
     def positive_integer(value, minimum: int = 1) -> bool:
         return type(value) is int and value >= minimum
 
+    def finite(value) -> bool:
+        return type(value) in (int, float) and math.isfinite(value)
+
     for side in ("server", "client"):
         try:
             report = json.loads((RESULT_DIR / f"{side}-ships.json").read_text(encoding="utf-8"))
@@ -970,8 +987,12 @@ def validate_ship_reports() -> None:
             raise RuntimeError(f"missing or unreadable {side} ship flight report") from exc
         require(isinstance(report, dict) and type(report.get("schema_version")) is int
                 and report["schema_version"] == 1, f"{side}: unsupported schema")
+        if aeronautics:
+            require(report.get("addons") == aeronautics_bundle.BUNDLE["mods"],
+                    f"{side}: exact Aeronautics/Simulated/Offroad runtime versions were not observed")
         cases = report.get("cases")
-        require(isinstance(cases, list) and len(cases) == len(expected_cases), f"{side}: incomplete fixture matrix")
+        require(isinstance(cases, list) and len(cases) == len(expected_cases),
+                f"{side}: expected {len(expected_cases)} ship cases for routes {routes}")
         seen = set()
         for case in cases:
             require(isinstance(case, dict), f"{side}: invalid case")
@@ -989,6 +1010,26 @@ def validate_ship_reports() -> None:
             require(case.get("assembled") is True, f"{label}: assembly was not observed")
             require(positive_integer(case.get("blocks"), 3500 if size == "LARGE" else 1), f"{label}: block count")
             require(positive_integer(case.get("chunks"), 12 if size == "LARGE" else 1), f"{label}: chunk count")
+            engines = 8 if size == "CONTROL" else 252
+            if aeronautics and side == "server":
+                budget = case.get("lift_budget")
+                require(isinstance(budget, dict), f"{label}: missing natural-atmosphere lift budget")
+                for field in ("mass", "gravityY", "weight", "maximumStaticLift", "staticLiftWeightRatio",
+                              "minimumAirPressure", "trimMomentX", "trimMomentZ"):
+                    require(finite(budget.get(field)), f"{label}: invalid lift budget {field}")
+                require(budget["mass"] > 0 and budget["gravityY"] < 0 and budget["weight"] > 0
+                        and math.isclose(budget["weight"], budget["mass"] * -budget["gravityY"], rel_tol=1e-6, abs_tol=1e-6),
+                        f"{label}: lift budget weight is inconsistent with native mass/gravity")
+                require(budget["maximumStaticLift"] > budget["weight"] * 1.1
+                        and budget["staticLiftWeightRatio"] > 1.1
+                        and math.isclose(budget["staticLiftWeightRatio"], budget["maximumStaticLift"] / budget["weight"],
+                                         rel_tol=1e-6, abs_tol=1e-6), f"{label}: insufficient or inconsistent lift reserve")
+                require(budget["minimumAirPressure"] > 0 and budget.get("atmosphereModified") is False,
+                        f"{label}: lift budget requires unmodified positive-pressure atmosphere")
+                require(type(budget.get("engineCount")) is int and budget["engineCount"] == engines,
+                        f"{label}: lift budget engine count")
+                require(math.hypot(budget["trimMomentX"], budget["trimMomentZ"]) / budget["maximumStaticLift"] < 0.02,
+                        f"{label}: unbalanced static thrust moment")
             crossings = case.get("crossings")
             require(isinstance(crossings, list) and len(crossings) == 4, f"{label}: four crossing legs required")
             for leg, crossing in enumerate(crossings):
@@ -1002,8 +1043,33 @@ def validate_ship_reports() -> None:
                     require(type(distance) in (int, float) and math.isfinite(distance) and distance >= 8,
                             f"{label}/{leg}: native movement not observed")
                     claims = ("unique_body", "rider_graph", "integrity", "velocity", "orientation", "client_ack")
+                    if aeronautics:
+                        claims += ("powered_thrust", "no_native_velocity_writes")
+                        require(type(crossing.get("propeller_count")) is int and crossing["propeller_count"] == engines,
+                                f"{label}/{leg}: incorrect powered propeller count")
+                        require(positive_integer(crossing.get("force_samples"), 5), f"{label}/{leg}: too few thrust samples")
+                        acceleration = crossing.get("peak_vertical_acceleration")
+                        direction = -1 if leg % 2 == 0 else 1
+                        gravity = crossing.get("gravity_y")
+                        require(finite(gravity) and gravity < 0, f"{label}/{leg}: missing native downward gravity")
+                        require(finite(acceleration) and (acceleration < gravity - 1 if direction < 0 else acceleration > 0.05),
+                                f"{label}/{leg}: no directional powered acceleration beyond gravity")
+                        motion = crossing.get("powered_motion")
+                        require(isinstance(motion, dict) and positive_integer(motion.get("ticks"), 5),
+                                f"{label}/{leg}: missing measured powered motion interval")
+                        for field in ("verticalDisplacement", "verticalVelocityChange", "startVerticalVelocity", "endVerticalVelocity"):
+                            require(finite(motion.get(field)), f"{label}/{leg}: invalid powered motion {field}")
+                        require(direction * motion["verticalDisplacement"] > 0.05
+                                and direction * motion["verticalVelocityChange"] > 0.05,
+                                f"{label}/{leg}: no measured displacement and velocity change in flight direction")
+                        require(math.isclose(motion["verticalVelocityChange"], motion["endVerticalVelocity"] - motion["startVerticalVelocity"],
+                                             rel_tol=1e-6, abs_tol=1e-6), f"{label}/{leg}: inconsistent measured velocity change")
+                        require(motion.get("dimension") == crossing["from"] and motion.get("againstGravity") is (direction > 0),
+                                f"{label}/{leg}: powered motion has wrong dimension or gravity direction")
                 else:
                     claims = ("unique_body", "rider_graph", "blocks", "machinery", "mutation")
+                    if aeronautics:
+                        claims += ("propellers",)
                 for claim in claims:
                     require(crossing.get(claim) is True, f"{label}/{leg}: missing {claim} proof")
             if side == "server":
@@ -1059,9 +1125,12 @@ def validate_ship_reports() -> None:
                             f"{label}: invalid screenshot {name}")
 
 
-def validate_results(client_exit: int, smoke: bool = False, ships: bool = False) -> None:
+def validate_results(client_exit: int, smoke: bool = False, ships: bool = False, aeronautics: bool = False,
+                     ship_size: str = "all") -> None:
     if smoke and ships:
         raise ValueError("visual and ship verification are separate modes")
+    if aeronautics and not ships:
+        raise ValueError("Aeronautics verification requires ship mode")
     check_failures()
     if client_exit != 0:
         raise RuntimeError(f"graphical client exited with status {client_exit}")
@@ -1074,7 +1143,7 @@ def validate_results(client_exit: int, smoke: bool = False, ships: bool = False)
         if not marker.exists() or not marker.read_text(encoding="utf-8").strip():
             raise RuntimeError(f"missing or empty authoritative result: {name}")
     if ships:
-        validate_ship_reports()
+        validate_ship_reports(aeronautics=aeronautics, ship_size=ship_size)
 
 
 def client_progress_token() -> tuple:
@@ -1286,7 +1355,8 @@ class ClientProgressReporter:
 
 
 def wait_for_client(server: subprocess.Popen, client: subprocess.Popen, timeout: float = 300,
-                    smoke: bool = False, ships: bool = False) -> None:
+                    smoke: bool = False, ships: bool = False, aeronautics: bool = False,
+                    ship_size: str = "all") -> None:
     started = time.monotonic()
     deadline = started + timeout
     last_progress = started
@@ -1307,14 +1377,14 @@ def wait_for_client(server: subprocess.Popen, client: subprocess.Popen, timeout:
             try:
                 # A successful client also disconnects while shutting down.
                 # Still wait for its actual exit code below.
-                validate_results(0, smoke=smoke, ships=ships)
+                validate_results(0, smoke=smoke, ships=ships, aeronautics=aeronautics, ship_size=ship_size)
             except RuntimeError:
                 collect_thread_diagnostics(server, client, "disconnect")
                 raise RuntimeError(f"graphical client disconnected: {disconnect}")
         if server.poll() is not None:
             raise RuntimeError(f"dedicated server exited during E2E (exit={server.returncode})")
         if client.poll() is not None:
-            validate_results(client.returncode, smoke=smoke, ships=ships)
+            validate_results(client.returncode, smoke=smoke, ships=ships, aeronautics=aeronautics, ship_size=ship_size)
             return
         current = client_progress_token()
         if current != progress:
@@ -1403,13 +1473,20 @@ def validate_metrics(samples: int) -> None:
 def run_e2e(smoke: bool = False, renderer: str = "sodium", sable: bool = True, samples: int = 200,
             negative_control: str = "none", flywheel_backend: str = "default", render_mode: str = "normal",
             disable_copy_image: bool = False, shaderpack_file: Path | None = None, shaderpack_profile: str | None = None,
-            gl_context: str = "default", shadow_fixture: bool = False, ships: bool = False) -> None:
+            gl_context: str = "default", shadow_fixture: bool = False, ships: bool = False,
+            aeronautics: bool = False, ship_size: str = "all") -> None:
     if ships and (smoke or not sable):
         raise ValueError("ship verification requires Sable and its own mode")
-    print(f"[verify] {'visual ' + renderer if smoke else 'ships' if ships else 'e2e'}: dedicated server + automated graphical client", flush=True)
+    if aeronautics and not ships:
+        raise ValueError("Aeronautics verification requires ship mode")
+    if ship_size not in ("all", "control", "large") or (ship_size != "all" and not ships):
+        raise ValueError("ship size selection requires ship mode and a supported size")
+    print(f"[verify] {'visual ' + renderer if smoke else 'ships-aeronautics' if aeronautics else 'ships' if ships else 'e2e'}: dedicated server + automated graphical client", flush=True)
     run_deadline = visual_run_deadline() if smoke else None
     env = prepare_e2e()
     env["IP_SABLE_SHIPS"] = str(ships).lower()
+    env["IP_SABLE_SHIPS_AERONAUTICS"] = str(aeronautics).lower()
+    env["IP_SABLE_SHIPS_SIZE"] = ship_size
     if smoke:
         env.update(IP_SABLE_E2E="false", IP_PORTAL_SMOKE="true", IP_SHADOW_SMOKE=str(shadow_fixture).lower(), IP_SMOKE_RENDERER=renderer,
                    IP_SMOKE_SABLE=str(sable).lower(), IP_SMOKE_SAMPLES=str(samples),
@@ -1445,7 +1522,10 @@ def run_e2e(smoke: bool = False, renderer: str = "sodium", sable: bool = True, s
     creation = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt" else {"start_new_session": True}
     server = None
     network_context = ExitStack()
+    addon_context = ExitStack()
     try:
+        if aeronautics:
+            addon_context.enter_context(aeronautics_bundle.stage(ROOT, RESULT_DIR, (SERVER_DIR, CLIENT_DIR)))
         server = subprocess.Popen(
             gradle_cmd("run" + server_run, *properties),
             cwd=ROOT,
@@ -1473,7 +1553,7 @@ def run_e2e(smoke: bool = False, renderer: str = "sodium", sable: bool = True, s
             if smoke:
                 timeout = min(timeout, max(0, run_deadline - time.monotonic() - VISUAL_CLEANUP_SECONDS))
                 print(f"[verify] Graphical client budget: {timeout:.0f}s; bounded by 120-minute job with diagnostics/cleanup reserve", flush=True)
-            wait_for_client(server, client, timeout=timeout, smoke=smoke, ships=ships)
+            wait_for_client(server, client, timeout=timeout, smoke=smoke, ships=ships, aeronautics=aeronautics, ship_size=ship_size)
         finally:
             stop_process_tree(client)
             if client_log is not None:
@@ -1493,28 +1573,37 @@ def run_e2e(smoke: bool = False, renderer: str = "sodium", sable: bool = True, s
         print(tail(CLIENT_LOG), file=sys.stderr)
         raise
     finally:
-        network_context.__exit__(*sys.exc_info())
-        if server is not None:
-            if server.stdin:
-                try:
-                    server.stdin.close()
-                except OSError:
-                    pass
-            stop_process_tree(server)
-        server_log.close()
-        cleanup_staged_renderer_mods(staged_renderer_mods)
+        try:
+            network_context.__exit__(*sys.exc_info())
+            if server is not None:
+                if server.stdin:
+                    try:
+                        server.stdin.close()
+                    except OSError:
+                        pass
+                stop_process_tree(server)
+            server_log.close()
+            cleanup_staged_renderer_mods(staged_renderer_mods)
+        finally:
+            addon_context.close()
 
 
-def run_ships() -> None:
+def run_ships(aeronautics: bool = False, ship_size: str = "all") -> None:
     """Keep new flight evidence separate from the established dimension-stack gate."""
-    global RESULT_DIR, SERVER_LOG, CLIENT_LOG
-    previous = RESULT_DIR, SERVER_LOG, CLIENT_LOG
-    RESULT_DIR = ROOT / "build" / "sable-ship-flight-e2e"
+    if ship_size not in ("all", "control", "large"):
+        raise ValueError("unknown ship size")
+    global RESULT_DIR, SERVER_LOG, CLIENT_LOG, SERVER_DIR, CLIENT_DIR
+    previous = RESULT_DIR, SERVER_LOG, CLIENT_LOG, SERVER_DIR, CLIENT_DIR
+    name = "sable-ship-flight" + ("-aeronautics" if aeronautics else "")
+    if ship_size != "all":
+        name += "-" + ship_size
+    RESULT_DIR = ROOT / "build" / (name + "-e2e")
+    SERVER_DIR, CLIENT_DIR = ROOT / ("run-" + name + "-server"), ROOT / ("run-" + name + "-client")
     SERVER_LOG, CLIENT_LOG = RESULT_DIR / "server.log", RESULT_DIR / "client.log"
     try:
-        run_e2e(ships=True)
+        run_e2e(ships=True, aeronautics=aeronautics, ship_size=ship_size)
     finally:
-        RESULT_DIR, SERVER_LOG, CLIENT_LOG = previous
+        RESULT_DIR, SERVER_LOG, CLIENT_LOG, SERVER_DIR, CLIENT_DIR = previous
 
 
 def run_visual(renderer: str, sable: bool, samples: int, negative_control: str = "none",
@@ -1571,7 +1660,7 @@ def run_visual(renderer: str, sable: bool, samples: int, negative_control: str =
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run the canonical Immersive Portals verification suite")
-    parser.add_argument("mode", choices=("core", "e2e", "ships", "visual", "full", "matrix", "staff"), nargs="?", default="full")
+    parser.add_argument("mode", choices=("core", "e2e", "ships", "ships-aeronautics", "visual", "full", "matrix", "staff"), nargs="?", default="full")
     parser.add_argument("--renderer", choices=RENDERERS, default="sodium")
     parser.add_argument("--negative-control", choices=("none", "pack-disabled", "clipping-disabled", "entity-clipping-disabled", "particle-clipping-disabled", "shadow-clipping-enabled"), default="none")
     parser.add_argument("--flywheel-backend", choices=("default", "off", "instancing", "indirect"), default="default")
@@ -1581,10 +1670,14 @@ def main() -> int:
     parser.add_argument("--shaderpack-profile", help="Exact pack profile; otherwise auto-select the lowest known pack-provided preset")
     parser.add_argument("--shaderpack-file", type=Path, help="Additionally run a user-supplied real-pack ZIP through active shader smoke checks")
     parser.add_argument("--no-sable", action="store_true")
+    parser.add_argument("--ship-size", choices=("all", "control", "large"), default="all",
+                        help="Run one ship size in isolated worlds/results, or both sizes (default)")
     parser.add_argument("--samples", type=int, default=200)
     parser.add_argument("--shadow-fixture", action="store_true", help="Run owned actual shadow-map/receiver acceptance instead of ordinary smoke scenes")
     args = parser.parse_args()
-    if args.mode == "ships" and args.no_sable:
+    if args.ship_size != "all" and args.mode not in ("ships", "ships-aeronautics"):
+        parser.error("--ship-size requires ships or ships-aeronautics mode")
+    if args.mode in ("ships", "ships-aeronautics") and args.no_sable:
         parser.error("ships requires Sable")
     if args.shadow_fixture and (args.mode != "visual" or args.renderer not in ACTIVE_RENDERERS or args.shaderpack_file is not None or args.render_mode != "normal" or args.negative_control not in ("none", "shadow-clipping-enabled")):
         parser.error("--shadow-fixture requires normal active-renderer visual mode and its own optional shadow negative")
@@ -1604,6 +1697,7 @@ def main() -> int:
         parser.error("--samples must be between 200 and 12000")
 
     started = time.monotonic()
+    result_mode = args.mode + ("-" + args.ship_size if args.ship_size != "all" else "")
     try:
         with checkout_lock():
             stages = []
@@ -1620,7 +1714,9 @@ def main() -> int:
                     if args.mode == "staff":
                         actions = [("staff", run_staff)]
                     elif args.mode == "ships":
-                        actions = [("ships", run_ships)]
+                        actions = [(result_mode, lambda: run_ships(ship_size=args.ship_size))]
+                    elif args.mode == "ships-aeronautics":
+                        actions = [(result_mode, lambda: run_ships(aeronautics=True, ship_size=args.ship_size))]
                 for name, action in actions:
                     stage_started = time.monotonic()
                     stage = {"name": name, "status": "failed"}
@@ -1638,14 +1734,14 @@ def main() -> int:
                 if failed:
                     raise RuntimeError("failed matrix configurations: " + ", ".join(failed))
             finally:
-                (ROOT / "build" / f"verification-{args.mode}.json").write_text(
+                (ROOT / "build" / f"verification-{result_mode}.json").write_text(
                     json.dumps({"stages": stages, "seconds": round(time.monotonic() - started, 2)}, indent=2),
                     encoding="utf-8")
     except (subprocess.CalledProcessError, OSError, RuntimeError, TimeoutError) as exc:
         print(f"[verify] FAILED: {exc}", file=sys.stderr)
         return 1
 
-    print(f"[verify] PASS ({args.mode}) in {time.monotonic() - started:.1f}s", flush=True)
+    print(f"[verify] PASS ({result_mode}) in {time.monotonic() - started:.1f}s", flush=True)
     return 0
 
 
