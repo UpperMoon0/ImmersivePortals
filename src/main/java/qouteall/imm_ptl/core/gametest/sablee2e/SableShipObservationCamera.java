@@ -26,4 +26,31 @@ final class SableShipObservationCamera {
             new Point(.5, height / 2, .5)
         );
     }
+
+    /**
+     * Keep the overview below the nearby horizontal reverse portal after a crossing.
+     * The higher initial view is useful for the deck, but can put the camera through the
+     * reverse seam even while the real rider remains safely behind it. The caller also
+     * checks the actual world-space camera segment, so unexpected pitch/roll fails closed.
+     */
+    static View overviewAfterCrossing(double width, double height, double length) {
+        View high = overview(width, height, length);
+        return new View(new Point(high.eye().x(), height + 2.5, high.eye().z()), high.target());
+    }
+
+    /** A previous or cross-portal-remapped camera cannot certify this requested view. */
+    static boolean matchesObservedView(View requested, View observed) {
+        double dx = requested.eye().x() - observed.eye().x();
+        double dy = requested.eye().y() - observed.eye().y();
+        double dz = requested.eye().z() - observed.eye().z();
+        if (!(dx * dx + dy * dy + dz * dz <= .25 * .25)) return false;
+        double ax = requested.target().x() - requested.eye().x();
+        double ay = requested.target().y() - requested.eye().y();
+        double az = requested.target().z() - requested.eye().z();
+        double bx = observed.target().x() - observed.eye().x();
+        double by = observed.target().y() - observed.eye().y();
+        double bz = observed.target().z() - observed.eye().z();
+        double lengths = Math.sqrt((ax * ax + ay * ay + az * az) * (bx * bx + by * by + bz * bz));
+        return lengths > 0 && (ax * bx + ay * by + az * bz) / lengths >= .999;
+    }
 }

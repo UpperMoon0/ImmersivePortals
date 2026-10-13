@@ -90,9 +90,8 @@ public abstract class MixinEntity implements IEEntity, ImmPtlEntityExtension {
     )
     private Vec3 redirectHandleCollisions(Entity entity, Vec3 attemptedMove, Operation<Vec3> original) {
         // With Sable installed, MixinEntity_SableCollisionCompat (higher
-        // priority) chains on this same invocation and owns the hook; running
-        // both would process every move twice. Pass through so exactly one
-        // effective wrapper remains.
+        // priority) preserves Sable's redirect and applies the hook to its
+        // terrain solve. Pass through so movement is processed exactly once.
         if (SableCompat.ACTIVE) {
             return original.call(entity, attemptedMove);
         }

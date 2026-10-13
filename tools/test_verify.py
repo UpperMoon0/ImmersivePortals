@@ -1026,6 +1026,10 @@ class ShipVerificationHarnessTest(unittest.TestCase):
                 server = dict(common, crossings=[], stale_request_rejected=True,
                               integrity_snapshot=snapshot("minecraft:overworld"))
                 if aeronautics:
+                    server["prepared_corridor"] = dict(dimension="minecraft:the_nether", complete=True, setup_only=True,
+                        min=[-128, 0, -128], max_inclusive=[128, 96, 128], total_positions=6406753,
+                        visited_positions=6406753, changed_blocks=4000000, setup_ticks=240,
+                        elapsed_ms=12000.0, max_batch_ms=175.0, positions_per_tick_limit=32768, soft_tick_budget_ms=50.0)
                     server["lift_budget"] = dict(mass=1000.0, gravityY=-10.0, weight=10000.0,
                         maximumStaticLift=15000.0, staticLiftWeightRatio=1.5, minimumAirPressure=0.9,
                         atmosphereModified=False, engineCount=8 if size == "CONTROL" else 252,
@@ -1037,6 +1041,11 @@ class ShipVerificationHarnessTest(unittest.TestCase):
                                 dimension="minecraft:the_nether" if leg in (0, 2) else "minecraft:overworld",
                                 camera_plot_eye=[1280000.5, 130.0, 1280000.5],
                                 camera_plot_forward=[0.0, 0.0, 1.0], camera_plot_up=[0.0, 1.0, 0.0],
+                                camera_world_eye=[0.5, 130.0, 0.5],
+                                requested_camera_plot_eye=[1280000.5, 130.0, 1280000.5],
+                                requested_camera_plot_target=[1280000.5, 130.0, 1280001.5],
+                                camera_matches_requested=True, camera_segment_clear=True,
+                                camera_teleport_animation_running=False, visible_section_positions=positions,
                                 vertical_fov_degrees=70.0, aspect_ratio=854/480, view_distance_blocks=160.0,
                                 framed_all_exposed_static_sections=True,
                                 expected_sections=len(positions), compiled_sections=len(positions),
@@ -1235,6 +1244,49 @@ class ShipVerificationHarnessTest(unittest.TestCase):
                         self.write_reports(reports)
                         with self.subTest(addon=addon, side=side, case=index, delta=delta), self.assertRaisesRegex(RuntimeError, "block count"):
                             verify.validate_ship_reports(aeronautics=addon)
+
+    def test_powered_corridor_requires_exact_completed_setup_receipt(self):
+        for size in ("control", "large"):
+            for receipt in (None, {}, False):
+                with self.subTest(size=size, receipt=receipt):
+                    reports = self.reports(aeronautics=True, ship_size=size)
+                    reports["server"]["cases"][0]["prepared_corridor"] = receipt
+                    self.write_reports(reports)
+                    with self.assertRaises(RuntimeError):
+                        verify.validate_ship_reports(aeronautics=True, ship_size=size)
+        invalid = {
+            "dimension": (None, "minecraft:overworld"), "complete": (None, False, 1, "true"),
+            "setup_only": (None, False, 1, "true"),
+            "min": (None, [-128, 0], [-127, 0, -128], [-128, False, -128]),
+            "max_inclusive": (None, [128, 95, 128], [128.0, 96, 128]),
+            "total_positions": (None, True, 6406752, 6406753.0, "6406753"),
+            "visited_positions": (None, True, 6406752, 6406754, 6406753.0),
+            "changed_blocks": (None, True, -1, 6406754, 4.0),
+            "setup_ticks": (None, True, 0, 195, 6406754, 240.0),
+            "positions_per_tick_limit": (None, True, 32767, 32769, 32768.0),
+            "soft_tick_budget_ms": (None, True, 0, 49, 51, float("nan")),
+            "elapsed_ms": (None, True, 0, -1, 100.0, float("inf")),
+            "max_batch_ms": (None, True, 0, -1, 12001.0, float("nan")),
+        }
+        for field, values in invalid.items():
+            for value in values:
+                with self.subTest(field=field, value=value):
+                    reports = self.reports(aeronautics=True)
+                    reports["server"]["cases"][1]["prepared_corridor"][field] = value
+                    self.write_reports(reports)
+                    with self.assertRaises(RuntimeError):
+                        verify.validate_ship_reports(aeronautics=True)
+
+    def test_powered_corridor_preserves_soft_budget_overshoots_as_measured_evidence(self):
+        for maximum in (25.0, 50.0, 175.0, 6000.0, 12000.0):
+            with self.subTest(max_batch_ms=maximum):
+                reports = self.reports(aeronautics=True)
+                for case in reports["server"]["cases"]:
+                    case["prepared_corridor"].update(changed_blocks=0, setup_ticks=196, max_batch_ms=maximum)
+                self.write_reports(reports)
+                verify.validate_ship_reports(aeronautics=True)
+        self.write_reports()  # Baseline native flight does not use powered terrain setup.
+        verify.validate_ship_reports()
 
     def test_ship_reports_require_server_stale_request_regression(self):
         for addon in (False, True):
@@ -1444,6 +1496,69 @@ class ShipVerificationHarnessTest(unittest.TestCase):
                     self.write_reports(reports)
                     with self.assertRaises(RuntimeError):
                         verify.validate_ship_reports()
+
+    def test_ship_overview_camera_guards_are_required_for_all_observations(self):
+        guards = (("camera_matches_requested", (None, False, 1, "true")),
+                  ("camera_segment_clear", (None, False, 1, "true")),
+                  ("camera_teleport_animation_running", (None, True, 0, "false")),
+                  ("camera_segment_portal", ("other-portal", False, [], {})))
+        for addon in (False, True):
+            for leg in range(-1, 4):
+                for field, values in guards:
+                    for value in values:
+                        with self.subTest(addon=addon, leg=leg, field=field, value=value):
+                            reports = self.reports(aeronautics=addon)
+                            case = reports["client"]["cases"][0]
+                            receipt = case["overview_mesh"] if leg < 0 else case["crossings"][leg]["render_completeness"]
+                            receipt[field] = value
+                            self.write_reports(reports)
+                            with self.assertRaisesRegex(RuntimeError, "unsafe or unbound overview camera"):
+                                verify.validate_ship_reports(aeronautics=addon)
+        reports = self.reports()
+        reports["client"]["cases"][0]["overview_mesh"]["camera_segment_portal"] = None
+        self.write_reports(reports)
+        verify.validate_ship_reports()  # Gson can emit null or omit a clear segment's portal field.
+
+    def test_ship_overview_camera_numeric_evidence_must_match_requested_pose(self):
+        for field in ("camera_world_eye", "requested_camera_plot_eye", "requested_camera_plot_target"):
+            for value in (None, [], [1, 2], [True, 2, 3], [1, 2, float("nan")], [1, 2, float("inf")]):
+                with self.subTest(field=field, value=value):
+                    reports = self.reports()
+                    reports["client"]["cases"][0]["overview_mesh"][field] = value
+                    self.write_reports(reports)
+                    with self.assertRaises(RuntimeError):
+                        verify.validate_ship_reports()
+        for offset, direction, accepted in ((.25, [0, 0, 1], True), (.251, [0, 0, 1], False),
+                                             (0, [0, 0, -1], False), (0, [0, 0, 0], False),
+                                             (0, [.01, 0, 1], True), (0, [.1, 0, 1], False)):
+            with self.subTest(offset=offset, direction=direction):
+                reports = self.reports()
+                receipt = reports["client"]["cases"][0]["overview_mesh"]
+                receipt["camera_plot_eye"][0] += offset
+                receipt["camera_plot_forward"] = direction
+                self.write_reports(reports)
+                if accepted:
+                    verify.validate_ship_reports()
+                else:
+                    with self.assertRaises(RuntimeError):
+                        verify.validate_ship_reports()
+
+    def test_ship_overview_visible_set_cannot_omit_repeat_or_replace_expected_sections(self):
+        for positions in (None, [], [[1280063, 8, 1280063]],
+                          [[1280063, 8, 1280063], [1280063, 8, 1280063]],
+                          [[1280063, 8, 1280063], [0, 0, 0]],
+                          [[1280063, 8, 1280063], [True, 8, 1280063]]):
+            with self.subTest(positions=positions):
+                reports = self.reports()
+                reports["client"]["cases"][2]["overview_mesh"]["visible_section_positions"] = positions
+                self.write_reports(reports)
+                with self.assertRaises(RuntimeError):
+                    verify.validate_ship_reports()
+        reports = self.reports()
+        receipt = reports["client"]["cases"][2]["overview_mesh"]
+        receipt["visible_section_positions"] = list(reversed(receipt["expected_section_positions"]))
+        self.write_reports(reports)
+        verify.validate_ship_reports()
 
     def test_ship_overview_section_sets_reject_missing_duplicate_extra_and_malformed_entries(self):
         invalid_sets = (None, [], [[1, 2, 3]], [[1, 2, 3], [1, 2, 3]],

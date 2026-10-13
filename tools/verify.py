@@ -1015,13 +1015,29 @@ def validate_ship_reports(aeronautics: bool = False, ship_size: str = "all") -> 
                 f"{label}: overview identity/token/dimension mismatch")
         require(receipt.get("framed_all_exposed_static_sections") is True,
                 f"{label}: overview did not frame all exposed static sections")
+        require(receipt.get("camera_matches_requested") is True
+                and receipt.get("camera_segment_clear") is True
+                and receipt.get("camera_segment_portal") is None
+                and receipt.get("camera_teleport_animation_running") is False,
+                f"{label}: unsafe or unbound overview camera")
         vectors = []
-        for field in ("camera_plot_eye", "camera_plot_forward", "camera_plot_up"):
+        for field in ("camera_plot_eye", "camera_plot_forward", "camera_plot_up", "camera_world_eye",
+                      "requested_camera_plot_eye", "requested_camera_plot_target"):
             vector = receipt.get(field)
             require(isinstance(vector, list) and len(vector) == 3 and all(finite(v) for v in vector),
                     f"{label}: invalid overview {field}")
             vectors.append(vector)
-        forward, up = vectors[1:]
+        forward, up = vectors[1:3]
+        requested_eye, requested_target = vectors[4:]
+        requested_direction = [target - eye for target, eye in zip(requested_target, requested_eye)]
+        require(all(finite(v) for v in requested_direction)
+                and math.dist(vectors[0], requested_eye) <= .25,
+                f"{label}: overview camera eye differs from requested pose")
+        requested_length, observed_length = math.hypot(*requested_direction), math.hypot(*forward)
+        require(finite(requested_length) and finite(observed_length) and requested_length > 0 and observed_length > 0,
+                f"{label}: invalid requested overview direction")
+        alignment = sum(a / requested_length * b / observed_length for a, b in zip(requested_direction, forward))
+        require(alignment >= .999, f"{label}: overview camera look differs from requested pose")
         cross = [forward[1] * up[2] - forward[2] * up[1],
                  forward[2] * up[0] - forward[0] * up[2],
                  forward[0] * up[1] - forward[1] * up[0]]
@@ -1051,6 +1067,10 @@ def validate_ship_reports(aeronautics: bool = False, ship_size: str = "all") -> 
                 f"{label}: missing manifest-derived overview section set")
         expected_set = {section_position(value) for value in positions}
         require(len(expected_set) == expected, f"{label}: duplicate expected overview section")
+        visible = receipt.get("visible_section_positions")
+        require(isinstance(visible, list) and len(visible) == expected
+                and {section_position(value) for value in visible} == expected_set,
+                f"{label}: visible overview set differs from complete exposed section set")
         results = receipt.get("section_results")
         require(isinstance(results, list) and len(results) == expected,
                 f"{label}: missing complete overview section results")
@@ -1066,6 +1086,31 @@ def validate_ship_reports(aeronautics: bool = False, ship_size: str = "all") -> 
         name = receipt.get("screenshot")
         require(name == f"overview-{case_index}-{leg}.png", f"{label}: wrong overview screenshot")
         screenshot_file(name, label)
+
+    def prepared_corridor(receipt, label):
+        require(isinstance(receipt, dict), f"{label}: missing powered setup corridor receipt")
+        require(receipt.get("dimension") == worlds[1] and receipt.get("complete") is True
+                and receipt.get("setup_only") is True, f"{label}: incomplete or mislabelled powered setup corridor")
+        for field, expected in (("min", [-128, 0, -128]), ("max_inclusive", [128, 96, 128])):
+            value = receipt.get(field)
+            require(isinstance(value, list) and all(type(v) is int for v in value) and value == expected,
+                    f"{label}: wrong powered corridor {field}")
+        volume, limit = 257 * 257 * 97, 32_768
+        for field, expected in (("total_positions", volume), ("visited_positions", volume),
+                                ("positions_per_tick_limit", limit)):
+            require(type(receipt.get(field)) is int and receipt[field] == expected,
+                    f"{label}: wrong powered corridor {field}")
+        require(positive_integer(receipt.get("changed_blocks"), 0) and receipt["changed_blocks"] <= volume,
+                f"{label}: invalid powered corridor changed count")
+        require(positive_integer(receipt.get("setup_ticks"), (volume + limit - 1) // limit)
+                and receipt["setup_ticks"] <= volume, f"{label}: impossible powered corridor setup ticks")
+        require(finite(receipt.get("soft_tick_budget_ms")) and receipt["soft_tick_budget_ms"] == 50,
+                f"{label}: wrong cooperative corridor time budget")
+        elapsed, maximum = receipt.get("elapsed_ms"), receipt.get("max_batch_ms")
+        require(finite(elapsed) and finite(maximum) and 0 < maximum <= elapsed,
+                f"{label}: invalid powered corridor elapsed/batch measurements")
+        # Chunk generation or one block update may exceed the cooperative budget.
+        # Preserve the measured overshoot rather than claiming a hard 50-ms cap.
 
     def integrity_snapshot(snapshot, case, dimension, current_blocks, label):
         require(isinstance(snapshot, dict), f"{label}: missing integrity snapshot")
@@ -1148,6 +1193,7 @@ def validate_ship_reports(aeronautics: bool = False, ship_size: str = "all") -> 
                         f"{label}: client/server fixture mismatch")
             engines = 8 if size == "CONTROL" else 252
             if aeronautics and side == "server":
+                prepared_corridor(case.get("prepared_corridor"), label)
                 budget = case.get("lift_budget")
                 require(isinstance(budget, dict), f"{label}: missing natural-atmosphere lift budget")
                 for field in ("mass", "gravityY", "weight", "maximumStaticLift", "staticLiftWeightRatio",

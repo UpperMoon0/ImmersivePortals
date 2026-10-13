@@ -6,6 +6,8 @@ import dev.ryanhcode.sable.Sable;
 import dev.ryanhcode.sable.api.physics.handle.RigidBodyHandle;
 import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
 import dev.ryanhcode.sable.api.sublevel.ticket.SubLevelLoadingTicketType;
+import dev.ryanhcode.sable.companion.math.Pose3d;
+import dev.ryanhcode.sable.companion.math.Pose3dc;
 import dev.ryanhcode.sable.sublevel.ServerSubLevel;
 import dev.ryanhcode.sable.sublevel.storage.SubLevelRemovalReason;
 import net.minecraft.core.BlockPos;
@@ -18,6 +20,8 @@ import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.chunk.status.ChunkStatus;
+import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.event.entity.player.PlayerEvent;
 import net.neoforged.neoforge.event.tick.ServerTickEvent;
@@ -37,7 +41,7 @@ import java.util.UUID;
 
 /** Real assembly and native-physics flight. No direct ship transfer; a separate stale-request negative regression must not migrate anything. */
 public final class SableShipFlightTest {
-    private enum Phase { LOGIN, ASSEMBLY, SETTLE, OBSERVE, FLY, CLEAR_SEAM, STOPPED_ANIMATION, DONE }
+    private enum Phase { LOGIN, PREPARE_CORRIDOR, ASSEMBLY, SETTLE, OBSERVE, FLY, CLEAR_SEAM, STOPPED_ANIMATION, DONE }
     private static final Gson JSON = new Gson();
     private static final double SPEED = 48;
     private static ServerPlayer player;
@@ -56,6 +60,10 @@ public final class SableShipFlightTest {
     private static Map<String,Object> poweredMotion;
     private static Vector3d hover, launch, previousVelocity;
     private static Quaterniond previousOrientation;
+    private static Pose3d previousPose;
+    private static int corridorVisited, corridorChanged, corridorTicks;
+    private static long corridorStartedNanos, corridorMaxTickNanos;
+    private static Map<String,Object> corridorReceipt;
     private static Map<String, Object> caseReport, crossing;
     private static final List<Map<String, Object>> cases = new ArrayList<>();
     private static final List<Map<String, Object>> crossings = new ArrayList<>();
@@ -94,6 +102,7 @@ public final class SableShipFlightTest {
             require(phaseTicks < 2400, "phase timeout: " + phase + " case=" + caseIndex + " leg=" + leg);
             switch (phase) {
                 case LOGIN -> { if (phaseTicks >= 40) setup(); }
+                case PREPARE_CORRIDOR -> prepareCorridor();
                 case ASSEMBLY -> mountWhenReady();
                 case SETTLE -> settle();
                 case OBSERVE -> observe();
@@ -132,12 +141,46 @@ public final class SableShipFlightTest {
                 }
         }
         if (aeronautics()) {
-            // Natural atmospheric pressure is required for real propellers; the baseline high-altitude route is a vacuum.
-            for (int x=-48;x<=48;x++) for (int z=-48;z<=48;z++) for (int clearY=0;clearY<=80;clearY++) {
-                BlockPos position=new BlockPos(x,clearY,z);
-                if (!destination.getBlockState(position).isAir()) destination.setBlock(position,Blocks.AIR.defaultBlockState(),2);
-            }
+            // Natural atmosphere requires the low route. Clear its entire 160-wide aperture
+            // plus the largest rotated hull (radius <45), before any portal or ship exists.
+            corridorVisited=0; corridorChanged=0; corridorTicks=0; corridorMaxTickNanos=0;
+            corridorStartedNanos=System.nanoTime(); corridorReceipt=null;
+            phase(Phase.PREPARE_CORRIDOR);
+            return;
         }
+        finishSetup();
+    }
+    private static void prepareCorridor() {
+        long started=System.nanoTime(); int batch=0;
+        var position=new BlockPos.MutableBlockPos();
+        while (corridorVisited<SableShipFlightCorridor.VOLUME && batch<SableShipFlightCorridor.POSITIONS_PER_TICK) {
+            int index=corridorVisited;
+            position.set(SableShipFlightCorridor.x(index),SableShipFlightCorridor.y(index),SableShipFlightCorridor.z(index));
+            if (!destination.getBlockState(position).isAir()) {
+                require(destination.setBlock(position,Blocks.AIR.defaultBlockState(),2),"could not clear powered corridor at "+position);
+                corridorChanged++;
+            }
+            corridorVisited++; batch++;
+            // Cooperative budget: a single chunk generation may itself take longer.
+            if (System.nanoTime()-started>=SableShipFlightCorridor.SOFT_NANOS_PER_TICK) break;
+        }
+        corridorTicks++; corridorMaxTickNanos=Math.max(corridorMaxTickNanos,System.nanoTime()-started);
+        boolean complete=corridorVisited==SableShipFlightCorridor.VOLUME;
+        corridorReceipt=new LinkedHashMap<>();
+        corridorReceipt.put("dimension",destination.dimension().location().toString());
+        corridorReceipt.put("min",List.of(SableShipFlightCorridor.MIN_XZ,SableShipFlightCorridor.MIN_Y,SableShipFlightCorridor.MIN_XZ));
+        corridorReceipt.put("max_inclusive",List.of(SableShipFlightCorridor.MAX_XZ,SableShipFlightCorridor.MAX_Y,SableShipFlightCorridor.MAX_XZ));
+        corridorReceipt.put("total_positions",SableShipFlightCorridor.VOLUME);
+        corridorReceipt.put("visited_positions",corridorVisited); corridorReceipt.put("changed_blocks",corridorChanged);
+        corridorReceipt.put("setup_ticks",corridorTicks); corridorReceipt.put("elapsed_ms",(System.nanoTime()-corridorStartedNanos)/1_000_000.0);
+        corridorReceipt.put("max_batch_ms",corridorMaxTickNanos/1_000_000.0);
+        corridorReceipt.put("positions_per_tick_limit",SableShipFlightCorridor.POSITIONS_PER_TICK);
+        corridorReceipt.put("soft_tick_budget_ms",SableShipFlightCorridor.SOFT_NANOS_PER_TICK/1_000_000.0);
+        corridorReceipt.put("complete",complete); corridorReceipt.put("setup_only",true);
+        if (complete || corridorTicks%20==0) PortalSmokeSupport.write("powered-corridor.json",JSON.toJson(corridorReceipt));
+        if (complete) finishSetup();
+    }
+    private static void finishSetup() {
         int y = stack() ? source.getMinBuildHeight() + 40 : aeronautics() ? 32 : 160;
         if (stack()) {
             VerticalConnectingPortal.connectMutually(Level.OVERWORLD, Level.NETHER, false);
@@ -175,6 +218,7 @@ public final class SableShipFlightTest {
         caseReport.put("blocks", fixture.assembledBlockCount());
         caseReport.put("chunks", fixture.plotChunks());
         caseReport.put("propulsion", aeronautics() ? "real Aeronautics propeller actors; no native velocity writes during powered intervals" : "native rigid-body velocity launch; not an Aeronautics engine acceptance test");
+        if (aeronautics()) caseReport.put("prepared_corridor",corridorReceipt);
         phase(Phase.ASSEMBLY);
     }
     private static void mountWhenReady() {
@@ -276,6 +320,7 @@ public final class SableShipFlightTest {
         } else setVelocity(body, leg % 2 == 0 ? new Vector3d(8, -SPEED, 4) : new Vector3d(-4, SPEED, 8));
         previousVelocity = handle(body).getLinearVelocity(new Vector3d());
         previousOrientation = new Quaterniond(body.logicalPose().orientation());
+        previousPose = new Pose3d(body.logicalPose());
         phase(Phase.FLY);
     }
     private static void finishCase() {
@@ -440,6 +485,7 @@ public final class SableShipFlightTest {
             observedFlightDistance = Math.max(observedFlightDistance, launch.distance(active.logicalPose().position()));
             previousVelocity = handle(active).getLinearVelocity(new Vector3d());
             previousOrientation = new Quaterniond(active.logicalPose().orientation());
+            previousPose = new Pose3d(active.logicalPose());
             require(phaseTicks < 400, "native ship never crossed portal");
             return;
         }
@@ -447,6 +493,7 @@ public final class SableShipFlightTest {
         Portal portal = leg % 2 == 0 ? forward : reverse;
         Vec3 expected = portal.transformLocalVec(new Vec3(previousVelocity.x,previousVelocity.y,previousVelocity.z));
         Vector3d actual = handle(body).getLinearVelocity(new Vector3d());
+        writeSeamDiagnostics(portal,body,expected,actual);
         require(actual.isFinite() && actual.distance(new Vector3d(expected.x,expected.y,expected.z)) < 5,
             "velocity discontinuity at seam: expected=" + expected + " actual=" + actual);
         var rotation = portal.getRotation();
@@ -487,6 +534,85 @@ public final class SableShipFlightTest {
         hover = new Vector3d(body.logicalPose().position()); hold(body);
         fixture.setMotorSpeed(current,body,rpm()); fixture.mutateProbe(current,body,mutated()); prepareDrive(body);
         phase(Phase.SETTLE);
+    }
+    private static void writeSeamDiagnostics(Portal portal,ServerSubLevel body,Vec3 expected,Vector3d actual) {
+        var report=new LinkedHashMap<String,Object>();
+        report.put("case_index",caseIndex); report.put("leg",leg); report.put("flight_ticks",flightTicks);
+        report.put("source",current.dimension().location().toString());
+        report.put("destination",body.getLevel().dimension().location().toString());
+        report.put("source_tick",current.getGameTime()); report.put("destination_tick",body.getLevel().getGameTime());
+        report.put("previous_source_pose",describePose(previousPose));
+        report.put("actual_destination_pose",describePose(body.logicalPose()));
+        Vec3 transformedPosition=portal.transformPoint(new Vec3(previousPose.position().x(),previousPose.position().y(),previousPose.position().z()));
+        report.put("expected_transformed_previous_position",List.of(transformedPosition.x,transformedPosition.y,transformedPosition.z));
+        var transformedOrientation=new Quaterniond(previousPose.orientation());
+        var rotation=portal.getRotation();
+        if (rotation!=null) transformedOrientation.premul(new Quaterniond(rotation.x,rotation.y,rotation.z,rotation.w));
+        report.put("expected_transformed_previous_orientation",List.of(transformedOrientation.x,transformedOrientation.y,transformedOrientation.z,transformedOrientation.w));
+        report.put("previous_source_velocity",List.of(previousVelocity.x,previousVelocity.y,previousVelocity.z));
+        report.put("expected_velocity",List.of(expected.x,expected.y,expected.z));
+        report.put("actual_velocity",List.of(actual.x,actual.y,actual.z));
+        report.put("velocity_error",actual.distance(new Vector3d(expected.x,expected.y,expected.z)));
+        AABB actualBounds=fixtureWorldBounds(body,body.logicalPose(),null);
+        report.put("actual_hull_aabb",describeBounds(actualBounds));
+        report.put("expected_transformed_previous_hull_aabb",describeBounds(fixtureWorldBounds(body,previousPose,portal)));
+        if (aeronautics() && body.getLevel()==destination) report.put("hull_inside_prepared_corridor",
+            SableShipFlightCorridor.contains(actualBounds.minX,actualBounds.minY,actualBounds.minZ)
+                && SableShipFlightCorridor.contains(actualBounds.maxX,actualBounds.maxY,actualBounds.maxZ));
+        report.put("terrain_collision_candidates",terrainCollisionCandidates(body.getLevel(),actualBounds));
+        PortalSmokeSupport.write("seam-"+caseIndex+"-"+leg+".json",JSON.toJson(report));
+    }
+    private static Map<String,Object> describePose(Pose3dc pose) {
+        return Map.of("position",List.of(pose.position().x(),pose.position().y(),pose.position().z()),
+            "orientation",List.of(pose.orientation().x(),pose.orientation().y(),pose.orientation().z(),pose.orientation().w()),
+            "rotation_point",List.of(pose.rotationPoint().x(),pose.rotationPoint().y(),pose.rotationPoint().z()),
+            "scale",List.of(pose.scale().x(),pose.scale().y(),pose.scale().z()));
+    }
+    private static List<Double> describeBounds(AABB bounds) {
+        return List.of(bounds.minX,bounds.minY,bounds.minZ,bounds.maxX,bounds.maxY,bounds.maxZ);
+    }
+    private static AABB fixtureWorldBounds(ServerSubLevel body,Pose3dc pose,Portal transform) {
+        var center=body.getPlot().getCenterBlock(); var layout=fixture.layout();
+        double minX=Double.POSITIVE_INFINITY,minY=minX,minZ=minX;
+        double maxX=Double.NEGATIVE_INFINITY,maxY=maxX,maxZ=maxX;
+        for (int x:new int[]{-layout.halfWidth(),layout.halfWidth()+1})
+            for (int y:new int[]{0,layout.height()}) for (int z:new int[]{-layout.halfLength(),layout.halfLength()+1}) {
+                Vec3 point=pose.transformPosition(new Vec3(center.getX()+x,center.getY()+y,center.getZ()+z));
+                if (transform!=null) point=transform.transformPoint(point);
+                minX=Math.min(minX,point.x); minY=Math.min(minY,point.y); minZ=Math.min(minZ,point.z);
+                maxX=Math.max(maxX,point.x); maxY=Math.max(maxY,point.y); maxZ=Math.max(maxZ,point.z);
+            }
+        return new AABB(minX,minY,minZ,maxX,maxY,maxZ);
+    }
+    /** Read-only broad-phase candidates, not native contact manifolds or proof of a hull collision. */
+    private static Map<String,Object> terrainCollisionCandidates(ServerLevel level,AABB bounds) {
+        int minX=(int)Math.floor(bounds.minX),minY=(int)Math.floor(bounds.minY),minZ=(int)Math.floor(bounds.minZ);
+        int maxX=(int)Math.ceil(bounds.maxX)-1,maxY=(int)Math.ceil(bounds.maxY)-1,maxZ=(int)Math.ceil(bounds.maxZ)-1;
+        long volume=(long)(maxX-minX+1)*(maxY-minY+1)*(maxZ-minZ+1);
+        int visited=0,unknown=0,nonair=0,colliders=0;
+        var examples=new ArrayList<Map<String,Object>>(); var position=new BlockPos.MutableBlockPos();
+        scan: for (int cx=minX>>4;cx<=maxX>>4;cx++) for (int cz=minZ>>4;cz<=maxZ>>4;cz++) {
+            var chunk=level.getChunkSource().getChunk(cx,cz,ChunkStatus.FULL,false);
+            for (int x=Math.max(minX,cx<<4);x<=Math.min(maxX,(cx<<4)+15);x++)
+                for (int z=Math.max(minZ,cz<<4);z<=Math.min(maxZ,(cz<<4)+15);z++) for (int y=minY;y<=maxY;y++) {
+                    if (visited>=262_144) break scan;
+                    visited++;
+                    if (chunk==null) { unknown++; continue; }
+                    position.set(x,y,z); var state=chunk.getBlockState(position);
+                    if (state.isAir()) continue;
+                    nonair++;
+                    // Stored state only: dynamic shape queries can consult neighboring
+                    // world chunks and implicitly generate terrain during this diagnostic.
+                    if (state.blocksMotion()) {
+                        colliders++;
+                        if (examples.size()<16) examples.add(Map.of("position",List.of(x,y,z),"state",state.toString()));
+                    }
+                }
+        }
+        return Map.of("aabb_positions",volume,"visited_positions",visited,"unknown_chunk_positions",unknown,
+            "nonair_blocks",nonair,"motion_blocking_blocks",colliders,"examples",examples,
+            "complete",visited==volume && unknown==0,"position_limit",262_144,
+            "meaning","Stored motion-blocking terrain states inside the hull AABB; not exact collision shapes or native contacts, and empty hull space or rotation can produce false positives");
     }
     private static void verifyRider(ServerSubLevel body) {
         // Disposable worlds contain only this fixture: also reject a clone with a new UUID.

@@ -119,12 +119,23 @@ public final class SableShipFlightClientTest {
                 var dimensions=request.getAsJsonArray("dimensions");
                 double width=dimensions.get(0).getAsDouble(), height=dimensions.get(1).getAsDouble(), length=dimensions.get(2).getAsDouble();
                 // Pose3d transforms absolute hidden-plot positions, not relative fixture offsets.
-                var view=SableShipObservationCamera.overview(width,height,length);
-                aimCamera(mc,overviewCamera,shipPoint(body,center,view.eye()),shipPoint(body,center,view.target()));
+                var view=request.get("leg").getAsInt()<0
+                    ? SableShipObservationCamera.overview(width,height,length)
+                    : SableShipObservationCamera.overviewAfterCrossing(width,height,length);
+                var eye=shipPoint(body,center,view.eye());
+                // CrossPortalViewRendering traces this same rider-to-camera segment. Never
+                // certify another world's remapped camera as a view of the current body.
+                var cameraPortal=overviewCameraPortal(mc,eye);
+                if (cameraPortal!=null) {
+                    view=SableShipObservationCamera.overviewAfterCrossing(width,height,length);
+                    eye=shipPoint(body,center,view.eye());
+                    cameraPortal=overviewCameraPortal(mc,eye);
+                }
+                aimCamera(mc,overviewCamera,eye,shipPoint(body,center,view.target()));
                 if (++overviewTicks<25) return;
-                var mesh=visibleStaticMesh(mc,body,request);
+                var mesh=visibleStaticMesh(mc,body,request,view,cameraPortal);
                 if (!Boolean.TRUE.equals(mesh.get("complete"))) {
-                    if (overviewTicks % 60==0) {
+                    if (overviewTicks==25 || overviewTicks % 60==0) {
                         writeRenderDiagnostics(mc,body,token,"overview-pending");
                         PortalSmokeSupport.write("mesh-pending-"+token.replace(':','-')+".json",new Gson().toJson(mesh));
                         try (NativeImage overview=Screenshot.takeScreenshot(mc.getMainRenderTarget())) {
@@ -283,8 +294,17 @@ public final class SableShipFlightClientTest {
         // Use the same interpolated pose as Sable's renderer, not the newer physics pose.
         return body.renderPose().transformPosition(new org.joml.Vector3d(absolute.x(),absolute.y(),absolute.z()));
     }
+    private static String overviewCameraPortal(Minecraft mc,org.joml.Vector3d eye) {
+        var riderEye=qouteall.imm_ptl.core.teleportation.ClientTeleportationManager.getPlayerEyePos(
+            mc.getTimer().getGameTimeDeltaPartialTick(true));
+        return qouteall.imm_ptl.core.commands.PortalCommand.raytracePortals(mc.level,riderEye,
+            new net.minecraft.world.phys.Vec3(eye.x,eye.y,eye.z),true)
+            .filter(hit->hit.getFirst().canTeleportEntity(overviewCamera))
+            .map(hit->hit.getFirst().getUUID().toString()).orElse(null);
+    }
     /** Expectations come from received block states, never from the meshes being tested. */
-    private static Map<String,Object> visibleStaticMesh(Minecraft mc,ClientSubLevel body,JsonObject request) {
+    private static Map<String,Object> visibleStaticMesh(Minecraft mc,ClientSubLevel body,JsonObject request,
+        SableShipObservationCamera.View requestedView,String cameraPortal) {
         var occupied=new ArrayList<SableShipObservationCamera.Point>();
         BlockPos center=body.getPlot().getCenterBlock();
         for (var entry:request.getAsJsonArray("blocks_manifest")) {
@@ -304,17 +324,25 @@ public final class SableShipFlightClientTest {
         var forward=body.renderPose().orientation().transformInverse(new org.joml.Vector3d(camera.getLookVector()));
         var up=body.renderPose().orientation().transformInverse(new org.joml.Vector3d(camera.getUpVector()));
         var view=new SableShipObservationCamera.View(cameraPoint(eye),cameraPoint(new org.joml.Vector3d(eye).add(forward)));
+        var requestedPlotView=new SableShipObservationCamera.View(
+            requestedView.eye().inPlot(center.getX(),center.getY(),center.getZ()),
+            requestedView.target().inPlot(center.getX(),center.getY(),center.getZ()));
+        boolean cameraMatches=camera.getEntity()==overviewCamera
+            && SableShipObservationCamera.matchesObservedView(requestedPlotView,view);
+        // IP's transient teleport rotation acts on the render matrix, not Camera look/up.
+        boolean cameraAnimation=qouteall.imm_ptl.core.render.TransformationManager.isAnimationRunning();
         double fov=((qouteall.imm_ptl.core.compat.mixin.sable.InvokerGameRenderer_SableProjection)mc.gameRenderer)
             .ip_sableEffectiveFov(camera,mc.getTimer().getGameTimeDeltaPartialTick(true),true);
         double aspect=(double)mc.getMainRenderTarget().width/mc.getMainRenderTarget().height;
         double viewDistance=mc.options.getEffectiveRenderDistance()*16.0;
-        var expected=SableShipVisibleSections.expectedSections(occupied,view,cameraPoint(up),fov,aspect,viewDistance);
+        var visible=SableShipVisibleSections.expectedSections(occupied,view,cameraPoint(up),fov,aspect,viewDistance);
         var allOccupied=new java.util.HashSet<SableShipVisibleSections.Section>();
         for (var block:occupied) allOccupied.add(new SableShipVisibleSections.Section(
             Math.floorDiv((int)block.x(),16),Math.floorDiv((int)block.y(),16),Math.floorDiv((int)block.z(),16)));
-        require(!allOccupied.isEmpty() && expected.equals(allOccupied),
-            "wide overview failed to frame every exposed static hull section: expected="+allOccupied+" visible="+expected);
-        var ordered=expected.stream().sorted(java.util.Comparator.comparingInt(SableShipVisibleSections.Section::x)
+        boolean framed=!allOccupied.isEmpty() && visible.equals(allOccupied);
+        // Keep the full manifest-derived expectation even on a framing failure. Persist
+        // evidence and wait for the actual rendered frame; never shrink the acceptance set.
+        var ordered=allOccupied.stream().sorted(java.util.Comparator.comparingInt(SableShipVisibleSections.Section::x)
             .thenComparingInt(SableShipVisibleSections.Section::y).thenComparingInt(SableShipVisibleSections.Section::z)).toList();
         int compiledCount=0,nonemptyCount=0;
         var missing=new ArrayList<List<Integer>>();
@@ -340,16 +368,26 @@ public final class SableShipFlightClientTest {
         var receipt=new LinkedHashMap<String,Object>();
         receipt.put("ship_id",body.getUniqueId().toString()); receipt.put("token",request.get("token").getAsString());
         receipt.put("dimension",mc.level.dimension().location().toString());
-        receipt.put("view","overview"); receipt.put("expected_sections",expected.size());
+        receipt.put("view","overview"); receipt.put("expected_sections",allOccupied.size());
         receipt.put("expected_section_positions",ordered.stream().map(key->List.of(key.x(),key.y(),key.z())).toList());
         receipt.put("section_results",results);
         receipt.put("camera_plot_eye",List.of(eye.x,eye.y,eye.z));
         receipt.put("camera_plot_forward",List.of(forward.x,forward.y,forward.z));
         receipt.put("camera_plot_up",List.of(up.x,up.y,up.z));
+        receipt.put("camera_world_eye",List.of(worldEye.x,worldEye.y,worldEye.z));
+        receipt.put("requested_camera_plot_eye",List.of(requestedPlotView.eye().x(),requestedPlotView.eye().y(),requestedPlotView.eye().z()));
+        receipt.put("requested_camera_plot_target",List.of(requestedPlotView.target().x(),requestedPlotView.target().y(),requestedPlotView.target().z()));
+        receipt.put("camera_matches_requested",cameraMatches);
+        receipt.put("camera_segment_clear",cameraPortal==null);
+        receipt.put("camera_segment_portal",cameraPortal);
+        receipt.put("camera_teleport_animation_running",cameraAnimation);
+        receipt.put("visible_section_positions",visible.stream().map(key->List.of(key.x(),key.y(),key.z())).toList());
         receipt.put("vertical_fov_degrees",fov); receipt.put("aspect_ratio",aspect);
-        receipt.put("view_distance_blocks",viewDistance); receipt.put("framed_all_exposed_static_sections",true);
+        receipt.put("view_distance_blocks",viewDistance); receipt.put("framed_all_exposed_static_sections",framed);
         receipt.put("compiled_sections",compiledCount); receipt.put("nonempty_sections",nonemptyCount);
-        receipt.put("complete",!expected.isEmpty() && nonemptyCount==expected.size()); receipt.put("missing_sections",missing);
+        receipt.put("complete",framed && cameraMatches && cameraPortal==null && !cameraAnimation
+            && nonemptyCount==allOccupied.size());
+        receipt.put("missing_sections",missing);
         return receipt;
     }
     private static SableShipObservationCamera.Point cameraPoint(org.joml.Vector3d point) {

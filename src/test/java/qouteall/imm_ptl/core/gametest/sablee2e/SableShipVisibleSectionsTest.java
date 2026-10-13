@@ -77,15 +77,35 @@ class SableShipVisibleSectionsTest {
         for (boolean large : new boolean[] {false, true}) {
             var layout = SableFlightShipLayout.create(large);
             var relative = layout.blocks().keySet().stream().map(p -> new Point(p.x(), p.y(), p.z())).toList();
-            var view = SableShipObservationCamera.overview(layout.width(), layout.height(), layout.length());
-            for (int offset : new int[] {20_481_024, 20_481_032, -20_481_024, -20_481_032, 1_900_000_000, -1_900_000_000}) {
-                var blocks = relative.stream().map(p -> p.inPlot(offset, 128, -offset)).toList();
-                var absoluteView = new View(view.eye().inPlot(offset, 128, -offset), view.target().inPlot(offset, 128, -offset));
-                var occupied = blocks.stream().map(SableShipVisibleSectionsTest::section).collect(Collectors.toSet());
-                assertEquals(occupied, visible(blocks, absoluteView, 256), "Incomplete overview at " + offset);
-                if (large) assertEquals(40, occupied.size(), "Large hull must exercise all 40 occupied render sections");
+            for (var view : new View[] {
+                SableShipObservationCamera.overview(layout.width(), layout.height(), layout.length()),
+                SableShipObservationCamera.overviewAfterCrossing(layout.width(), layout.height(), layout.length())
+            }) {
+                for (int offset : new int[] {20_481_024, 20_481_032, -20_481_024, -20_481_032, 1_900_000_000, -1_900_000_000}) {
+                    var blocks = relative.stream().map(p -> p.inPlot(offset, 128, -offset)).toList();
+                    var absoluteView = new View(view.eye().inPlot(offset, 128, -offset), view.target().inPlot(offset, 128, -offset));
+                    var occupied = blocks.stream().map(SableShipVisibleSectionsTest::section).collect(Collectors.toSet());
+                    assertEquals(occupied, visible(blocks, absoluteView, 160), "Incomplete overview at " + offset);
+                    if (large) assertEquals(40, occupied.size(), "Large hull must exercise all 40 occupied render sections");
+                }
             }
         }
+    }
+
+    @Test void crossPortalRemappedEyeCannotSupplyAFullHullOverview() {
+        var layout = SableFlightShipLayout.create(true);
+        var blocks = layout.blocks().keySet().stream().map(p -> new Point(p.x(), p.y(), p.z())).toList();
+        var intended = SableShipObservationCamera.overview(49, 17, 65);
+        // Recovered head 054 camera transformed back through the reverse ordinary portal,
+        // then incorrectly interpreted using the destination body pose. Even retaining the
+        // intended look direction, this reproduces the empty visibility set.
+        var wrongEye = new Point(-68.303590, -70, 44.966306);
+        var wrongTarget = new Point(wrongEye.x() + intended.target().x() - intended.eye().x(),
+            wrongEye.y() + intended.target().y() - intended.eye().y(),
+            wrongEye.z() + intended.target().z() - intended.eye().z());
+        assertTrue(visible(blocks, new View(wrongEye, wrongTarget), 160).isEmpty());
+        assertEquals(blocks.stream().map(SableShipVisibleSectionsTest::section).collect(Collectors.toSet()),
+            visible(blocks, SableShipObservationCamera.overviewAfterCrossing(49, 17, 65), 160));
     }
 
     @Test void translationToHiddenPlotPreservesPanelSelectionAndDistance() {
