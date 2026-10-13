@@ -47,6 +47,9 @@ public final class SableShipFlightTest {
     private static final Gson JSON = new Gson();
     private static final double SPEED = 48;
     private static ServerPlayer player;
+    private static UUID originalPlayerId;
+    private static Map<String,Object> setupStagingReceipt;
+    private static long setupStagingTick;
     private static ServerLevel source, destination, current;
     private static SableFlightShipFixture fixture;
     private static Portal forward, reverse;
@@ -113,6 +116,7 @@ public final class SableShipFlightTest {
         require(List.of("all", "control", "large").contains(selectedSize()), "invalid ship size filter");
         caseIndex = selectedCaseIndices().getFirst();
         player = joined;
+        originalPlayerId=joined.getUUID();
         source = joined.server.getLevel(Level.OVERWORLD);
         destination = joined.server.getLevel(Level.NETHER);
         require(source != null && destination != null, "missing test dimensions");
@@ -148,6 +152,12 @@ public final class SableShipFlightTest {
     private static void setup() {
         crossings.clear(); leg = -1;
         current = source;
+        parkPlayerForSetup();
+        setupStagingTick=source.getGameTime();
+        setupStagingReceipt=new LinkedHashMap<>(describeSetupStaging());
+        setupStagingReceipt.put("staging_tick",setupStagingTick);
+        setupStagingReceipt.put("setup_only",true);
+        setupStagingReceipt.put("flight_staging_writes",0);
         // Only the disposable flat world's bedrock/soil below this fixture is removed. No personal world is used.
         if (stack()) for (int x = -80; x <= 80; x++) for (int z = -80; z <= 80; z++)
             for (int y = source.getMinBuildHeight(); y < source.getMinBuildHeight() + 5; y++)
@@ -179,6 +189,9 @@ public final class SableShipFlightTest {
         corridorStartedNanos=System.nanoTime(); corridorReceipt=null;
     }
     private static void prepareCorridor() {
+        verifySetupStaging();
+        setupStagingReceipt.putIfAbsent("first_preparation_tick",source.getGameTime());
+        setupStagingReceipt.put("last_preparation_tick",source.getGameTime());
         ServerLevel corridorLevel=preparingSourceCorridor ? source : destination;
         long started=System.nanoTime(); int batch=0;
         var position=new BlockPos.MutableBlockPos();
@@ -217,6 +230,7 @@ public final class SableShipFlightTest {
         }
     }
     private static void finishSetup() {
+        verifySetupStaging();
         int y = broadside() ? SableShipBroadsideGeometry.ASSEMBLY_Y : stack() ? source.getMinBuildHeight() + 40 : aeronautics() ? 32 : 160;
         if (stack()) {
             VerticalConnectingPortal.connectMutually(Level.OVERWORLD, Level.NETHER, false);
@@ -261,6 +275,7 @@ public final class SableShipFlightTest {
         caseReport.put("dimensions", large() ? List.of(49,17,65) : List.of(7,5,11));
         caseReport.put("blocks", fixture.assembledBlockCount());
         caseReport.put("chunks", fixture.plotChunks());
+        caseReport.put("setup_staging",setupStagingReceipt);
         caseReport.put("propulsion", aeronautics() ? "real Aeronautics propeller actors; no native velocity writes during powered intervals" : "native rigid-body velocity launch; not an Aeronautics engine acceptance test");
         if (aeronautics() || broadside()) caseReport.put("prepared_corridor",corridorReceipt);
         if (broadside()) caseReport.put("prepared_source_corridor",sourceCorridorReceipt);
@@ -276,10 +291,13 @@ public final class SableShipFlightTest {
         phase(Phase.ASSEMBLY);
     }
     private static void mountWhenReady() {
+        verifySetupStaging();
         var body = fixture.requireBody(current);
         if (RigidBodyHandle.of(body) == null || !RigidBodyHandle.of(body).isValid()) return;
         hold(body);
         if (phaseTicks < 20) return;
+        setupStagingReceipt.put("verified_before_mount",describeSetupStaging());
+        setupStagingReceipt.put("unmounted_setup_ticks",source.getGameTime()-setupStagingTick);
         var type = BuiltInRegistries.ENTITY_TYPE.get(ResourceLocation.parse("create:seat"));
         Entity seat = type.create(current);
         require(seat != null, "Create seat type absent");
@@ -336,6 +354,7 @@ public final class SableShipFlightTest {
     private static void observe() {
         var body = fixture.requireBody(current); hold(body);
         if (!PortalSmokeSupport.read("ship-client-ack.txt").equals(token)) return;
+        requireOriginalPlayerAlive("before flight or case completion");
         // After cleanup has expired, exercise the real server request entry point with
         // an intentionally stale opposite prediction. This is a negative regression, not flight input.
         if (leg==3) {
@@ -801,6 +820,7 @@ public final class SableShipFlightTest {
             "meaning","Stored motion-blocking terrain states inside the hull AABB; not exact collision shapes or native contacts, and empty hull space or rotation can produce false positives");
     }
     private static void verifyRider(ServerSubLevel body) {
+        requireOriginalPlayerAlive("rider continuity");
         // Disposable worlds contain only this fixture: also reject a clone with a new UUID.
         int bodies=SubLevelContainer.getContainer(source).getAllSubLevels().size()
             +SubLevelContainer.getContainer(destination).getAllSubLevels().size();
@@ -816,6 +836,7 @@ public final class SableShipFlightTest {
         Entity there=(current==source?destination:source).getEntity(seatId);
         return "seat="+seatId+" here="+here+" other="+there+" body="+fixture.id()
             +" bodyPose="+body.logicalPose().position()+" player="+player.position()
+            +" playerAlive="+player.isAlive()+" playerHealth="+player.getHealth()
             +" playerDimension="+player.serverLevel().dimension().location()+" vehicle="+player.getVehicle()
             +" seatContaining="+(here==null?null:Sable.HELPER.getContaining(here));
     }
@@ -853,7 +874,65 @@ public final class SableShipFlightTest {
             GlobalPortalStorage.get(source).removePortal(forward);
             GlobalPortalStorage.get(destination).removePortal(reverse);
         } else { forward.discard(); reverse.discard(); }
-        player.teleportTo(source,0,200,0,0,0);
+        parkPlayerForSetup();
+    }
+    private static void requireOriginalPlayerAlive(String stage) {
+        require(player.getUUID().equals(originalPlayerId) && player.server.getPlayerList().getPlayer(originalPlayerId)==player
+            && player.isAlive() && player.getHealth()>0,
+            "original test rider died or changed during "+stage+": id="+player.getUUID()
+                +" expected="+originalPlayerId+" alive="+player.isAlive()+" health="+player.getHealth()
+                +" dimension="+player.serverLevel().dimension().location()+" position="+player.position());
+    }
+    private static void parkPlayerForSetup() {
+        require(!broadsideInFlight && phase!=Phase.FLY && phase!=Phase.CLEAR_SEAM,
+            "setup staging must never reposition a rider during native flight");
+        requireOriginalPlayerAlive("setup staging");
+        require(player.getVehicle()==null,"setup staging requires an unmounted player");
+        // A real platform avoids the removed stack floor. It is outside the cleared
+        // low-altitude corridor and every ordinary/broadside aperture. Normal gravity,
+        // health and game mode remain unchanged; deaths are failures, never revived.
+        for (int x=SableShipStagingArea.X-SableShipStagingArea.RADIUS;x<=SableShipStagingArea.X+SableShipStagingArea.RADIUS;x++)
+            for (int z=SableShipStagingArea.Z-SableShipStagingArea.RADIUS;z<=SableShipStagingArea.Z+SableShipStagingArea.RADIUS;z++)
+                source.setBlock(new BlockPos(x,SableShipStagingArea.Y,z),Blocks.STONE.defaultBlockState(),2);
+        require(stagingHeadroomClear(),"disposable setup platform lacks clear headroom");
+        if (player.serverLevel()!=source || !SableShipStagingArea.supportedPosition(player.getX(),player.getY(),player.getZ())) {
+            player.fallDistance=0;
+            player.setDeltaMovement(Vec3.ZERO);
+            player.teleportTo(source,SableShipStagingArea.PLAYER_X,SableShipStagingArea.PLAYER_Y,SableShipStagingArea.PLAYER_Z,0,0);
+        }
+        verifySetupStaging();
+    }
+    private static void verifySetupStaging() {
+        requireOriginalPlayerAlive("unmounted setup");
+        require(player.serverLevel()==source && player.getVehicle()==null
+            && !player.isNoGravity() && !player.getAbilities().flying
+            && SableShipStagingArea.supportedPosition(player.getX(),player.getY(),player.getZ())
+            && source.hasChunkAt(player.blockPosition())
+            && source.getBlockState(player.blockPosition().below()).is(Blocks.STONE) && stagingHeadroomClear(),
+            "test rider left physical setup support: "+player.position());
+    }
+    private static boolean stagingHeadroomClear() {
+        for (int x=SableShipStagingArea.X-SableShipStagingArea.RADIUS;x<=SableShipStagingArea.X+SableShipStagingArea.RADIUS;x++)
+            for (int z=SableShipStagingArea.Z-SableShipStagingArea.RADIUS;z<=SableShipStagingArea.Z+SableShipStagingArea.RADIUS;z++)
+                for (int y=SableShipStagingArea.Y+1;y<=SableShipStagingArea.Y+3;y++)
+                    if (!source.getBlockState(new BlockPos(x,y,z)).isAir()) return false;
+        return true;
+    }
+    private static Map<String,Object> describeSetupStaging() {
+        var receipt=new LinkedHashMap<String,Object>(Map.of("player_id",player.getUUID().toString(),"alive",player.isAlive(),"health",player.getHealth(),
+            "dimension",player.serverLevel().dimension().location().toString(),
+            "position",List.of(player.getX(),player.getY(),player.getZ()),
+            "platform_center",List.of(SableShipStagingArea.X,SableShipStagingArea.Y,SableShipStagingArea.Z),
+            "platform_radius",SableShipStagingArea.RADIUS,
+            "support_block",BuiltInRegistries.BLOCK.getKey(source.getBlockState(player.blockPosition().below()).getBlock()).toString(),
+            "normal_player_gravity",!player.isNoGravity(),"unmounted",player.getVehicle()==null));
+        receipt.put("original_player_id",originalPlayerId.toString());
+        receipt.put("current_player_object",player.server.getPlayerList().getPlayer(originalPlayerId)==player);
+        receipt.put("support_loaded",source.hasChunkAt(player.blockPosition()));
+        receipt.put("headroom_clear",stagingHeadroomClear());
+        receipt.put("flying",player.getAbilities().flying);
+        receipt.put("game_mode",player.gameMode.getGameModeForPlayer().getName());
+        return receipt;
     }
     private static void require(boolean value,String message) { if (!value) throw new IllegalStateException(message); }
 }

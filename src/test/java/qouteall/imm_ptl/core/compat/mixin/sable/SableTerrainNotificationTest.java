@@ -108,7 +108,8 @@ class SableTerrainNotificationTest {
         assertTrue(callIndex(method(fixture,"stoppedAnimationProbe"),"finishCase")>=0);
         assertBefore(method(fixture,"finishCase"),"cleanup","setup");
         var cleanup=method(fixture,"cleanup");
-        assertTrue(callIndex(cleanup,"net/minecraft/server/level/ServerPlayer","teleportTo")>=0,
+        assertTrue(callIndex(cleanup,fixture,"parkPlayerForSetup")>=0);
+        assertTrue(callIndex(method(fixture,"parkPlayerForSetup"),"net/minecraft/server/level/ServerPlayer","teleportTo")>=0,
             "Keep the real vanilla dimension reset that exposed the disposed-renderer crash");
     }
 

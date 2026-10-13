@@ -1151,6 +1151,48 @@ def validate_ship_reports(aeronautics: bool = False, ship_size: str = "all") -> 
             cargo[key] = (entry["item"], entry["count"], components)
         return cargo
 
+    def broadside_staging(receipt, case, label):
+        require(isinstance(receipt, dict), f"{label}: missing broadside setup staging receipt")
+
+        def supported_player(snapshot):
+            require(isinstance(snapshot, dict), f"{label}: missing broadside staging player snapshot")
+            player_id = snapshot.get("player_id")
+            require(isinstance(player_id, str) and bool(player_id.strip())
+                    and snapshot.get("original_player_id") == player_id,
+                    f"{label}: broadside staging replaced the original player")
+            for field in ("current_player_object", "alive", "normal_player_gravity", "unmounted",
+                          "support_loaded", "headroom_clear"):
+                require(snapshot.get(field) is True, f"{label}: missing broadside staging {field} proof")
+            require(finite(snapshot.get("health")) and snapshot["health"] > 0
+                    and snapshot.get("flying") is False and snapshot.get("game_mode") == "creative",
+                    f"{label}: broadside staging player is dead or has altered movement mode")
+            require(snapshot.get("dimension") == worlds[0] and snapshot.get("support_block") == "minecraft:stone"
+                    and snapshot.get("platform_center") == [112, 199, 112]
+                    and all(type(v) is int for v in snapshot["platform_center"])
+                    and type(snapshot.get("platform_radius")) is int and snapshot["platform_radius"] == 2,
+                    f"{label}: broadside staging lacks the isolated physical platform")
+            position = snapshot.get("position")
+            require(isinstance(position, list) and len(position) == 3 and all(finite(v) for v in position)
+                    and 110.3 <= position[0] <= 114.7 and 110.3 <= position[2] <= 114.7
+                    and abs(position[1] - 200) < .05,
+                    f"{label}: broadside staging player is outside physical support")
+            return player_id
+
+        player_id = supported_player(receipt)
+        require(supported_player(receipt.get("verified_before_mount")) == player_id,
+                f"{label}: broadside staging player changed before mounting")
+        require(receipt.get("setup_only") is True and type(receipt.get("flight_staging_writes")) is int
+                and receipt["flight_staging_writes"] == 0,
+                f"{label}: broadside staging must remain setup-only")
+        for field in ("staging_tick", "first_preparation_tick", "last_preparation_tick", "unmounted_setup_ticks"):
+            require(positive_integer(receipt.get(field), 0), f"{label}: invalid broadside staging {field}")
+        start, first, last = (receipt[field] for field in ("staging_tick", "first_preparation_tick", "last_preparation_tick"))
+        preparation_ticks = case["prepared_corridor"]["setup_ticks"] + case["prepared_source_corridor"]["setup_ticks"]
+        require(start < first <= last < start + receipt["unmounted_setup_ticks"]
+                and last - first + 1 >= preparation_ticks,
+                f"{label}: broadside staging does not cover both preparation passes before mounting")
+        return player_id
+
     def broadside_geometry(receipt, label):
         require(isinstance(receipt, dict), f"{label}: missing vertical broadside geometry")
         for field, expected in (("portal_normal", [1, 0, 0]), ("ship_nose_local", [0, 0, 1]),
@@ -1230,6 +1272,11 @@ def validate_ship_reports(aeronautics: bool = False, ship_size: str = "all") -> 
                 f"{label}: broadside launch points in wrong world direction")
         samples = receipt.get("samples")
         require(isinstance(samples, list) and len(samples) >= 4, f"{label}: missing native broadside sample history")
+        if crossing["leg"] == 0:
+            staging = case["setup_staging"]
+            require(isinstance(samples[0], dict) and positive_integer(samples[0].get("native_tick"), 0)
+                    and samples[0]["native_tick"] > staging["staging_tick"] + staging["unmounted_setup_ticks"],
+                    f"{label}: broadside native launch precedes supported setup and mounting")
         previous_tick, previous_center, arrived = None, None, False
         first_launch = case["crossings"][0]["broadside_receipt"]["samples"][0] if crossing["leg"] else None
         rider_identity = (first_launch["seat_id"], first_launch["player_id"]) if first_launch is not None else None
@@ -1260,6 +1307,7 @@ def validate_ship_reports(aeronautics: bool = False, ship_size: str = "all") -> 
             identity = (sample.get("seat_id"), sample.get("player_id"))
             require(all(isinstance(v, str) and bool(v.strip()) for v in identity)
                     and (rider_identity is None or identity == rider_identity)
+                    and identity[1] == case["setup_staging"]["player_id"]
                     and sample.get("player_dimension") == sample["dimension"]
                     and sample.get("player_vehicle_id") == identity[0]
                     and sample.get("seat_passenger_ids") == [identity[1]],
@@ -1410,6 +1458,7 @@ def validate_ship_reports(aeronautics: bool = False, ship_size: str = "all") -> 
                 prepared_corridor(case.get("prepared_corridor"), label)
             if side == "server" and broadside:
                 prepared_corridor(case.get("prepared_source_corridor"), label, worlds[0])
+                broadside_staging(case.get("setup_staging"), case, label)
                 broadside_geometry(case.get("broadside_geometry"), label)
                 sampling = case.get("visual_sampling")
                 require(isinstance(sampling, dict) and sampling.get("states") ==

@@ -1085,6 +1085,14 @@ class ShipVerificationHarnessTest(unittest.TestCase):
                         client["crossings"][-1]["propellers"] = True
                 if broadside:
                     server["prepared_source_corridor"] = dict(server["prepared_corridor"],dimension="minecraft:overworld")
+                    staging_player = dict(player_id="player-id", original_player_id="player-id", current_player_object=True,
+                        alive=True, health=20.0, dimension="minecraft:overworld", position=[112.5,200.0,112.5],
+                        platform_center=[112,199,112], platform_radius=2, support_block="minecraft:stone",
+                        normal_player_gravity=True, unmounted=True, support_loaded=True, headroom_clear=True,
+                        flying=False, game_mode="creative")
+                    server["setup_staging"] = dict(staging_player, staging_tick=100, first_preparation_tick=101,
+                        last_preparation_tick=580, unmounted_setup_ticks=500, setup_only=True, flight_staging_writes=0,
+                        verified_before_mount=dict(staging_player))
                     server["visual_sampling"] = dict(states=["before-launch","after-outbound","after-return"],
                                                      in_flight_stage_screenshots=False)
                     server["broadside_geometry"] = dict(portal_normal=[1,0,0], portal_width=160, portal_height=80,
@@ -1116,7 +1124,7 @@ class ShipVerificationHarnessTest(unittest.TestCase):
                             spans = list(dimensions) if ow else [dimensions[2],dimensions[1],dimensions[0]]
                             world_bounds = [mid[i]-spans[i]/2 for i in range(3)] + [mid[i]+spans[i]/2 for i in range(3)]
                             sample = dict(sample=index, dimension=dimension,
-                                native_tick=100+index*10, arrived=arrived, ship_id=common["ship_id"], bounds=hull(center),
+                                native_tick=1000+leg*100+index*10, arrived=arrived, ship_id=common["ship_id"], bounds=hull(center),
                                 world_bounds=world_bounds,
                                 pose=dict(position=mid,orientation=q,rotation_point=[0,0,0],scale=[1,1,1]),
                                 native_velocity=v,body_local_velocity=local_v,nose_world=[0,0,1] if ow else [1,0,0],
@@ -1378,6 +1386,62 @@ class ShipVerificationHarnessTest(unittest.TestCase):
         reports["server"]["cases"][4]["prepared_source_corridor"]["dimension"] = "minecraft:the_nether"
         self.write_reports(reports)
         with self.assertRaises(RuntimeError):
+            verify.validate_ship_reports()
+
+    def test_broadside_staging_requires_live_original_player_on_real_support(self):
+        invalid = (("player_id", ""), ("original_player_id", "replacement-player"), ("current_player_object", False),
+                   ("alive", False), ("alive", 1), ("health", 0), ("health", float("nan")), ("health", True),
+                   ("normal_player_gravity", False), ("unmounted", False), ("support_loaded", False),
+                   ("headroom_clear", False), ("flying", True), ("game_mode", "spectator"),
+                   ("dimension", "minecraft:the_nether"), ("support_block", "minecraft:air"),
+                   ("platform_center", [112,96,112]), ("platform_radius", True), ("platform_radius", 1),
+                   ("position", [112.5,199,112.5]), ("position", [115,200,112.5]),
+                   ("position", [112.5,200,float("inf")]))
+        for index in (4, 5):
+            for snapshot in (None, "verified_before_mount"):
+                reports = self.reports()
+                staging = reports["server"]["cases"][index]
+                if snapshot is None: del staging["setup_staging"]
+                else: del staging["setup_staging"][snapshot]
+                self.write_reports(reports)
+                with self.subTest(case=index, missing=snapshot), self.assertRaisesRegex(RuntimeError, "staging"):
+                    verify.validate_ship_reports()
+                for field, value in invalid:
+                    reports = self.reports()
+                    staging = reports["server"]["cases"][index]["setup_staging"]
+                    if snapshot: staging = staging[snapshot]
+                    staging[field] = value
+                    self.write_reports(reports)
+                    with self.subTest(case=index, snapshot=snapshot, field=field), self.assertRaisesRegex(RuntimeError, "staging"):
+                        verify.validate_ship_reports()
+
+    def test_broadside_staging_binds_preparation_timing_and_flight_player_identity(self):
+        for field, value in (("setup_only", False), ("flight_staging_writes", 1), ("flight_staging_writes", False),
+                             ("staging_tick", -1), ("first_preparation_tick", True), ("first_preparation_tick", 100),
+                             ("last_preparation_tick", 579), ("last_preparation_tick", 600),
+                             ("unmounted_setup_ticks", 480), ("unmounted_setup_ticks", None)):
+            reports = self.reports()
+            reports["server"]["cases"][5]["setup_staging"][field] = value
+            self.write_reports(reports)
+            with self.subTest(field=field), self.assertRaisesRegex(RuntimeError, "staging"):
+                verify.validate_ship_reports()
+        reports = self.reports()
+        staging = reports["server"]["cases"][4]["setup_staging"]
+        staging["verified_before_mount"].update(player_id="new-player", original_player_id="new-player")
+        self.write_reports(reports)
+        with self.assertRaisesRegex(RuntimeError, "staging player changed"):
+            verify.validate_ship_reports()
+        reports = self.reports()
+        staging = reports["server"]["cases"][4]["setup_staging"]
+        staging.update(player_id="new-player", original_player_id="new-player")
+        staging["verified_before_mount"].update(player_id="new-player", original_player_id="new-player")
+        self.write_reports(reports)
+        with self.assertRaisesRegex(RuntimeError, "broadside rider graph"):
+            verify.validate_ship_reports()
+        reports = self.reports()
+        reports["server"]["cases"][4]["crossings"][0]["broadside_receipt"]["samples"][0]["native_tick"] = 600
+        self.write_reports(reports)
+        with self.assertRaisesRegex(RuntimeError, "native launch precedes"):
             verify.validate_ship_reports()
 
     def test_broadside_rejects_incomplete_launch_or_flight_receipts_in_each_leg(self):
