@@ -86,7 +86,7 @@ class SableRiderMovementHoldTest {
         assertTrue(hold.expired()); assertFalse(hold.shouldHold(player, null, "source"));
         hold.tick(); assertFalse(hold.shouldHold(player, null, "destination"));
     }
-    @Test void cancellationSuccessAndDisconnectCanReleaseImmediately() {
+    @Test void explicitCancellationReleasesImmediately() {
         var hold = hold(); hold.cancel();
         assertFalse(hold.shouldHold(player, null, "source"));
         assertFalse(hold.shouldHold(player, null, "destination"));

@@ -12,7 +12,7 @@ Modes:
 from __future__ import annotations
 
 import argparse
-from contextlib import contextmanager
+from contextlib import contextmanager, ExitStack
 import ctypes
 from datetime import datetime, timezone
 import json
@@ -81,7 +81,55 @@ def checkout_lock():
 
 def gradle_cmd(*tasks: str) -> list[str]:
     wrapper = ROOT / ("gradlew.bat" if os.name == "nt" else "gradlew")
-    return [str(wrapper), *tasks, "--no-daemon", "--no-configuration-cache", "--build-cache"]
+    networking = os.environ.get("IP_VERIFICATION_NETWORKING", "bundled")
+    neoforge = os.environ.get("IP_VERIFICATION_NEOFORGE")
+    platform = [f"-Pneo_version={neoforge}"] if neoforge else []
+    return [str(wrapper), *tasks, f"-PverificationNetworking={networking}", *platform, "--no-daemon", "--no-configuration-cache", "--build-cache"]
+
+
+def network_stress_commands(port: int) -> list[list[str]]:
+    if not 1 <= port <= 65535:
+        raise ValueError("invalid game port")
+    commands = [
+        ["sudo", "tc", "qdisc", "add", "dev", "lo", "root", "handle", "1:", "prio"],
+        ["sudo", "tc", "qdisc", "add", "dev", "lo", "parent", "1:3", "handle", "30:",
+         "netem", "delay", "30ms", "10ms", "loss", "0.5%", "seed", "28"],
+    ]
+    # Only Minecraft/Sable traffic is impaired, never Gradle daemon/download traffic.
+    for protocol in ("6", "17"):
+        for direction in ("sport", "dport"):
+            commands.append(["sudo", "tc", "filter", "add", "dev", "lo", "protocol", "ip",
+                             "parent", "1:", "prio", "1", "u32", "match", "ip", "protocol", protocol,
+                             "0xff", "match", "ip", direction, str(port), "0xffff", "flowid", "1:3"])
+    return commands
+
+
+@contextmanager
+def network_stress(port: int):
+    if os.environ.get("IP_NETWORK_STRESS") != "true":
+        yield
+        return
+    if not sys.platform.startswith("linux") or shutil.which("tc") is None:
+        raise RuntimeError("network stress requires Linux tc")
+    original = subprocess.check_output(["tc", "qdisc", "show", "dev", "lo"], text=True)
+    if "qdisc noqueue" not in original or " root " not in original:
+        raise RuntimeError("refusing to replace an existing loopback traffic policy")
+    installed = False
+    try:
+        for command in network_stress_commands(port):
+            subprocess.run(command, check=True)
+            installed = True
+        yield
+        stats = subprocess.check_output(["tc", "-s", "qdisc", "show", "dev", "lo"], text=True)
+        netem = stats.split("qdisc netem 30:", 1)[-1]
+        if "qdisc netem 30:" not in stats or not re.search(r"Sent [1-9]\d* bytes [1-9]\d* pkt", netem):
+            raise RuntimeError("network stress passed no game packets through netem")
+        (RESULT_DIR / "network-stress.json").write_text(json.dumps({
+            "delay_ms": 30, "jitter_ms": 10, "loss_percent": 0.5, "seed": 28,
+            "port": port, "statistics": stats}, indent=2), encoding="utf-8")
+    finally:
+        if installed:
+            subprocess.run(["sudo", "tc", "qdisc", "del", "dev", "lo", "root"], check=True)
 
 
 class WindowsInteractiveProcess:
@@ -897,7 +945,9 @@ def validate_results(client_exit: int, smoke: bool = False) -> None:
     if client_exit != 0:
         raise RuntimeError(f"graphical client exited with status {client_exit}")
     required = ("server-pass", "client-pass", "visual-pass") if smoke else (
-        "server-pass", "client-pass", "client-source", "client-destination", "client-return", "client-recross", "client-dismount", "client-movement-hold")
+        "server-pass", "client-pass", "client-source", "client-destination", "client-return", "client-recross", "client-dismount",
+        "client-movement-hold", "client-movement-lifecycle", "client-movement-ack-timeout", "client-movement-soak", "client-movement-disconnect",
+        "client-networking-api")
     for name in required:
         marker = RESULT_DIR / f"{name}.txt"
         if not marker.exists() or not marker.read_text(encoding="utf-8").strip():
@@ -1266,6 +1316,7 @@ def run_e2e(smoke: bool = False, renderer: str = "sodium", sable: bool = True, s
     server_log = SERVER_LOG.open("wb")
     creation = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt" else {"start_new_session": True}
     server = None
+    network_context = ExitStack()
     try:
         server = subprocess.Popen(
             gradle_cmd("run" + server_run, *properties),
@@ -1278,6 +1329,8 @@ def run_e2e(smoke: bool = False, renderer: str = "sodium", sable: bool = True, s
         )
         server_timeout = min(720, max(0, run_deadline - time.monotonic() - VISUAL_CLEANUP_SECONDS)) if smoke else 720
         wait_for_server(server, timeout=server_timeout)
+        if not smoke:
+            network_context.enter_context(network_stress(int(env["IP_SABLE_E2E_PORT"])))
         print("[verify] e2e server ready; launching automated client", flush=True)
 
         client_command = gradle_cmd("run" + client_run, *client_properties)
@@ -1304,6 +1357,7 @@ def run_e2e(smoke: bool = False, renderer: str = "sodium", sable: bool = True, s
             validate_metrics(samples)
         print("[verify] " + (RESULT_DIR / "server-pass.txt").read_text(encoding="utf-8").strip(), flush=True)
         print("[verify] " + (RESULT_DIR / "client-pass.txt").read_text(encoding="utf-8").strip(), flush=True)
+        network_context.close()
     except Exception:
         print("\n[verify] --- server log tail ---", file=sys.stderr)
         print(tail(SERVER_LOG), file=sys.stderr)
@@ -1311,6 +1365,7 @@ def run_e2e(smoke: bool = False, renderer: str = "sodium", sable: bool = True, s
         print(tail(CLIENT_LOG), file=sys.stderr)
         raise
     finally:
+        network_context.__exit__(*sys.exc_info())
         if server is not None:
             if server.stdin:
                 try:

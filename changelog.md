@@ -6,6 +6,8 @@ and this project tries to adhere to [Semantic Versioning](https://semver.org/spe
 
 ## [Unreleased Changes]
 
+- Support structurally compatible newer Forgified Fabric Networking API modules, including TxniLib's 4.3.0 and current 1.21.1 4.3.1 releases. Validate injection targets instead of rejecting an exact version mismatch. Add real-jar contracts, receiver concurrency checks, and native UDP/TCP compatibility lanes.
+- Expand detached-rider native regressions to acknowledgement rejection, cancellation, replacement players, death, unrelated seats/dimensions, post-Ack seat timeout, cleanup and disconnect. Add port-scoped latency/jitter/loss lanes without relaxing gameplay assertions.
 - Hold local movement prediction for a bounded, captured Sable rider while detach, authoritative dimension and seat-attachment packets are in flight; prevent client free-fall during a delayed handoff without loosening continuity assertions. Add a deterministic 40-tick native detached-rider probe to both UDP and TCP E2E lanes.
 
 ## [6.1.0] - 2026-10-11

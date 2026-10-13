@@ -74,6 +74,11 @@ jobs:
       - run: chmod +x ./gradlew
       - name: Build, JUnit, and GameTests
         run: python3 tools/verify.py core
+      - name: Receiver concurrency against newer upstream APIs
+        run: |
+          for version in '4.3.0+5c124ecf19' '4.3.1+7e3d421f19'; do
+            ./gradlew test -PverificationNetworking="$version" --tests '*FabricReceiverRegistrationTest' --no-daemon --no-configuration-cache
+          done
       - name: Upload core diagnostics
         if: always()
         uses: actions/upload-artifact@v4
@@ -93,7 +98,7 @@ jobs:
           if-no-files-found: error
 
   graphical-e2e:
-    name: Sable dedicated graphical E2E / ${{ matrix.transport }}
+    name: Sable dedicated graphical E2E / ${{ matrix.transport }} / ${{ matrix.networking }} / ${{ matrix.network }}
     needs: evidence
     if: needs.evidence.outputs.reuse != 'true'
     runs-on: ubuntu-latest
@@ -102,6 +107,11 @@ jobs:
       fail-fast: false
       matrix:
         transport: [udp, tcp]
+        networking: [bundled, '4.3.0+5c124ecf19', '4.3.1+7e3d421f19']
+        network: [normal]
+        include:
+          - { transport: udp, networking: '4.3.1+7e3d421f19', network: impaired }
+          - { transport: tcp, networking: '4.3.1+7e3d421f19', network: impaired }
     steps:
       - uses: actions/checkout@v6
         with:
@@ -143,12 +153,16 @@ jobs:
           cp run-sable-e2e-server/config/sable-common.toml run-sable-e2e-client/config/sable-common.toml
       - run: chmod +x ./gradlew
       - name: Dedicated server and automated client
+        env:
+          IP_VERIFICATION_NETWORKING: ${{ matrix.networking }}
+          IP_VERIFICATION_NEOFORGE: ${{ matrix.networking == '4.3.1+7e3d421f19' && '21.1.248' || '21.1.228' }}
+          IP_NETWORK_STRESS: ${{ matrix.network == 'impaired' && 'true' || 'false' }}
         run: python3 tools/verify.py e2e
       - name: Upload E2E diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: release-sable-dimension-stack-e2e-${{ matrix.transport }}
+          name: release-sable-dimension-stack-e2e-${{ matrix.transport }}-${{ matrix.networking }}-${{ matrix.network }}
           if-no-files-found: warn
           path: |
             build/verification-e2e.json

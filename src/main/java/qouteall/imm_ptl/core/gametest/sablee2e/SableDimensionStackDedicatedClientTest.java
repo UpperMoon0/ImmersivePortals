@@ -39,6 +39,8 @@ public final class SableDimensionStackDedicatedClientTest {
         CONNECT,
         WAIT_FOR_SOURCE_RIDE,
         WAIT_FOR_MOVEMENT_HOLD_PROBE,
+        WAIT_FOR_ACK_SEAT_TIMEOUT,
+        WAIT_FOR_MOVEMENT_SOAK,
         WAIT_FOR_DESTINATION_RIDE,
         WAIT_FOR_RETURN_RIDE,
         WAIT_FOR_GRAVITY_RECROSS,
@@ -69,6 +71,11 @@ public final class SableDimensionStackDedicatedClientTest {
     private static Entity movementHoldProbeSeat;
     private static net.minecraft.world.phys.Vec3 movementHoldProbePosition;
     private static final int MOVEMENT_HOLD_PROBE_TICKS = 40;
+    private static final int MOVEMENT_SOAK_CYCLES = 20;
+    private static final int MOVEMENT_SOAK_TICKS = 10;
+    private static int movementSoakCycles;
+    private static UUID movementSoakId, previousMovementSoakId;
+    private static qouteall.imm_ptl.core.portal.Portal movementSoakPortal;
 
     private SableDimensionStackDedicatedClientTest() {}
 
@@ -100,6 +107,8 @@ public final class SableDimensionStackDedicatedClientTest {
             switch (phase) {
                 case WAIT_FOR_SOURCE_RIDE -> waitForSourceRide(minecraft);
                 case WAIT_FOR_MOVEMENT_HOLD_PROBE -> verifyMovementHoldProbe(minecraft);
+                case WAIT_FOR_ACK_SEAT_TIMEOUT -> verifyAckSeatTimeout(minecraft);
+                case WAIT_FOR_MOVEMENT_SOAK -> verifyMovementSoak(minecraft);
                 case WAIT_FOR_DESTINATION_RIDE -> waitForDestinationRide(minecraft);
                 case WAIT_FOR_RETURN_RIDE -> waitForReturnRide(minecraft);
                 case WAIT_FOR_GRAVITY_RECROSS -> waitForGravityRecross(minecraft);
@@ -120,7 +129,7 @@ public final class SableDimensionStackDedicatedClientTest {
             case WAIT_FOR_SOURCE_RIDE, WAIT_FOR_DESTINATION_RIDE,
                  WAIT_FOR_RETURN_RIDE, WAIT_FOR_GRAVITY_RECROSS,
                  WAIT_FOR_DISMOUNT -> true;
-            case CONNECT, WAIT_FOR_MOVEMENT_HOLD_PROBE, WAIT_FOR_REMOTE_SOURCE, WAIT_FOR_REMOTE_MOVEMENT,
+            case CONNECT, WAIT_FOR_MOVEMENT_HOLD_PROBE, WAIT_FOR_ACK_SEAT_TIMEOUT, WAIT_FOR_MOVEMENT_SOAK, WAIT_FOR_REMOTE_SOURCE, WAIT_FOR_REMOTE_MOVEMENT,
                  WAIT_FOR_SERVER_PASS, DONE -> false;
         };
     }
@@ -210,6 +219,68 @@ public final class SableDimensionStackDedicatedClientTest {
         require(phaseTicks >= 99 && phaseTicks <= 101, "Pending handoff ended outside its existing lifetime: " + phaseTicks);
         movementHoldProbeComplete = true;
         SableDimensionStackIntegrationMarkers.acknowledge("movement-hold");
+        var portal = qouteall.imm_ptl.core.portal.global_portals.GlobalPortalStorage.getGlobalPortals(minecraft.level)
+            .stream().filter(p -> p.getDestDim().equals(Level.NETHER)).findFirst().orElseThrow();
+        SableRiderLifecycleProbe.beforeCrossings(minecraft, portal, movementHoldProbeSeat);
+        // A correlated successful Ack without its passenger packet must preserve the existing
+        // post-Ack watchdog even when the movement timer expires first. No network request.
+        UUID id = UUID.randomUUID();
+        SableServerFirstClientHandoff.prepareServerInitiated(id, portal.getUUID(), Level.OVERWORLD, null, false);
+        minecraft.player.stopRiding();
+        SableServerFirstClientHandoff.acknowledge(id, portal.getUUID(), true, true, Level.OVERWORLD, null, false);
+        require(SableServerFirstClientHandoff.getActiveHandoffSnapshot() != null, "Missing-seat Ack lost fallback state");
+        phase = Phase.WAIT_FOR_ACK_SEAT_TIMEOUT;
+        phaseTicks = 0;
+    }
+
+    private static void verifyAckSeatTimeout(Minecraft minecraft) {
+        var snapshot = SableServerFirstClientHandoff.getActiveHandoffSnapshot();
+        if (phaseTicks < 99) {
+            require(snapshot != null && snapshot.phase().equals("awaiting-destination-seat"), "Post-Ack seat timer ended early");
+            return;
+        }
+        if (snapshot != null) {
+            require(phaseTicks <= 101, "Post-Ack seat fallback failed to expire");
+            return;
+        }
+        require(phaseTicks >= 100 && phaseTicks <= 102, "Post-Ack fallback ended outside original timer");
+        require(!SableServerFirstClientHandoff.shouldHoldDetachedMovement(minecraft.player), "Fallback retained movement hold");
+        require(minecraft.player.startRiding(movementHoldProbeSeat, true), "Cannot restore source seat after fallback");
+        SableDimensionStackIntegrationMarkers.acknowledge("movement-ack-timeout");
+        movementSoakPortal = qouteall.imm_ptl.core.portal.global_portals.GlobalPortalStorage.getGlobalPortals(minecraft.level)
+            .stream().filter(p -> p.getDestDim().equals(Level.NETHER)).findFirst().orElseThrow();
+        startMovementSoakCycle(minecraft);
+        phase = Phase.WAIT_FOR_MOVEMENT_SOAK;
+    }
+
+    private static void startMovementSoakCycle(Minecraft minecraft) {
+        movementSoakId = SableServerFirstClientHandoff.begin(movementSoakPortal);
+        minecraft.player.stopRiding();
+        movementHoldProbePosition = minecraft.player.position();
+        phaseTicks = 0;
+    }
+
+    private static void verifyMovementSoak(Minecraft minecraft) {
+        require(SableServerFirstClientHandoff.shouldHoldDetachedMovement(minecraft.player), "Repeated handoff lost movement hold");
+        require(minecraft.player.position().distanceTo(movementHoldProbePosition) < 0.01, "Repeated detached rider moved");
+        if (phaseTicks < MOVEMENT_SOAK_TICKS) return;
+        if (previousMovementSoakId != null) {
+            SableServerFirstClientHandoff.acknowledge(previousMovementSoakId, movementSoakPortal.getUUID(),
+                false, false, movementSoakPortal.getDestDim(), null, false);
+            var active = SableServerFirstClientHandoff.getActiveHandoffSnapshot();
+            require(active != null && active.handoffId().equals(movementSoakId), "Delayed old Ack consumed newer handoff");
+        }
+        SableServerFirstClientHandoff.acknowledge(movementSoakId, movementSoakPortal.getUUID(),
+            false, false, movementSoakPortal.getDestDim(), null, false);
+        require(SableServerFirstClientHandoff.getActiveHandoffSnapshot() == null
+            && !SableServerFirstClientHandoff.shouldHoldDetachedMovement(minecraft.player), "Repeated rejection retained handoff");
+        require(minecraft.player.startRiding(movementHoldProbeSeat, true), "Repeated handoff lost original seat");
+        previousMovementSoakId = movementSoakId;
+        if (++movementSoakCycles < MOVEMENT_SOAK_CYCLES) {
+            startMovementSoakCycle(minecraft);
+            return;
+        }
+        SableDimensionStackIntegrationMarkers.acknowledge("movement-soak");
         phase = Phase.WAIT_FOR_SOURCE_RIDE;
         phaseTicks = 0;
     }
@@ -512,6 +583,11 @@ public final class SableDimensionStackDedicatedClientTest {
         require(Math.abs(remote.logicalPose().position().x() - remoteSourceX) >= MIN_REMOTE_OBSERVED_MOVEMENT,
             "remote Nether Sable pose regressed before final client confirmation");
 
+        var portal = qouteall.imm_ptl.core.portal.global_portals.GlobalPortalStorage.getGlobalPortals(minecraft.level)
+            .stream().filter(p -> p.getDestDim().equals(Level.NETHER)).findFirst().orElseThrow();
+        var cleanupSeat = net.minecraft.world.entity.EntityType.ARMOR_STAND.create(minecraft.level);
+        require(cleanupSeat != null, "Cannot create terminal cleanup fixture");
+        SableRiderLifecycleProbe.cleanupAndDisconnect(minecraft, portal, cleanupSeat);
         phase = Phase.DONE;
         SableDimensionStackIntegrationMarkers.clientPass(
             "real client verified continuous Sable ownership/interpolation, exact three-crossing sequence, rotated camera/facing handoff, rider tracking/dismount, and opposite-dimension live movement"

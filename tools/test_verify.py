@@ -11,6 +11,57 @@ import verify
 
 
 class VerificationHarnessTest(unittest.TestCase):
+    def test_network_stress_filters_only_the_game_port_for_both_transports(self):
+        commands = verify.network_stress_commands(25566)
+        filters = commands[2:]
+        self.assertEqual(len(filters), 4)
+        for protocol in ("6", "17"):
+            for direction in ("sport", "dport"):
+                self.assertTrue(any(["protocol", protocol, "0xff", "match", "ip", direction,
+                                     "25566", "0xffff", "flowid", "1:3"] == command[-10:] for command in filters))
+        for port in (-1, 0, 65536):
+            with self.assertRaises(ValueError):
+                verify.network_stress_commands(port)
+
+    def test_network_stress_records_actual_traffic_and_removes_its_policy(self):
+        original = "qdisc noqueue 0: root refcnt 2\n"
+        stats = "qdisc netem 30: parent 1:3 delay 30ms 10ms loss 0.5%\n Sent 1024 bytes 4 pkt (dropped 1)\n"
+        with patch.dict(verify.os.environ, IP_NETWORK_STRESS="true"), patch.object(verify.sys, "platform", "linux"), \
+                patch.object(verify.shutil, "which", return_value="/usr/sbin/tc"), \
+                patch.object(verify.subprocess, "run") as run, \
+                patch.object(verify.subprocess, "check_output", side_effect=[original, stats]):
+            with verify.network_stress(25566):
+                pass
+            self.assertEqual(run.call_args.args[0], ["sudo", "tc", "qdisc", "del", "dev", "lo", "root"])
+            self.assertEqual(json.loads((self.results / "network-stress.json").read_text())["port"], 25566)
+
+    def test_network_stress_refuses_existing_policies_and_cleans_up_after_setup_failure(self):
+        with patch.dict(verify.os.environ, IP_NETWORK_STRESS="true"), patch.object(verify.sys, "platform", "linux"), \
+                patch.object(verify.shutil, "which", return_value="/usr/sbin/tc"), \
+                patch.object(verify.subprocess, "run") as run, \
+                patch.object(verify.subprocess, "check_output", return_value="qdisc fq_codel 0: root\n"):
+            with self.assertRaisesRegex(RuntimeError, "existing loopback"):
+                with verify.network_stress(25566):
+                    pass
+            run.assert_not_called()
+        with patch.dict(verify.os.environ, IP_NETWORK_STRESS="true"), patch.object(verify.sys, "platform", "linux"), \
+                patch.object(verify.shutil, "which", return_value="/usr/sbin/tc"), \
+                patch.object(verify.subprocess, "check_output", return_value="qdisc noqueue 0: root refcnt 2\n"), \
+                patch.object(verify.subprocess, "run", side_effect=[None, subprocess.CalledProcessError(1, "tc"), None]) as run:
+            with self.assertRaises(subprocess.CalledProcessError):
+                with verify.network_stress(25566):
+                    pass
+            self.assertEqual(run.call_args.args[0], ["sudo", "tc", "qdisc", "del", "dev", "lo", "root"])
+
+    def test_network_stress_cannot_pass_without_impaired_packets(self):
+        with patch.dict(verify.os.environ, IP_NETWORK_STRESS="true"), patch.object(verify.sys, "platform", "linux"), \
+                patch.object(verify.shutil, "which", return_value="/usr/sbin/tc"), \
+                patch.object(verify.subprocess, "run"), \
+                patch.object(verify.subprocess, "check_output", side_effect=["qdisc noqueue 0: root refcnt 2\n",
+                     "qdisc netem 30: parent 1:3\n Sent 0 bytes 0 pkt\n"]):
+            with self.assertRaisesRegex(RuntimeError, "no game packets"):
+                with verify.network_stress(25566):
+                    pass
     def test_log_reader_consumes_each_disconnect_once_and_preserves_partial_utf8(self):
         log = Path(self.temp.name) / "server.log"
         reader = verify.AppendedLogReader(log)
@@ -85,7 +136,14 @@ class VerificationHarnessTest(unittest.TestCase):
         patcher = patch.object(verify, "RESULT_DIR", self.results)
         patcher.start()
         self.addCleanup(patcher.stop)
-        for name in ("server-pass", "client-pass", "client-source", "client-destination", "client-return", "client-recross", "client-dismount", "client-movement-hold"):
+        # Never consume a real previous/current E2E disconnect during an isolated unit test.
+        for name, filename in (("SERVER_LOG", "server.log"), ("CLIENT_LOG", "client.log")):
+            log_patch = patch.object(verify, name, self.results / filename)
+            log_patch.start()
+            self.addCleanup(log_patch.stop)
+        for name in ("server-pass", "client-pass", "client-source", "client-destination", "client-return", "client-recross", "client-dismount",
+                     "client-movement-hold", "client-movement-lifecycle", "client-movement-ack-timeout", "client-movement-soak", "client-movement-disconnect",
+                     "client-networking-api"):
             (self.results / f"{name}.txt").write_text("verified\n")
 
     def test_both_sides_and_every_phase_are_required(self):

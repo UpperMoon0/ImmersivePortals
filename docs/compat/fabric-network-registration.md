@@ -33,14 +33,16 @@ markers and a successful client exit code.
 
 ## Receiver registration and publication (issue #21)
 
-The exact supported module is `fabric-networking-api-v1` **4.2.2+a92978fd19**,
-embedded in owo-lib 0.12.15-beta.12. The compatibility plugin rejects other
-versions before applying these optional mixins and checks that each target exists.
+The baseline module is `fabric-networking-api-v1` **4.2.2+a92978fd19**,
+embedded in owo-lib 0.12.15-beta.12. The compatibility plugin validates the
+required target structure instead of rejecting a different version label.
+Newer 1.21.1 modules, including those selected by TxniLib, are covered by the
+[networking compatibility matrix](forgified-fabric-networking.md).
 The required mixin signatures target `NeoNetworkRegistrar.registeredPayloads`
 and its `NeoPayloadHandler` inner class: `globalReceivers`/`localReceivers` are
 `Map` fields; `registerGlobalHandler(PacketFlow,Object,Function,TriConsumer)` and
 `registerLocalReceiver(ICommonPacketListener,Object,Function,TriConsumer)` return
-boolean. These contracts were checked against the pinned module bytecode.
+boolean. These contracts are checked against baseline, TxniLib and newer module bytecode.
 
 All three maps use concurrent storage. Registration alone locks its particular
 receiver map while running upstream's contains-key/construct/put operation;
@@ -51,7 +53,7 @@ return false without replacing the winner; unregister returns the removed
 handler and permits subsequent replacement. Already-enqueued packets retain the
 receiver snapshot captured by the original handler.
 
-`FabricReceiverRegistrationTest` executes the actual pinned handler's dispatch,
+`FabricReceiverRegistrationTest` executes each verified upstream handler's dispatch,
 lookup and unregister methods through the production registration wrappers.
 Synchronized-start workers register both flows of one payload, race duplicate
 flows/listeners, and register/dispatch/remove distinct local listeners concurrently.
