@@ -48,6 +48,7 @@ public final class SableShipFlightTest {
     private static Phase phase = Phase.LOGIN;
     private static int ticks, phaseTicks, caseIndex, leg;
     private static int flightTicks;
+    private static double observedFlightDistance;
     private static Vector3d hover, launch, previousVelocity;
     private static Quaterniond previousOrientation;
     private static Map<String, Object> caseReport, crossing;
@@ -93,6 +94,17 @@ public final class SableShipFlightTest {
         if (stack()) for (int x = -80; x <= 80; x++) for (int z = -80; z <= 80; z++)
             for (int y = source.getMinBuildHeight(); y < source.getMinBuildHeight() + 5; y++)
                 source.setBlock(new BlockPos(x, y, z), Blocks.AIR.defaultBlockState(), 2);
+        if (stack()) {
+            // The Nether connector is at logical ceiling 128, not max build height 256.
+            // Clear the entire rotated ship corridor, including the roof and the braking zone.
+            int ceiling = qouteall.imm_ptl.core.McHelper.getMaxContentYExclusive(destination);
+            for (int x = -48; x <= 48; x++) for (int z = -48; z <= 48; z++)
+                for (int clearY = ceiling - 48; clearY <= ceiling + 20; clearY++) {
+                    BlockPos position = new BlockPos(x, clearY, z);
+                    if (!destination.getBlockState(position).isAir())
+                        destination.setBlock(position, Blocks.AIR.defaultBlockState(), 2);
+                }
+        }
         int y = stack() ? source.getMinBuildHeight() + 40 : 160;
         if (stack()) {
             VerticalConnectingPortal.connectMutually(Level.OVERWORLD, Level.NETHER, false);
@@ -193,8 +205,10 @@ public final class SableShipFlightTest {
             return;
         }
         leg++;
-        launch = new Vector3d(body.logicalPose().position()); flightTicks = 0;
-        setVelocity(body, new Vector3d(0, leg % 2 == 0 ? -SPEED : SPEED, 0));
+        launch = new Vector3d(body.logicalPose().position()); flightTicks = 0; observedFlightDistance = 0;
+        // Nonzero lateral components make the yaw-rotated velocity assertion nonvacuous.
+        // The reverse launch points back along the transformed outward trajectory.
+        setVelocity(body, leg % 2 == 0 ? new Vector3d(8, -SPEED, 4) : new Vector3d(-4, SPEED, 8));
         previousVelocity = handle(body).getLinearVelocity(new Vector3d());
         previousOrientation = new Quaterniond(body.logicalPose().orientation());
         phase(Phase.FLY);
@@ -205,6 +219,7 @@ public final class SableShipFlightTest {
         var arriving = SubLevelContainer.getContainer(target).getSubLevel(fixture.id());
         if (!(arriving instanceof ServerSubLevel body)) {
             var active = fixture.requireBody(current);
+            observedFlightDistance = Math.max(observedFlightDistance, launch.distance(active.logicalPose().position()));
             previousVelocity = handle(active).getLinearVelocity(new Vector3d());
             previousOrientation = new Quaterniond(active.logicalPose().orientation());
             require(phaseTicks < 400, "native ship never crossed portal");
@@ -221,7 +236,7 @@ public final class SableShipFlightTest {
         if (rotation != null) expectedOrientation.premul(new Quaterniond(rotation.x,rotation.y,rotation.z,rotation.w));
         require(Math.abs(expectedOrientation.dot(body.logicalPose().orientation())) > .999,
             "orientation discontinuity at rotated seam");
-        double distance = Math.abs(launch.y - portal.getOriginPos().y);
+        double distance = observedFlightDistance;
         require(flightTicks >= 5 && distance >= 8, "insufficient genuine pre-seam flight");
         current = target;
         fixture.verifyIntegrity(current, body); verifyRider(body);

@@ -87,7 +87,7 @@ class SableFlightShipLayoutTest {
                     "The loaded drain needs a solid stop on every potential export side");
             }
             for (int x = -1; x <= 1; x++) for (int y = 2; y <= 4; y++) {
-                assertEquals("minecraft:lime_concrete", layout.blocks().get(new SableFlightShipLayout.Position(x, y, 2)));
+                assertEquals(x < 0 ? "minecraft:blue_concrete" : x > 0 ? "minecraft:yellow_concrete" : "minecraft:lime_concrete", layout.blocks().get(new SableFlightShipLayout.Position(x, y, 2)));
             }
             assertEquals("minecraft:lever", layout.blocks().get(new SableFlightShipLayout.Position(-2, 1, 0)));
             assertEquals("minecraft:redstone_lamp", layout.blocks().get(new SableFlightShipLayout.Position(-2, 0, 0)));

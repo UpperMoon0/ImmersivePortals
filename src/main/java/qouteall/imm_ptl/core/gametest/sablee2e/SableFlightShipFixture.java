@@ -206,7 +206,7 @@ public final class SableFlightShipFixture {
     /** Toggle actual world blocks/redstone. Allow at least four normal ticks before asserting lamp-off. */
     public void mutateProbe(ServerLevel level, ServerSubLevel body, boolean enabled) {
         setExpected(level, body, REMOVED_PROBE, enabled ? Blocks.AIR.defaultBlockState() : Blocks.WHITE_CONCRETE.defaultBlockState());
-        for (int x = -1; x <= 1; x++) for (int y = 2; y <= 4; y++) {
+        for (int x = 0; x <= 0; x++) for (int y = 2; y <= 4; y++) {
             setExpected(level, body, new BlockPos(x, y, 2),
                 (enabled ? Blocks.RED_CONCRETE : Blocks.LIME_CONCRETE).defaultBlockState());
         }

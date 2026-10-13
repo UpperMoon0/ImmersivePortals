@@ -1023,7 +1023,22 @@ def validate_ship_reports() -> None:
                     require(isinstance(name, str) and name in screenshots and name not in leg_screenshots,
                             f"{label}: missing or reused crossing screenshot")
                     leg_screenshots.add(name)
-                    require(positive_integer(crossing.get("panel_pixels"), 1000), f"{label}: missing panel pixel evidence")
+                    desired = crossing.get("panel_pixels")
+                    opposing = crossing.get("opposing_panel_pixels")
+                    blue = crossing.get("blue_panel_pixels")
+                    yellow = crossing.get("yellow_panel_pixels")
+                    area = crossing.get("panel_roi_pixels")
+                    require(positive_integer(desired, 1000) and positive_integer(opposing, 0)
+                            and positive_integer(blue, 500) and positive_integer(yellow, 500)
+                            and positive_integer(area), f"{label}: missing panel pixel evidence")
+                    require(all(count <= area for count in (desired, opposing, blue, yellow))
+                            and desired + opposing + blue + yellow <= area,
+                            f"{label}: panel pixel counts exceed sampled area")
+                    # Integer multiplication preserves the exact 20% coverage
+                    # boundary for ROI areas not divisible by five.
+                    require(desired * 5 >= area and opposing * 20 <= desired
+                            and blue * 20 >= area and yellow * 20 >= area,
+                            f"{label}: panel pixels lack coverage or state contrast")
                 for name in screenshots:
                     require(isinstance(name, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*\.png", name) is not None
                             and name not in screenshot_names, f"{label}: invalid or reused screenshot name")

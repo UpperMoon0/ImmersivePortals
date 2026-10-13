@@ -67,47 +67,50 @@ public final class SableShipFlightClientTest {
             String token = request.get("token").getAsString();
             if (token.equals(observedToken)) return;
             if (!token.equals(pendingToken)) { pendingToken = token; stable = 0; }
-            if (!mc.level.dimension().location().toString().equals(request.get("dimension").getAsString())) { stable=0; return; }
+            if (!mc.level.dimension().location().toString().equals(request.get("dimension").getAsString())) { waiting("dimension="+mc.level.dimension().location()); return; }
             UUID id = UUID.fromString(request.get("ship_id").getAsString());
             var container = SubLevelContainer.getContainer(mc.level);
             var rawBody = container == null ? null : container.getSubLevel(id);
-            if (!(rawBody instanceof ClientSubLevel body)) { stable=0; return; }
+            if (!(rawBody instanceof ClientSubLevel body)) { waiting("body missing id="+id+" dimension="+mc.level.dimension().location()); return; }
             var seat = mc.player.getVehicle();
             if (seat == null || !seat.getUUID().toString().equals(request.get("seat_id").getAsString())
-                || !seat.getPassengers().contains(mc.player) || Sable.HELPER.getContaining(seat) != body) { stable=0; return; }
+                || !seat.getPassengers().contains(mc.player) || Sable.HELPER.getContaining(seat) != body) { waiting("rider seat="+seat+" expected="+request.get("seat_id")+" containing="+(seat==null?null:Sable.HELPER.getContaining(seat))); return; }
             var otherDimension = mc.level.dimension().equals(Level.OVERWORLD) ? Level.NETHER : Level.OVERWORLD;
             if (ClientWorldLoader.getServerDimensions().contains(otherDimension)) {
                 var other = SubLevelContainer.getContainer(ClientWorldLoader.getWorld(otherDimension));
-                if (other != null && other.getSubLevel(id) != null) { stable=0; return; }
+                if (other != null && other.getSubLevel(id) != null) { waiting("stale body in other dimension"); return; }
             }
             BlockPos center = body.getPlot().getCenterBlock();
             for (var item : request.getAsJsonArray("blocks_manifest")) {
                 var row = item.getAsJsonArray();
                 var position = center.offset(row.get(0).getAsInt(),row.get(1).getAsInt(),row.get(2).getAsInt());
-                if (Block.getId(mc.level.getBlockState(position)) != row.get(3).getAsInt()) { stable=0; return; }
+                if (Block.getId(mc.level.getBlockState(position)) != row.get(3).getAsInt()) { waiting("block mismatch relative="+row+" actual="+mc.level.getBlockState(position)+" actual_id="+Block.getId(mc.level.getBlockState(position))); return; }
             }
             for (var item : request.getAsJsonArray("kinetics")) {
                 var row = item.getAsJsonArray();
                 var be = mc.level.getBlockEntity(center.offset(row.get(0).getAsInt(),row.get(1).getAsInt(),row.get(2).getAsInt()));
-                if (!(be instanceof KineticBlockEntity kinetic) || Math.abs(kinetic.getSpeed()-row.get(3).getAsFloat())>.01) { stable=0; return; }
+                if (!(be instanceof KineticBlockEntity kinetic) || !Float.isFinite(kinetic.getSpeed()) || Math.abs(kinetic.getSpeed()-row.get(3).getAsFloat())>.01) { waiting("kinetic mismatch relative="+row+" actual="+(be instanceof KineticBlockEntity k?k.getSpeed():be)); return; }
             }
             // The view is local to the retained Create seat. Let normal render frames settle after camera input.
             mc.options.hideGui = true;
             mc.player.setYRot(0); mc.player.setXRot(-12);
             if (++stable < 15) return;
             try (NativeImage pixels = Screenshot.takeScreenshot(mc.getMainRenderTarget())) {
-                int red=0, green=0;
+                int red=0, green=0, blue=0, yellow=0;
                 for (int y=pixels.getHeight()/4;y<pixels.getHeight()*3/4;y++) {
                     for (int x=pixels.getWidth()/4;x<pixels.getWidth()*3/4;x++) {
                         int abgr=pixels.getPixelRGBA(x,y), r=abgr&255,g=(abgr>>>8)&255,b=(abgr>>>16)&255;
                         if (r>g*1.5 && r>b*1.5 && r>40) red++;
                         if (g>r*1.35 && g>b*1.3 && g>40) green++;
+                        if (b>r*1.3 && b>g*1.2 && b>40) blue++;
+                        if (r>60 && g>50 && b<Math.min(r,g)*.7 && r<g*1.5 && g<r*1.35) yellow++;
                     }
                 }
                 boolean mutated=request.get("mutated").getAsBoolean();
-                if ((mutated ? red : green) < 1000) {
+                int roi = (pixels.getWidth()*3/4-pixels.getWidth()/4)*(pixels.getHeight()*3/4-pixels.getHeight()/4);
+                if (!SableShipPanelPixels.accepts(mutated ? red : green, mutated ? green : red, blue, yellow, roi)) {
                     if (stable % 60 == 0) pixels.writeToFile(PortalSmokeSupport.directory().resolve("pending-"+token.replace(':','-')+".png"));
-                    require(stable<240,"ship panel pixels stale/invisible: token="+token+" red="+red+" green="+green);
+                    require(stable<240,"ship panel pixels stale/invisible: token="+token+" red="+red+" green="+green+" blue="+blue+" yellow="+yellow);
                     return;
                 }
                 String key=request.get("size").getAsString()+":"+request.get("route").getAsString();
@@ -127,7 +130,8 @@ public final class SableShipFlightClientTest {
                     var record=new LinkedHashMap<String,Object>();
                     record.put("leg",leg); record.put("from",request.get("from").getAsString()); record.put("to",request.get("to").getAsString());
                     for (String field:List.of("unique_body","rider_graph","blocks","machinery","mutation")) record.put(field,true);
-                    record.put("panel_pixels",mutated?red:green); record.put("screenshot",file);
+                    record.put("panel_pixels",mutated?red:green); record.put("opposing_panel_pixels",mutated?green:red);
+                    record.put("panel_roi_pixels",roi); record.put("blue_panel_pixels",blue); record.put("yellow_panel_pixels",yellow); record.put("screenshot",file);
                     crossings.get(key).add(record);
                 }
                 PortalSmokeSupport.write("ship-client-ack.txt",token); observedToken=token;
@@ -137,6 +141,17 @@ public final class SableShipFlightClientTest {
             PortalSmokeSupport.write("client-fail.txt","ships token="+pendingToken+": "+error);
             mc.stop();
         }
+    }
+    private static void waiting(String reason) {
+        stable=0;
+        if (ticks % 60 != 0) return;
+        String detail="token="+pendingToken+" ticks="+ticks+" "+reason;
+        PortalSmokeSupport.write("client-waiting.txt",detail);
+        System.out.println("[Sable ship observation] "+detail);
+        Minecraft mc=Minecraft.getInstance();
+        try (NativeImage image=Screenshot.takeScreenshot(mc.getMainRenderTarget())) {
+            image.writeToFile(PortalSmokeSupport.directory().resolve("client-waiting.png"));
+        } catch (java.io.IOException error) { throw new IllegalStateException("Cannot save waiting-state screenshot",error); }
     }
     private static void require(boolean value,String message) { if(!value) throw new IllegalStateException(message); }
 }

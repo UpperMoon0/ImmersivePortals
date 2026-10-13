@@ -75,7 +75,7 @@ public final class SableFlightShipLayout {
         put(placed, 1, 1, 3, "minecraft:spruce_planks");
         put(placed, 0, 1, 4, "minecraft:spruce_planks");
         for (int x = -1; x <= 1; x++) for (int y = 2; y <= 4; y++) {
-            put(placed, x, y, 2, "minecraft:lime_concrete");
+            put(placed, x, y, 2, x < 0 ? "minecraft:blue_concrete" : x > 0 ? "minecraft:yellow_concrete" : "minecraft:lime_concrete");
         }
         put(placed, -2, 2, 2, "minecraft:white_concrete");
         put(placed, -2, 0, 0, "minecraft:redstone_lamp");

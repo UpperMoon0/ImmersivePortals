@@ -1017,7 +1017,9 @@ class ShipVerificationHarnessTest(unittest.TestCase):
                         integrity=True, velocity=True, orientation=True, client_ack=True))
                     client["crossings"].append(dict(leg=leg, **{"from": worlds[leg % 2], "to": worlds[(leg + 1) % 2]},
                         unique_body=True, rider_graph=True, blocks=True, machinery=True, mutation=True,
-                        panel_pixels=1200, screenshot=client["screenshots"][leg+1]))
+                        panel_pixels=1200, opposing_panel_pixels=40, panel_roi_pixels=5000,
+                        blue_panel_pixels=500, yellow_panel_pixels=500,
+                        screenshot=client["screenshots"][leg+1]))
                 reports["server"]["cases"].append(server)
                 reports["client"]["cases"].append(client)
         return reports
@@ -1181,6 +1183,10 @@ class ShipVerificationHarnessTest(unittest.TestCase):
 
     def test_ship_crossing_requires_measured_pixels_and_its_own_screenshot(self):
         for field, values in (("panel_pixels", (None, True, 0, 999, "1200")),
+                              ("opposing_panel_pixels", (None, True, -1, "40", 40.0)),
+                              ("blue_panel_pixels", (None, True, 0, 499, "500", 500.0)),
+                              ("yellow_panel_pixels", (None, True, 0, 499, "500", 500.0)),
+                              ("panel_roi_pixels", (None, True, 0, -1, "5000", 5000.0)),
                               ("screenshot", (None, "missing.png", "CONTROL-ordinary-2.png"))):
             for value in values:
                 with self.subTest(field=field, value=value):
@@ -1194,6 +1200,47 @@ class ShipVerificationHarnessTest(unittest.TestCase):
         screenshot.write_bytes(screenshot.read_bytes()[:24])
         with self.assertRaisesRegex(RuntimeError, "invalid screenshot"):
             verify.validate_ship_reports()
+
+    def test_ship_panel_contrast_requires_bounded_counts_and_exact_coverage(self):
+        for desired, opposing, area in ((1000, 50, 5000), (1001, 50, 5001),
+                                         (2000, 100, 10000), (1000, 0, 2000)):
+            with self.subTest(valid=(desired, opposing, area)):
+                reports = self.reports()
+                reports["client"]["cases"][0]["crossings"][0].update(
+                    panel_pixels=desired, opposing_panel_pixels=opposing, panel_roi_pixels=area)
+                self.write_reports(reports)
+                verify.validate_ship_reports()
+        for desired, opposing, area in ((1000, 51, 5000), (1000, 50, 5001),
+                                         (1999, 0, 10000), (2000, 101, 10000),
+                                         (1000, 0, 999), (1000, 5001, 5000),
+                                         (1000, 1, 2000)):
+            for case in range(4):
+                for leg in range(4):
+                    with self.subTest(invalid=(desired, opposing, area), case=case, leg=leg):
+                        reports = self.reports()
+                        reports["client"]["cases"][case]["crossings"][leg].update(
+                            panel_pixels=desired, opposing_panel_pixels=opposing, panel_roi_pixels=area)
+                        self.write_reports(reports)
+                        with self.assertRaisesRegex(RuntimeError, "sampled area|coverage or state contrast"):
+                            verify.validate_ship_reports()
+
+    def test_ship_panel_requires_both_distinctive_colors_in_every_arrival(self):
+        for blue, yellow, valid in ((501, 501, True), (500, 501, False),
+                                    (501, 500, False), (10002, 501, False),
+                                    (501, 10002, False), (4000, 4001, False)):
+            for case in range(4):
+                for leg in range(4):
+                    with self.subTest(blue=blue, yellow=yellow, case=case, leg=leg):
+                        reports = self.reports()
+                        reports["client"]["cases"][case]["crossings"][leg].update(
+                            panel_pixels=2001, opposing_panel_pixels=0, panel_roi_pixels=10001,
+                            blue_panel_pixels=blue, yellow_panel_pixels=yellow)
+                        self.write_reports(reports)
+                        if valid:
+                            verify.validate_ship_reports()
+                        else:
+                            with self.assertRaisesRegex(RuntimeError, "sampled area|coverage or state contrast"):
+                                verify.validate_ship_reports()
 
     def test_normal_preparation_clears_ambient_ship_opt_in(self):
         root = self.results / "checkout"
