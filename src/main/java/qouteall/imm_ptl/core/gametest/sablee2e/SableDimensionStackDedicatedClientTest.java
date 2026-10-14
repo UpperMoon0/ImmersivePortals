@@ -29,7 +29,6 @@ public final class SableDimensionStackDedicatedClientTest {
     private static final int MAX_OVERLAP_TICKS = 20;
     private static final int EXPECTED_SEAM_TRANSITIONS = 3;
     private static final int MIN_FULL_SYNC_SNAPSHOTS = 2;
-    private static final int MIN_GRAFTED_HISTORY_SNAPSHOTS = 3;
     private static final double MAX_BODY_RIDER_DISTANCE = 32.0;
     private static final double MIN_REMOTE_OBSERVED_MOVEMENT = 0.30;
     private static final float EXPECTED_PORTAL_YAW_DELTA = 90.0f;
@@ -172,6 +171,7 @@ public final class SableDimensionStackDedicatedClientTest {
         remoteSourceX = Double.NaN;
         verifyContinuousClientOwnership(minecraft);
 
+        SableSnapshotDimensionProbe.run(minecraft);
         if (!movementHoldProbeComplete) {
             // The server holds the real source body until client-source is published.
             // Reproduce the packet gap deterministically: capture its actual seat/portal,
@@ -396,8 +396,12 @@ public final class SableDimensionStackDedicatedClientTest {
         require(subLevel != null, phaseName + " Sable sublevel is missing");
         int snapshots = subLevel.getInterpolator().buffer.size();
         require(snapshots >= minimumSnapshots,
-            phaseName + " Sable interpolation history was reset during portal handoff: snapshots=" + snapshots
-                + " minimum=" + minimumSnapshots);
+            phaseName + " Sable interpolation sample floor violated: snapshots=" + snapshots
+                + " minimum=" + minimumSnapshots
+                + " ticks=" + subLevel.getInterpolator().buffer.stream()
+                    .map(dev.ryanhcode.sable.network.client.SubLevelSnapshotInterpolator.Snapshot::gameTick).toList()
+                + " pointer=" + ((dev.ryanhcode.sable.api.sublevel.ClientSubLevelContainer)
+                    SubLevelContainer.getContainer(subLevel.getLevel())).getInterpolation().getTickPointer());
     }
 
     /** Sable stores mounted yaw locally; the mixed getLookAngle() is the actual world-facing view. */
@@ -468,7 +472,8 @@ public final class SableDimensionStackDedicatedClientTest {
         require(vehicle.getPassengers().contains(minecraft.player),
             "client vehicle passenger graph is inconsistent after round trip");
         require(hasSubLevel(Level.OVERWORLD), "returned Sable sublevel missing in Overworld");
-        verifyInterpolationHistory(Level.OVERWORLD, "return destination", MIN_GRAFTED_HISTORY_SNAPSHOTS);
+        verifyInterpolationHistory(Level.OVERWORLD, "return destination", MIN_FULL_SYNC_SNAPSHOTS);
+        SableInterpolationHistoryProbe.requireVerified(getClientSubLevel(Level.OVERWORLD));
         verifyYawDelta(minecraft, 0.0f, "inverse rotated return crossing");
 
         SableDimensionStackIntegrationMarkers.acknowledge("return");
@@ -497,7 +502,8 @@ public final class SableDimensionStackDedicatedClientTest {
         require(vehicle.getPassengers().contains(minecraft.player),
             "client Create seat passenger graph is inconsistent after gravity recross");
         require(hasSubLevel(Level.NETHER), "gravity-recrossed Sable sublevel missing in Nether");
-        verifyInterpolationHistory(Level.NETHER, "gravity recross destination", MIN_GRAFTED_HISTORY_SNAPSHOTS);
+        verifyInterpolationHistory(Level.NETHER, "gravity recross destination", MIN_FULL_SYNC_SNAPSHOTS);
+        SableInterpolationHistoryProbe.requireVerified(getClientSubLevel(Level.NETHER));
         verifyYawDelta(minecraft, EXPECTED_PORTAL_YAW_DELTA, "gravity-driven rotated recross");
         require(seamTransitions == EXPECTED_SEAM_TRANSITIONS,
             "unexpected client seam-transition count: " + seamTransitions);
@@ -587,6 +593,7 @@ public final class SableDimensionStackDedicatedClientTest {
             .stream().filter(p -> p.getDestDim().equals(Level.NETHER)).findFirst().orElseThrow();
         var cleanupSeat = net.minecraft.world.entity.EntityType.ARMOR_STAND.create(minecraft.level);
         require(cleanupSeat != null, "Cannot create terminal cleanup fixture");
+        SableSnapshotDimensionProbe.verifyActualTransport(minecraft);
         SableRiderLifecycleProbe.cleanupAndDisconnect(minecraft, portal, cleanupSeat);
         phase = Phase.DONE;
         SableDimensionStackIntegrationMarkers.clientPass(

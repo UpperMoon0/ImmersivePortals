@@ -13,6 +13,16 @@ public final class SableDimensionStackMovementGameTest {
 
     @PrefixGameTestTemplate(false)
     @GameTest(template = "physicstest.gravity", timeoutTicks = 40)
+    public static void mountedEyeAngularApproach(GameTestHelper helper) {
+        if (!ModList.get().isLoaded("sable")) {
+            helper.fail("Sable is required for this GameTest");
+            return;
+        }
+        SableMountedEyeApproachGameTestImpl.run(helper);
+    }
+
+    @PrefixGameTestTemplate(false)
+    @GameTest(template = "physicstest.gravity", timeoutTicks = 40)
     public static void externalMovementAndImmediateReverse(GameTestHelper helper) {
         if (!ModList.get().isLoaded("sable")) {
             helper.fail("Sable is required for this GameTest");

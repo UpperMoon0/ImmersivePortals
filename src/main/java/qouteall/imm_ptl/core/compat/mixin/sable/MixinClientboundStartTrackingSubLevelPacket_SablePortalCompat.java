@@ -27,6 +27,7 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import qouteall.imm_ptl.core.ClientWorldLoader;
+import qouteall.imm_ptl.core.gametest.sablee2e.SableInterpolationHistoryProbe;
 import qouteall.imm_ptl.core.compat.sable.SableClientPacketContext;
 import qouteall.imm_ptl.core.compat.sable.SableServerFirstClientHandoff;
 import qouteall.q_misc_util.my_util.DQuaternion;
@@ -39,6 +40,8 @@ import java.util.UUID;
 @Mixin(value = ClientboundStartTrackingSubLevelPacket.class, remap = false)
 public abstract class MixinClientboundStartTrackingSubLevelPacket_SablePortalCompat {
     private static final Logger LOGGER = LogUtils.getLogger();
+    @Unique private static final boolean ip_historyDiagnostics = Boolean.getBoolean("ip.sable.e2e")
+        || "true".equalsIgnoreCase(System.getenv("IP_SABLE_E2E"));
 
     @Shadow public abstract long plotCoordinate();
     @Shadow public abstract UUID subLevelID();
@@ -84,6 +87,11 @@ public abstract class MixinClientboundStartTrackingSubLevelPacket_SablePortalCom
                 ip_sourceReference = new Pose3d(sourceSubLevel.logicalPose());
                 ip_sourceReferenceTick = gameTick();
             }
+            if (ip_historyDiagnostics) LOGGER.info(
+                "Sable history capture source={} destination={} body={} fullSyncTick={} sourcePointer={} sourceTicks={}",
+                dimension.location(), destinationLevel.dimension().location(), subLevelID(), gameTick(),
+                ((ClientSubLevelContainer) sourceContainer).getInterpolation().getTickPointer(),
+                history.stream().map(ip_SnapshotCopy::gameTick).toList());
             ip_sourceHistory = history;
             return;
         }
@@ -123,7 +131,11 @@ public abstract class MixinClientboundStartTrackingSubLevelPacket_SablePortalCom
 
     @Inject(method = "handle", at = @At("RETURN"))
     private void ip_graftSourceInterpolation(PacketContext context, CallbackInfo ci) {
-        if (ip_sourceHistory == null || ip_sourceHistory.isEmpty() || ip_sourceReference == null) return;
+        if (ip_sourceHistory == null || ip_sourceHistory.isEmpty() || ip_sourceReference == null) {
+            if (ip_historyDiagnostics) LOGGER.info("Sable history unavailable destination={} body={} fullSyncTick={}",
+                SableClientPacketContext.resolve(context).dimension().location(), subLevelID(), gameTick());
+            return;
+        }
 
         SubLevelContainer rawContainer = SubLevelContainer.getContainer(SableClientPacketContext.resolve(context));
         if (!(rawContainer instanceof ClientSubLevelContainer destinationContainer)) return;
@@ -155,6 +167,16 @@ public abstract class MixinClientboundStartTrackingSubLevelPacket_SablePortalCom
             .sub(rotatedSourceReference);
 
         SubLevelSnapshotInterpolator interpolator = destination.getInterpolator();
+        if (ip_historyDiagnostics) LOGGER.info(
+            "Sable history before graft destination={} body={} fullSyncTick={} referenceTick={} destinationPointer={} destinationTicks={}",
+            SableClientPacketContext.resolve(context).dimension().location(), subLevelID(), gameTick(), ip_sourceReferenceTick,
+            destinationContainer.getInterpolation().getTickPointer(),
+            interpolator.buffer.stream().map(SubLevelSnapshotInterpolator.Snapshot::gameTick).toList());
+        List<SubLevelSnapshotInterpolator.Snapshot> expectedHistory = ip_historyDiagnostics
+            ? ip_sourceHistory.stream().filter(snapshot -> snapshot.gameTick() < gameTick() - 1)
+                .map(snapshot -> new SubLevelSnapshotInterpolator.Snapshot(snapshot.gameTick(),
+                    ip_transformHistoricalPose(snapshot.pose(), rotationDelta, translation))).toList()
+            : List.of();
         for (ip_SnapshotCopy snapshot : ip_sourceHistory) {
             if (snapshot.gameTick() >= gameTick() - 1) continue;
             boolean duplicate = interpolator.buffer.stream()
@@ -167,11 +189,19 @@ public abstract class MixinClientboundStartTrackingSubLevelPacket_SablePortalCom
         }
         interpolator.buffer.sort(Comparator.comparingInt(SubLevelSnapshotInterpolator.Snapshot::gameTick));
 
+        if (ip_historyDiagnostics) SableInterpolationHistoryProbe.verify(
+            destination, gameTick(), expectedHistory, interpolator.buffer);
+
         // Re-sample logical/last poses using the now-complete history. The start packet already
         // built render data and bounds, so only bounds need refreshing after the pose graft.
         destination.setInitialPosesFrom(destinationContainer.getInterpolation());
         destination.forceUpdateBounds();
 
+        if (ip_historyDiagnostics) LOGGER.info(
+            "Sable history graft destination={} body={} fullSyncTick={} destinationPointer={} resultTicks={}",
+            SableClientPacketContext.resolve(context).dimension().location(), subLevelID(), gameTick(),
+            destinationContainer.getInterpolation().getTickPointer(),
+            interpolator.buffer.stream().map(SubLevelSnapshotInterpolator.Snapshot::gameTick).toList());
         ip_sourceHistory = null;
         ip_sourceReference = null;
     }

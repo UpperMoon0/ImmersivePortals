@@ -132,6 +132,66 @@ class VerificationHarnessTest(unittest.TestCase):
                 verify.wait_for_client(server, client)
             diagnostics.assert_not_called()
 
+    def test_expected_cleanup_waits_for_receipts_then_checks_exit(self):
+        (self.results / "client-pass.txt").unlink()
+        (self.results / "client-movement-disconnect-started.txt").write_text("started")
+        (self.results / "server.log").write_text("Dev lost connection: Disconnected\n")
+        server, client = Mock(), Mock()
+        server.poll.return_value = None
+        client.poll.side_effect = [None, 0]
+        client.returncode = 0
+        def finish_cleanup(_):
+            (self.results / "client-pass.txt").write_text("verified")
+        with patch.object(verify.time, "sleep", side_effect=finish_cleanup), \
+             patch.object(verify, "collect_thread_diagnostics") as diagnostics:
+            verify.wait_for_client(server, client)
+            diagnostics.assert_not_called()
+
+    def test_expected_cleanup_still_rejects_nonzero_exit(self):
+        (self.results / "client-pass.txt").unlink()
+        (self.results / "client-movement-disconnect-started.txt").write_text("started")
+        (self.results / "server.log").write_text("Dev lost connection: Disconnected\n")
+        server, client = Mock(), Mock()
+        server.poll.return_value = None
+        client.poll.return_value = client.returncode = 1
+        with patch.object(verify, "collect_thread_diagnostics"):
+            with self.assertRaisesRegex(RuntimeError, "status 1"):
+                verify.wait_for_client(server, client)
+
+    def test_expected_cleanup_still_rejects_late_failure_marker(self):
+        (self.results / "client-pass.txt").unlink()
+        (self.results / "client-movement-disconnect-started.txt").write_text("started")
+        (self.results / "server.log").write_text("Dev lost connection: Disconnected\n")
+        server, client = Mock(), Mock()
+        server.poll.return_value = client.poll.return_value = None
+        def failed_cleanup(_):
+            (self.results / "client-fail.txt").write_text("cleanup failed")
+        with patch.object(verify.time, "sleep", side_effect=failed_cleanup), \
+             patch.object(verify, "collect_thread_diagnostics"):
+            with self.assertRaisesRegex(RuntimeError, "cleanup failed"):
+                verify.wait_for_client(server, client)
+
+    def test_expected_cleanup_cannot_hide_missing_receipts_forever(self):
+        (self.results / "client-pass.txt").unlink()
+        (self.results / "client-movement-disconnect-started.txt").write_text("started")
+        (self.results / "server.log").write_text("Dev lost connection: Disconnected\n")
+        server, client = Mock(), Mock()
+        server.poll.return_value = client.poll.return_value = None
+        with patch.object(verify.time, "monotonic", side_effect=[0, 0, 11]), \
+             patch.object(verify.time, "sleep"), patch.object(verify, "collect_thread_diagnostics") as diagnostics:
+            with self.assertRaisesRegex(RuntimeError, "graphical client disconnected"):
+                verify.wait_for_client(server, client)
+            diagnostics.assert_called_once_with(server, client, "disconnect")
+
+    def test_cleanup_intent_without_server_success_cannot_mask_disconnect(self):
+        (self.results / "client-pass.txt").unlink()
+        (self.results / "server-pass.txt").unlink()
+        (self.results / "client-movement-disconnect-started.txt").write_text("started")
+        (self.results / "server.log").write_text("Dev lost connection: denied\n")
+        with patch.object(verify, "collect_thread_diagnostics"):
+            with self.assertRaisesRegex(RuntimeError, "graphical client disconnected: .*denied"):
+                verify.wait_for_client(Mock(), Mock())
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -146,7 +206,7 @@ class VerificationHarnessTest(unittest.TestCase):
             self.addCleanup(log_patch.stop)
         for name in ("server-pass", "client-pass", "client-source", "client-destination", "client-return", "client-recross", "client-dismount",
                      "client-movement-hold", "client-movement-lifecycle", "client-movement-ack-timeout", "client-movement-soak", "client-movement-disconnect",
-                     "client-networking-api"):
+                     "client-networking-api", "client-snapshot-dimensions", "client-snapshot-transport"):
             (self.results / f"{name}.txt").write_text("verified\n")
 
     def test_both_sides_and_every_phase_are_required(self):

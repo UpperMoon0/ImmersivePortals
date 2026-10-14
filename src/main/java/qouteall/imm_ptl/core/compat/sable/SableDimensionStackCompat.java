@@ -391,7 +391,8 @@ public final class SableDimensionStackCompat {
         return false;
     }
     public static boolean beforePlayerPortalTeleport(ServerPlayer player, Portal portal) {
-        Entity vehicle = player.getVehicle();
+        Entity passenger = player;
+        Entity vehicle = passenger.getVehicle();
         while (vehicle != null) {
             SubLevel containing = Sable.HELPER.getContaining(vehicle);
             if (containing instanceof ServerSubLevel sourceSubLevel) {
@@ -411,19 +412,20 @@ public final class SableDimensionStackCompat {
                 // and must execute the complete body migration.
                 ClientHandoff pendingHandoff = CLIENT_HANDOFFS.get(sourceSubLevel.getUniqueId());
                 if (pendingHandoff != null && !pendingHandoff.committed) return false;
-                if (!isRiddenBodyApproachingPortal(sourceSubLevel, vehicle, portal)
+                if (!isRiddenBodyApproachingPortal(sourceSubLevel, passenger, vehicle, portal)
                     && !hasAnimatedRiderCrossing(player, sourceSubLevel, vehicle, portal)) return false;
                 return migrateSubLevel(
                     sourceContainer, sourceSubLevel, portal, new Pose3d(sourceSubLevel.lastPose())
                 ) != null;
             }
-            vehicle = vehicle.getVehicle();
+            passenger = vehicle;
+            vehicle = passenger.getVehicle();
         }
         return true;
     }
 
     private static boolean isRiddenBodyApproachingPortal(
-        ServerSubLevel body, Entity retainedVehicle, Portal portal
+        ServerSubLevel body, Entity passenger, Entity retainedVehicle, Portal portal
     ) {
         if (portal.level() != body.getLevel()) return false;
         RigidBodyHandle handle = RigidBodyHandle.of(body);
@@ -431,13 +433,15 @@ public final class SableDimensionStackCompat {
 
         // A client can still interpolate the rider behind the destination seam after both
         // the body transfer and network cleanup finish. Its reported crossing alone must
-        // not migrate an outward-moving body back. Check native motion at the retained
-        // vehicle, including rotation, rather than client coordinates or only COM velocity.
+        // not migrate an outward-moving body back. Check native motion at the rider's
+        // mounted eye, including rotation, rather than client coordinates or only COM velocity.
+        // Use the same authoritative attachment as the crossing witnesses. The seat origin
+        // can be stationary or move outward while roll/pitch carries its passenger eye inward.
         Vector3d linear = handle.getLinearVelocity(new Vector3d());
         Vector3d angular = handle.getAngularVelocity(new Vector3d());
-        Vector3d worldVehicle = body.logicalPose().transformPosition(
-            JOMLConversion.toJOML(retainedVehicle.position())
-        );
+        Vector3d worldEye = body.logicalPose().transformPosition(JOMLConversion.toJOML(
+            retainedVehicle.getPassengerRidingPosition(passenger).add(McHelper.getEyeOffset(passenger))
+        ));
         Vec3 portalVelocityPerTick = Vec3.ZERO;
         var lastAnimatedState = portal.animation.lastTickAnimatedState;
         var currentAnimatedState = portal.animation.thisTickAnimatedState;
@@ -445,12 +449,12 @@ public final class SableDimensionStackCompat {
             // Real portal animations support a moving/rotating source plane sweeping a
             // stationary rider. Use its projected point, not destination-side transform
             // velocity. Client-only default interpolation has no such server-side motion.
-            Vec3 local = currentAnimatedState.worldPosToPortalLocalPos(JOMLConversion.toMojang(worldVehicle));
+            Vec3 local = currentAnimatedState.worldPosToPortalLocalPos(JOMLConversion.toMojang(worldEye));
             portalVelocityPerTick = TeleportationUtil.getPortalPointVelocity(
                 lastAnimatedState, currentAnimatedState, new Vec3(local.x, local.y, 0)
             ).thisSidePointVelocity();
         }
-        Vector3d offset = worldVehicle.sub(JOMLConversion.toJOML(
+        Vector3d offset = worldEye.sub(JOMLConversion.toJOML(
             getWorldCenterOfMass(body, body.logicalPose())
         ));
         Vec3 normal = portal.getNormal();

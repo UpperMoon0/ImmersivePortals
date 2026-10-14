@@ -6,6 +6,7 @@ import net.neoforged.neoforge.network.event.RegisterPayloadHandlersEvent;
 import net.neoforged.neoforge.network.handling.ServerPayloadContext;
 import net.neoforged.neoforge.network.registration.PayloadRegistrar;
 import qouteall.imm_ptl.core.compat.sable.SableServerFirstTeleportNetworking;
+import qouteall.imm_ptl.core.compat.sable.SableSnapshotProtocol;
 import qouteall.imm_ptl.core.network.ImmPtlNetworkConfig;
 import qouteall.imm_ptl.core.network.ImmPtlNetworking;
 import qouteall.imm_ptl.core.network.PacketRedirection;
@@ -15,6 +16,10 @@ public class Payloads {
     @SubscribeEvent
     public static void register(final RegisterPayloadHandlersEvent event) {
         final PayloadRegistrar registrar = event.registrar(IPModEntry.MODID);
+
+        // Optional capability negotiation; no packet is sent and older peers need not register it.
+        event.registrar("1").optional().playBidirectional(
+            SableSnapshotProtocol.Capability.TYPE, SableSnapshotProtocol.Capability.CODEC, (p, c) -> {});
 
         // Configuration
         registrar.configurationToClient(ImmPtlNetworkConfig.S2CConfigStartPacket.TYPE,

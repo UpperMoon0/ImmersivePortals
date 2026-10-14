@@ -104,6 +104,85 @@ class SableRiderRejectionContractTest {
             "Network cleanup must not suppress physical seam-entry/reversal state updates");
     }
 
+    @Test void approachReceivesTheImmediatePassengerThroughoutTheRetainedGraph() throws Exception {
+        MethodNode request = method(readClass(
+            "qouteall/imm_ptl/core/compat/sable/SableDimensionStackCompat.class"
+        ), "beforePlayerPortalTeleport");
+        MethodInsnNode guard = invocation(request, "isRiddenBodyApproachingPortal");
+        AbstractInsnNode cursor = previousExecutable(guard);
+        assertLocal(cursor, Opcodes.ALOAD, 1); // portal
+        VarInsnNode vehicleLoad = (VarInsnNode) previousExecutable(cursor);
+        VarInsnNode passengerLoad = (VarInsnNode) previousExecutable(vehicleLoad);
+        assertEquals(Opcodes.ALOAD, vehicleLoad.getOpcode());
+        assertEquals(Opcodes.ALOAD, passengerLoad.getOpcode());
+        assertNotEquals(vehicleLoad.var, passengerLoad.var);
+        int initialPassenger = -1;
+        int nestedPassenger = -1;
+        int vehicleReads = 0;
+        for (var instruction : request.instructions) {
+            if (instruction instanceof VarInsnNode store && store.getOpcode() == Opcodes.ASTORE
+                && store.var == passengerLoad.var) {
+                var source = previousExecutable(store);
+                assertInstanceOf(VarInsnNode.class, source);
+                assertEquals(Opcodes.ALOAD, source.getOpcode());
+                int loaded = ((VarInsnNode) source).var;
+                if (loaded == 0) initialPassenger = request.instructions.indexOf(store);
+                else if (loaded == vehicleLoad.var) nestedPassenger = request.instructions.indexOf(store);
+                else fail("Passenger must be the player initially or the previous vehicle when ascending");
+            }
+            if (instruction instanceof MethodInsnNode call && call.name.equals("getVehicle")) {
+                assertLocal(previousExecutable(call), Opcodes.ALOAD, passengerLoad.var);
+                assertLocal(nextExecutable(call), Opcodes.ASTORE, vehicleLoad.var);
+                vehicleReads++;
+            }
+        }
+        assertEquals(2, vehicleReads, "Initial and nested mount lookups must use the current passenger");
+        assertTrue(initialPassenger >= 0 && initialPassenger < request.instructions.indexOf(guard));
+        assertTrue(nestedPassenger > request.instructions.indexOf(guard),
+            "Ascending a nested graph must carry its immediate passenger into the next iteration");
+    }
+
+    @Test void angularAndPortalMotionUseTheSameAuthoritativeMountedEye() throws Exception {
+        MethodNode guard = method(readClass(
+            "qouteall/imm_ptl/core/compat/sable/SableDimensionStackCompat.class"
+        ), "isRiddenBodyApproachingPortal");
+        MethodInsnNode attachment = invocation(guard, "getPassengerRidingPosition");
+        assertLocal(previousExecutable(attachment), Opcodes.ALOAD, 1); // passenger
+        assertLocal(previousExecutable(previousExecutable(attachment)), Opcodes.ALOAD, 2); // vehicle
+        MethodInsnNode eye = invocation(guard, "getEyeOffset");
+        assertLocal(previousExecutable(eye), Opcodes.ALOAD, 1);
+        assertTrue(guard.instructions.indexOf(attachment) < guard.instructions.indexOf(eye));
+        assertCall(nextExecutable(eye), "add");
+        assertCall(nextExecutable(nextExecutable(eye)), "toJOML");
+        assertCall(nextExecutable(nextExecutable(nextExecutable(eye))), "transformPosition");
+        VarInsnNode worldEyeStore = (VarInsnNode) nextExecutable(nextExecutable(nextExecutable(nextExecutable(eye))));
+        assertEquals(Opcodes.ASTORE, worldEyeStore.getOpcode());
+        MethodInsnNode portalPoint = invocation(guard, "worldPosToPortalLocalPos");
+        assertCall(previousExecutable(portalPoint), "toMojang");
+        assertLocal(previousExecutable(previousExecutable(portalPoint)), Opcodes.ALOAD, worldEyeStore.var);
+        // The same transformed eye starts the COM-offset subtraction, after source-plane motion.
+        MethodInsnNode center = invocation(guard, "getWorldCenterOfMass");
+        AbstractInsnNode cursor = previousExecutable(center);
+        assertCall(cursor, "logicalPose");
+        cursor = previousExecutable(previousExecutable(previousExecutable(cursor)));
+        assertLocal(cursor, Opcodes.ALOAD, worldEyeStore.var);
+        for (var instruction : guard.instructions) {
+            if (instruction instanceof MethodInsnNode call) {
+                assertNotEquals("position", call.name, "Seat origin/client position must not replace the mounted eye");
+            }
+        }
+    }
+
+    private static MethodInsnNode invocation(MethodNode method, String name) {
+        return (MethodInsnNode) method.instructions.get(invocationIndex(method, name));
+    }
+
+    private static void assertLocal(AbstractInsnNode instruction, int opcode, int local) {
+        assertInstanceOf(VarInsnNode.class, instruction);
+        assertEquals(opcode, instruction.getOpcode());
+        assertEquals(local, ((VarInsnNode) instruction).var);
+    }
+
     private static void assertPlayerLoad(AbstractInsnNode instruction) {
         assertInstanceOf(VarInsnNode.class, instruction);
         assertEquals(Opcodes.ALOAD, instruction.getOpcode());

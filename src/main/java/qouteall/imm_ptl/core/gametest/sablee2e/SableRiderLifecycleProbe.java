@@ -103,6 +103,12 @@ final class SableRiderLifecycleProbe {
 
     static void cleanupAndDisconnect(Minecraft minecraft, Portal portal, Entity seat) {
         LocalPlayer player = minecraft.player;
+        // Match the leave-world lifecycle: close the connection before clearing worlds or
+        // registries, so ordinary in-flight packets cannot decode against torn-down state.
+        var connection = minecraft.getConnection().getConnection();
+        SableDimensionStackIntegrationMarkers.acknowledge("movement-disconnect-started");
+        connection.disconnect(net.minecraft.network.chat.Component.translatable("multiplayer.status.quitting"));
+        require(!connection.isConnected(), "Native connection remained open before cleanup");
         // ClientCleanupEvent is the production hook used by conventional travel and disconnect.
         beginDetached(player, portal, seat);
         NeoForge.EVENT_BUS.post(new ClientCleanupEvent());

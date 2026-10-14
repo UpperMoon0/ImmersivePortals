@@ -6,6 +6,19 @@ and this project tries to adhere to [Semantic Versioning](https://semver.org/spe
 
 ## [Unreleased Changes]
 
+## [6.1.3] - Unreleased
+
+### Fixed
+
+- Preserve explicit dimension provenance for Sable UDP snapshots and interpolation-clock updates across dimension-packet ordering; negotiate native UDP support and retain unchanged-wire TCP fallback with older peers.
+- Evaluate retained Sable rider portal approach at the authoritative mounted eye rather than the seat origin, so roll/pitch does not incorrectly reject inward eye motion or authorize outward eye motion. Keep the existing stale-request guards.
+
+### Verification
+
+- Add angular point-velocity regressions, compiled production mount-traversal/anchor contracts, and a native rigid-body guard GameTest using actual direct and nested mounts. The native guard test is not an end-to-end rolling-flight or network-handoff certification.
+
+See [`changelog/6.1.3.md`](changelog/6.1.3.md) for patch scope and verification limits.
+
 ## [6.1.2] - Unreleased
 
 ### Fixed
@@ -187,6 +200,7 @@ See [`changelog/6.0.9.md`](changelog/6.0.9.md) for the complete release notes.
 - Crash with SecurityCraft
 
 [Unreleased Changes]: https://github.com/UpperMoon0/ImmersivePortals/compare/v6.1.1...HEAD
+[6.1.3]: changelog/6.1.3.md
 [6.1.2]: https://github.com/UpperMoon0/ImmersivePortals/pull/30
 [6.1.1]: https://github.com/UpperMoon0/ImmersivePortals/compare/v6.1.0...v6.1.1
 [6.1.0]: https://github.com/UpperMoon0/ImmersivePortals/compare/v6.0.13...v6.1.0

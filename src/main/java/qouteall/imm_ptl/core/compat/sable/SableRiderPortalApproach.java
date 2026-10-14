@@ -23,7 +23,7 @@ final class SableRiderPortalApproach {
         double normalX, double normalY, double normalZ,
         double portalPointXPerTick, double portalPointYPerTick, double portalPointZPerTick
     ) {
-        // Global velocity at the retained vehicle: v(COM) + angularVelocity x offset(COM).
+        // Global velocity at the authoritative mounted eye: v(COM) + angularVelocity x offset(COM).
         // IP's portal point displacement is blocks/tick; native Sable velocity is m/s.
         double pointX = linearX + angularY * offsetZ - angularZ * offsetY - 20 * portalPointXPerTick;
         double pointY = linearY + angularZ * offsetX - angularX * offsetZ - 20 * portalPointYPerTick;

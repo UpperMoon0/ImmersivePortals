@@ -48,6 +48,10 @@ final class SableDimensionStackIntegrationMarkers {
         write("client-handoff-grace.txt", detail, null);
     }
 
+    static void snapshotTransport(String detail) {
+        write("client-snapshot-transport.txt", detail, null);
+    }
+
     static void acknowledge(String phase) {
         write("client-" + phase + ".txt", phase, null);
     }
