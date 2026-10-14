@@ -20,4 +20,64 @@ public final class SableCollisionIntegrationGameTest {
         }
         SableCollisionIntegrationGameTestImpl.collisionWrappersComposeExactlyOnce(helper);
     }
+    @PrefixGameTestTemplate(false)
+    @GameTest(template = "physicstest.gravity", timeoutTicks = 20)
+    public static void firstItemMoveThroughPortalHole(GameTestHelper helper) {
+        if (!ModList.get().isLoaded("sable")) {
+            helper.fail("Sable is required for this GameTest");
+            return;
+        }
+        SableCollisionIntegrationGameTestImpl.firstItemMoveThroughPortalHole(helper);
+    }
+
+    @PrefixGameTestTemplate(false)
+    @GameTest(template = "physicstest.gravity", timeoutTicks = 20)
+    public static void bypassedMovementHasFreshState(GameTestHelper helper) {
+        if (!ModList.get().isLoaded("sable")) {
+            helper.fail("Sable is required for this GameTest");
+            return;
+        }
+        SableCollisionIntegrationGameTestImpl.bypassedMovementHasFreshState(helper);
+    }
+
+    @PrefixGameTestTemplate(false)
+    @GameTest(template = "physicstest.gravity", timeoutTicks = 20)
+    public static void recursiveTerrainQueriesAreNotPortalMoves(GameTestHelper helper) {
+        if (!ModList.get().isLoaded("sable")) {
+            helper.fail("Sable is required for this GameTest");
+            return;
+        }
+        SableCollisionIntegrationGameTestImpl.recursiveTerrainQueriesAreNotPortalMoves(helper);
+    }
+
+    @PrefixGameTestTemplate(false)
+    @GameTest(template = "physicstest.gravity", timeoutTicks = 20)
+    public static void nestedMoveDoesNotPublishOuterCollision(GameTestHelper helper) {
+        if (!ModList.get().isLoaded("sable")) {
+            helper.fail("Sable is required for this GameTest");
+            return;
+        }
+        SableCollisionIntegrationGameTestImpl.nestedMoveDoesNotPublishOuterCollision(helper);
+    }
+
+    @PrefixGameTestTemplate(false)
+    @GameTest(template = "physicstest.gravity", timeoutTicks = 20)
+    public static void nativeShipContactSurvivesPortalCollision(GameTestHelper helper) {
+        if (!ModList.get().isLoaded("sable")) {
+            helper.fail("Sable is required for this GameTest");
+            return;
+        }
+        SableCollisionIntegrationGameTestImpl.nativeShipContactSurvivesPortalCollision(helper);
+    }
+
+    @PrefixGameTestTemplate(false)
+    @GameTest(template = "physicstest.gravity", timeoutTicks = 20)
+    public static void guardedLivingMovementHasSafeState(GameTestHelper helper) {
+        if (!ModList.get().isLoaded("sable")) {
+            helper.fail("Sable is required for this GameTest");
+            return;
+        }
+        SableCollisionIntegrationGameTestImpl.guardedLivingMovementHasSafeState(helper);
+    }
+
 }

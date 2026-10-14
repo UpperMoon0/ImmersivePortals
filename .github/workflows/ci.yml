@@ -85,6 +85,93 @@ jobs:
             build/test-results/**
             runs/gameTestServer/logs/**
 
+  # Additive ship coverage. Every configured row is mandatory whenever E2E is
+  # selected, including the separately staged optional Aeronautics runtime.
+  sable-ship-flight:
+    name: Sable ship flight (draft) / ${{ matrix.mode }} / ${{ matrix.transport }} / ${{ matrix.ship_size }} / bundled
+    needs: changes
+    if: needs.changes.outputs.e2e == 'true'
+    runs-on: ubuntu-latest
+    # Twelve minutes for a cold dedicated-server startup, twenty for the client,
+    # plus setup, diagnostics, cleanup and always-uploaded artifacts.
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { transport: udp, mode: ships, ship_size: control }
+          - { transport: tcp, mode: ships, ship_size: control }
+          - { transport: udp, mode: ships, ship_size: large }
+          - { transport: tcp, mode: ships, ship_size: large }
+          - { transport: udp, mode: ships-aeronautics, ship_size: control }
+          - { transport: udp, mode: ships-aeronautics, ship_size: large }
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@v6
+      - name: Ensure headless graphics runtime
+        run: |
+          if ! command -v xvfb-run >/dev/null 2>&1 || ! ldconfig -p | grep -F 'libGL.so.1' >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y xvfb libgl1-mesa-dri
+          fi
+      - name: Configure Sable transport
+        env:
+          TRANSPORT: ${{ matrix.transport }}
+          MODE: ${{ matrix.mode }}
+          SHIP_SIZE: ${{ matrix.ship_size }}
+        run: |
+          runtime=run-sable-ship-flight
+          if [[ "$MODE" == ships-aeronautics ]]; then runtime+=-aeronautics; fi
+          if [[ "$SHIP_SIZE" != all ]]; then runtime+="-$SHIP_SIZE"; fi
+          echo "SHIP_RUNTIME_PREFIX=$runtime" >> "$GITHUB_ENV"
+          mkdir -p "$runtime-server/config" "$runtime-client/config"
+          if [[ "$TRANSPORT" == tcp ]]; then
+            cat > "$runtime-server/config/sable-common.toml" <<'EOF'
+          disable_udp_pipeline = true
+          attempt_udp_networking = false
+          EOF
+            cat > "$runtime-client/config/sable-client.toml" <<'EOF'
+          attempt_udp_networking = false
+          EOF
+          else
+            cat > "$runtime-server/config/sable-common.toml" <<'EOF'
+          disable_udp_pipeline = false
+          attempt_udp_networking = true
+          EOF
+            cat > "$runtime-client/config/sable-client.toml" <<'EOF'
+          attempt_udp_networking = true
+          EOF
+          fi
+          cp "$runtime-server/config/sable-common.toml" "$runtime-client/config/sable-common.toml"
+      - run: chmod +x ./gradlew
+      - name: Dedicated complex ship flight and graphical client
+        env:
+          IP_VERIFICATION_NETWORKING: bundled
+          IP_NETWORK_STRESS: 'false'
+        run: python3 tools/verify.py "${{ matrix.mode }}" --ship-size "${{ matrix.ship_size }}"
+      - name: Upload ship flight evidence and diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sable-ship-flight-e2e-${{ matrix.mode }}-${{ matrix.transport }}-${{ matrix.ship_size }}-bundled
+          if-no-files-found: warn
+          path: |
+            build/verification-ships*.json
+            build/sable-ship-flight*-e2e/**
+            ${{ env.SHIP_RUNTIME_PREFIX }}-server/server.properties
+            ${{ env.SHIP_RUNTIME_PREFIX }}-client/options.txt
+            ${{ env.SHIP_RUNTIME_PREFIX }}-server/config/sable-common.toml
+            ${{ env.SHIP_RUNTIME_PREFIX }}-client/config/sable-common.toml
+            ${{ env.SHIP_RUNTIME_PREFIX }}-client/config/sable-client.toml
+            ${{ env.SHIP_RUNTIME_PREFIX }}-server/crash-reports/**
+            ${{ env.SHIP_RUNTIME_PREFIX }}-client/crash-reports/**
+            ${{ env.SHIP_RUNTIME_PREFIX }}-server/logs/**
+            ${{ env.SHIP_RUNTIME_PREFIX }}-client/logs/**
+
   graphical-e2e:
     name: Sable graphical E2E / ${{ matrix.transport }} / ${{ matrix.networking }} / ${{ matrix.network }}
     needs: changes
@@ -228,7 +315,7 @@ jobs:
   required:
     name: Required verification
     if: always()
-    needs: [changes, core, graphical-e2e, portal-visual, real-pack-visual]
+    needs: [changes, core, graphical-e2e, sable-ship-flight, portal-visual, real-pack-visual]
     runs-on: ubuntu-latest
     steps:
       - name: Enforce all selected checks
@@ -236,6 +323,7 @@ jobs:
           SELECT: ${{ needs.changes.result }}
           CORE: ${{ needs.core.result }}
           HEAVY: ${{ needs.graphical-e2e.result }}
+          SHIPS: ${{ needs.sable-ship-flight.result }}
           VISUAL: ${{ needs.portal-visual.result }}
           REAL_PACKS: ${{ needs.real-pack-visual.result }}
           REQUIRED: ${{ needs.changes.outputs.e2e }}
@@ -243,7 +331,7 @@ jobs:
           [[ "$SELECT" == success && "$CORE" == success ]]
           [[ "$REQUIRED" == true || "$REQUIRED" == false ]]
           if [[ "$REQUIRED" == true ]]; then
-            [[ "$HEAVY" == success && "$VISUAL" == success && "$REAL_PACKS" == success ]]
+            [[ "$HEAVY" == success && "$SHIPS" == success && "$VISUAL" == success && "$REAL_PACKS" == success ]]
           else
-            [[ "$HEAVY" == skipped && "$VISUAL" == skipped && "$REAL_PACKS" == skipped ]]
+            [[ "$HEAVY" == skipped && "$SHIPS" == skipped && "$VISUAL" == skipped && "$REAL_PACKS" == skipped ]]
           fi

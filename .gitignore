@@ -54,3 +54,6 @@ src/main/resources/immersive_portals.timestamp
 /run-sable-e2e-client/
 
 /tools/__pycache__/
+
+/run-sable-ship-flight*-server/
+/run-sable-ship-flight*-client/

@@ -3,6 +3,7 @@ package qouteall.imm_ptl.core.collision;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.phys.Vec3;
+import org.jetbrains.annotations.Nullable;
 import org.slf4j.Logger;
 import qouteall.imm_ptl.core.IPGlobal;
 import qouteall.imm_ptl.core.ducks.IEEntity;
@@ -21,35 +22,14 @@ public final class ImmPtlCollisionHooks {
         Function<Vec3, Vec3> vanillaCollision,
         Logger logger
     ) {
-        if (!IPGlobal.enableServerCollision) {
-            if (!entity.level().isClientSide()) {
-                if (entity instanceof Player) {
-                    return attemptedMove;
-                }
-                else {
-                    return Vec3.ZERO;
-                }
-            }
-        }
+        Vec3 override = getMovementOverride(entity, attemptedMove, logger);
+        if (override != null) return override;
 
-        // Factorio Reactive Sleeping Pattern: stationary entities bypass cross-portal collision checks
+        // Stationary entities bypass cross-portal collision checks.
         if (attemptedMove.lengthSqr() < 1e-6) {
             return vanillaCollision.apply(attemptedMove);
         }
-        
-        if (attemptedMove.lengthSqr() > 60 * 60) {
-            // avoid loading too many chunks in collision calculation and lag the server
-            if (LOG_COUNTER.tryDecrement()) {
-                logger.error(
-                    "[ImmPtl] Skipping collision calculation because entity moves too fast {} {} {}",
-                    entity, attemptedMove, entity.level().getGameTime(),
-                    new Throwable()
-                );
-            }
-            
-            return Vec3.ZERO;
-        }
-        
+
         PortalCollisionHandler portalCollisionHandler =
             ((IEEntity) entity).ip_getPortalCollisionHandler();
         
@@ -73,5 +53,26 @@ public final class ImmPtlCollisionHooks {
         }
         
         return result;
+    }
+
+    /**
+     * Movement policies which deliberately skip every collision solver. Sable's
+     * native solver must not run before these guards (especially for huge moves).
+     * Null means that normal collision composition should proceed.
+     */
+    public static @Nullable Vec3 getMovementOverride(Entity entity, Vec3 attemptedMove, Logger logger) {
+        if (!IPGlobal.enableServerCollision && !entity.level().isClientSide()) {
+            return entity instanceof Player ? attemptedMove : Vec3.ZERO;
+        }
+        if (attemptedMove.lengthSqr() > 60 * 60) {
+            if (LOG_COUNTER.tryDecrement()) {
+                logger.error(
+                    "[ImmPtl] Skipping collision calculation because entity moves too fast {} {} {}",
+                    entity, attemptedMove, entity.level().getGameTime(), new Throwable()
+                );
+            }
+            return Vec3.ZERO;
+        }
+        return null;
     }
 }

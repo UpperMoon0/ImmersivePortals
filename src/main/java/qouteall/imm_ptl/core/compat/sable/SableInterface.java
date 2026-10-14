@@ -2,12 +2,16 @@ package qouteall.imm_ptl.core.compat.sable;
 
 import dev.ryanhcode.sable.Sable;
 import net.minecraft.core.SectionPos;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.Vec3;
+import org.jetbrains.annotations.Nullable;
 import qouteall.imm_ptl.core.portal.Portal;
+
+import java.util.List;
 
 /**
  * Keeps Sable references behind an optional compatibility boundary.
@@ -20,6 +24,14 @@ import qouteall.imm_ptl.core.portal.Portal;
  */
 public class SableInterface {
     public static class Invoker {
+        /**
+         * Null keeps ordinary IP chunk tracking. An empty list still owns the plot's
+         * recipient selection: hidden plot coordinates must never select world watchers.
+         */
+        public @Nullable List<ServerPlayer> getPlotChunkBroadcastPlayers(ServerLevel level, ChunkPos chunkPos) {
+            return null;
+        }
+
         public Vec3 getEntityTrackingPosition(Level level, Vec3 storedPosition) {
             return storedPosition;
         }
@@ -55,6 +67,23 @@ public class SableInterface {
     public static Invoker invoker = new Invoker();
 
     public static class OnSablePresent extends Invoker {
+        public OnSablePresent() {
+            SableDimensionStackCompat.initAnimatedRiderWitnesses();
+        }
+
+        @Override
+        public @Nullable List<ServerPlayer> getPlotChunkBroadcastPlayers(ServerLevel level, ChunkPos chunkPos) {
+            dev.ryanhcode.sable.api.sublevel.SubLevelContainer container =
+                dev.ryanhcode.sable.api.sublevel.SubLevelContainer.getContainer(level);
+            if (container == null || !container.inBounds(chunkPos)) return null;
+
+            // ChunkHolder's broadcastChanges is inherited by Sable's PlotChunkHolder.
+            // IP replaces its PlayerProvider call, bypassing Sable's ChunkMap hook, so
+            // restore the plot's actual tracking set here. Sable resolves these UUIDs
+            // through the server PlayerList, including observers in other dimensions.
+            return container.getPlayersTracking(chunkPos);
+        }
+
         @Override
         public boolean isRetainedVehicle(Entity vehicle) {
             return vehicle != null && Sable.HELPER.getContaining(vehicle) != null

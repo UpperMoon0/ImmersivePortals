@@ -57,7 +57,9 @@ public abstract class MixinServerTeleportationManager_SableRiderCompat {
             return;
         }
 
-        manager.forceTeleportPlayer(player, dimensionBefore, player.position(), true);
+        // dimensionBefore came from the client and can predate a completed body migration.
+        // Correct to current server ownership without moving the retained seat independently.
+        manager.forceTeleportPlayer(player, player.serverLevel().dimension(), player.position(), true);
         ci.cancel();
     }
 

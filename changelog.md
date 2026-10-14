@@ -6,6 +6,23 @@ and this project tries to adhere to [Semantic Versioning](https://semver.org/spe
 
 ## [Unreleased Changes]
 
+## [6.1.2] - Unreleased
+
+### Fixed
+
+- Synchronize Create machinery and block updates through the actual Sable plot watcher list.
+- Preserve whole-ship and retained-rider continuity while rejecting stale reverse-transfer requests; cover bounded animated-portal and exact-plane crossings.
+- Restore complete occupied ship boundary meshes and prevent stale terrain-graph callbacks during dimension cleanup.
+- Preserve fresh native Sable collision state, inherited motion and nested-move composition around portal terrain collision.
+
+### Changed
+
+- Add genuinely assembled multi-chunk ships, working machinery and cargo, repeated ordinary/stack crossings, and vertical broadside outbound/return coverage over UDP and TCP.
+- Add pinned real Aeronautics propulsion lanes and strict full-hull, rider, cargo, kinetic and framebuffer evidence.
+- Require all six ship lanes in the 47-job CI/release contract without weakening existing renderer/network checks.
+
+See [`changelog/6.1.2.md`](changelog/6.1.2.md) for patch notes and explicit compatibility limits.
+
 ## [6.1.1] - 2026-10-13
 
 ### Fixed
@@ -169,7 +186,10 @@ See [`changelog/6.0.9.md`](changelog/6.0.9.md) for the complete release notes.
 - Iris compatibility is not fully functional
 - Crash with SecurityCraft
 
-[Unreleased Changes]: https://github.com/UpperMoon0/ImmersivePortals/compare/v6.0.13...HEAD
+[Unreleased Changes]: https://github.com/UpperMoon0/ImmersivePortals/compare/v6.1.1...HEAD
+[6.1.2]: https://github.com/UpperMoon0/ImmersivePortals/pull/30
+[6.1.1]: https://github.com/UpperMoon0/ImmersivePortals/compare/v6.1.0...v6.1.1
+[6.1.0]: https://github.com/UpperMoon0/ImmersivePortals/compare/v6.0.13...v6.1.0
 [6.0.13]: https://github.com/UpperMoon0/ImmersivePortals/compare/v6.0.12...v6.0.13
 [6.0.12]: https://github.com/UpperMoon0/ImmersivePortals/compare/v6.0.11...v6.0.12
 [6.0.11]: https://github.com/UpperMoon0/ImmersivePortals/compare/v6.0.10...v6.0.11

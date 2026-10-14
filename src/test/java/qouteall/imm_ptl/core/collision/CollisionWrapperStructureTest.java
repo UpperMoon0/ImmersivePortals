@@ -21,9 +21,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * Structural verification of the collision wrapper wiring on the transformed
  * classes actually shipped in the jar. The base Entity wrapper and the Sable
  * compat wrapper both WrapOperation the same {@code Entity.move -> collide}
- * invocation; this test pins the contract that with Sable present only the
- * compat wrapper invokes the shared hook, so every movement is processed
- * exactly once.
+ * invocation. With Sable present the outer operation preserves its native
+ * redirect; the shared hook wraps only the ensuing terrain solve.
  */
 class CollisionWrapperStructureTest {
 
@@ -106,12 +105,56 @@ class CollisionWrapperStructureTest {
         MethodNode wrapper = method(
             load("qouteall/imm_ptl/core/compat/mixin/sable/MixinEntity_SableCollisionCompat"),
             "immersivePortals$wrapCollisionForSable");
-        assertEquals(1, countHookInvocations(wrapper),
-            "compat wrapper must invoke the hook exactly once");
+        assertEquals(0, countHookInvocations(wrapper),
+            "outer wrapper must preserve Sable's redirect, not bypass its native state initialization");
+        assertEquals(1, calls(wrapper, "com/llamalad7/mixinextras/injector/wrapoperation/Operation", "call"));
+        assertTrue(wrapper.tryCatchBlocks.stream().anyMatch(block -> block.type == null),
+            "outer scope must be restored on exceptional exits");
+        ClassNode compat = load("qouteall/imm_ptl/core/compat/mixin/sable/MixinEntity_SableCollisionCompat");
+        MethodNode terrain = method(compat, "immersivePortals$collideSableTerrain");
+        assertEquals(1, countHookInvocations(terrain), "only the post-native terrain solve owns the IP hook");
+        AnnotationNode wrapMethod = terrain.visibleAnnotations.stream()
+            .filter(annotation -> annotation.desc.endsWith("/WrapMethod;")).findFirst().orElseThrow();
+        assertEquals(List.of("collide"), annotationValue(wrapMethod, "method"));
+        assertTrue(terrain.tryCatchBlocks.stream().anyMatch(block -> block.type == null),
+            "outer native state must be restored after a nested move or exception");
+        for (String field : List.of("immersivePortals$composingSableCollision", "immersivePortals$previousSableCollision", "motion")) {
+            assertTrue(referencesField(terrain, field), "missing publication/consumption guard " + field);
+        }
+        assertAccessor(compat, "immersivePortals$setSableCollisionInfo", "sable$collisionInfo");
+        assertAccessor(compat, "immersivePortals$setSableTrackingSubLevel", "sable$trackingSubLevel");
         assertEquals(1, wrapOperationRequire(wrapper),
             "compat wrapper must fail fast if Sable's collision target changes");
         assertFalse(referencesSableFlag(wrapper),
             "compat wrapper application is already gated by IPCompatMixinPlugin");
+    }
+
+    private static long calls(MethodNode method, String owner, String name) {
+        long count = 0;
+        for (AbstractInsnNode instruction : method.instructions) {
+            if (instruction instanceof MethodInsnNode call && call.owner.equals(owner) && call.name.equals(name)) count++;
+        }
+        return count;
+    }
+
+    private static boolean referencesField(MethodNode method, String name) {
+        for (AbstractInsnNode instruction : method.instructions) {
+            if (instruction instanceof FieldInsnNode field && field.name.equals(name)) return true;
+        }
+        return false;
+    }
+
+    private static Object annotationValue(AnnotationNode annotation, String key) {
+        int index = annotation.values.indexOf(key);
+        assertTrue(index >= 0, "missing annotation property " + key);
+        return annotation.values.get(index + 1);
+    }
+
+    private static void assertAccessor(ClassNode owner, String methodName, String field) {
+        AnnotationNode accessor = method(owner, methodName).visibleAnnotations.stream()
+            .filter(annotation -> annotation.desc.endsWith("/Accessor;")).findFirst().orElseThrow();
+        assertEquals(field, annotationValue(accessor, "value"));
+        assertEquals(false, annotationValue(accessor, "remap"));
     }
 
     @Test

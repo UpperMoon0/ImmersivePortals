@@ -32,6 +32,45 @@ class ReleaseEvidenceTest(unittest.TestCase):
     def test_complete_exact_commit_main_ci_is_eligible(self):
         self.assertEqual(self.validate()["id"], 456)
 
+    def test_separate_workflow_policy_keeps_exact_tag_identity_and_rejects_old_coverage(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            target = root / "tag"
+            policy = target / ".verification-policy"
+            (target / "tools").mkdir(parents=True)
+            (policy / "tools").mkdir(parents=True)
+            current_jobs = evidence.required_jobs()
+            old_jobs = [name for name in current_jobs if not name.startswith("Sable ship flight")]
+            self.assertEqual((len(current_jobs), len(old_jobs)), (47, 41))
+            (target / "tools/ci-coverage.json").write_text(json.dumps(old_jobs))
+            (policy / "tools/ci-coverage.json").write_text(json.dumps(current_jobs))
+            for jobs, expected in ((self.jobs, dict(reuse="true", run_id="123", run_attempt="2", artifact_id="456")),
+                                   ([job for job in self.jobs if job["name"] in old_jobs], {"reuse": "false"})):
+                with patch.object(evidence, "ROOT", policy), \
+                     patch.object(evidence, "git_commit", return_value="b" * 40) as policy_commit, \
+                     patch.object(evidence, "api", return_value=self.run), \
+                     patch.object(evidence, "pages", side_effect=[jobs, self.artifacts]), \
+                     patch.object(evidence, "output") as output, \
+                     patch.dict(os.environ, GITHUB_REPOSITORY=self.repo), \
+                     patch("sys.argv", ["release_evidence.py", "resolve", "--run-id", "123", "--target-commit", self.commit]):
+                    evidence.main()
+                    output.assert_called_once_with(expected)
+                    policy_commit.assert_not_called()
+
+    def test_resolver_explicit_target_sha_is_full_and_default_remains_checkout_commit(self):
+        for target in ("", "main", "a" * 39, "a" * 41, "A" * 40):
+            with patch("sys.argv", ["release_evidence.py", "resolve", "--target-commit", target]), \
+                 patch.object(evidence, "resolve") as resolve, patch("sys.stderr"):
+                with self.assertRaises(SystemExit):
+                    evidence.main()
+                resolve.assert_not_called()
+        with patch("sys.argv", ["release_evidence.py", "resolve"]), \
+             patch.object(evidence, "git_commit", return_value=self.commit), \
+             patch.object(evidence, "resolve", return_value={"reuse": "false"}) as resolve, \
+             patch.object(evidence, "output"), patch.dict(os.environ, GITHUB_REPOSITORY=self.repo):
+            evidence.main()
+            resolve.assert_called_once_with(self.repo, self.commit, "")
+
     def test_ref_suffixed_main_ci_is_eligible_for_real_resolution(self):
         # Actions REST reports workflow_run.path with this suffix.
         self.run["path"] = ".github/workflows/ci.yml@main"
@@ -189,12 +228,16 @@ class ReleaseEvidenceTest(unittest.TestCase):
             for networking in ("bundled", "4.3.0+5c124ecf19", "4.3.1+7e3d421f19"):
                 expected.append(f"Sable graphical E2E / {transport} / {networking} / normal")
             expected.append(f"Sable graphical E2E / {transport} / 4.3.1+7e3d421f19 / impaired")
+        ships = workflow.split("  sable-ship-flight:\n", 1)[1].split("  graphical-e2e:\n", 1)[0]
+        for flow in re.findall(r"- \{ ([^}]+) \}", ships):
+            row = dict(pair.split(": ", 1) for pair in flow.split(", "))
+            expected.append(f"Sable ship flight (draft) / {row['mode']} / {row['transport']} / {row['ship_size']} / bundled")
         for group in ("portal-visual", "real-pack-visual"):
             block = re.split(r"\n  [a-z][\w-]*:\n", workflow.split(f"\n  {group}:\n", 1)[1], maxsplit=1)[0]
             for flow in re.findall(r"- \{ ([^}]+) \}", block):
                 values = [pair.split(": ", 1)[1] for pair in flow.split(", ")]
                 expected.append(f"{group} ({', '.join(values)}) / visual")
-        self.assertEqual(len(expected), 41)
+        self.assertEqual(len(expected), 47)
         self.assertCountEqual(evidence.required_jobs(), expected)
 
     def test_fresh_release_keeps_every_ci_visual_configuration(self):
@@ -269,15 +312,44 @@ class ReleaseEvidenceTest(unittest.TestCase):
         block = workflow.split("      - name: Enforce reused or fresh coverage\n", 1)[1].split("\n  release:", 1)[0]
         script = "\n".join(line[10:] for line in block.split("        run: |\n", 1)[1].splitlines())
         for reuse in ("true", "false", ""):
-            for values in itertools.product(("success", "skipped", "failure", "cancelled"), repeat=3):
-                env = dict(os.environ, REUSE=reuse, EVIDENCE="success", **dict(zip(("CORE", "E2E", "VISUAL"), values)))
+            for values in itertools.product(("success", "skipped", "failure", "cancelled"), repeat=4):
+                env = dict(os.environ, REUSE=reuse, EVIDENCE="success", **dict(zip(("CORE", "E2E", "SHIPS", "VISUAL"), values)))
                 result = subprocess.run([bash, "-e", "-c", script], env=env, capture_output=True)
                 expected = reuse in ("true", "false") and all(v == ("skipped" if reuse == "true" else "success") for v in values)
                 self.assertEqual(result.returncode == 0, expected, (reuse, values))
-        env = dict(os.environ, EVIDENCE="failure", REUSE="true", CORE="skipped", E2E="skipped", VISUAL="skipped")
+        env = dict(os.environ, EVIDENCE="failure", REUSE="true", CORE="skipped", E2E="skipped", SHIPS="skipped", VISUAL="skipped")
         self.assertNotEqual(subprocess.run([bash, "-e", "-c", script], env=env).returncode, 0)
         publish = workflow.split("\n  release:\n", 1)[1]
         self.assertIn("!cancelled() && needs.evidence.result == 'success' && needs.verified.result == 'success'", publish)
+
+    def test_fresh_release_requires_all_six_ship_rows_or_complete_reused_evidence(self):
+        ci = (evidence.ROOT / ".github/workflows/ci.yml").read_text()
+        release = (evidence.ROOT / ".github/workflows/release.yml").read_text()
+        def ships(text):
+            return text.split("\n  sable-ship-flight:\n", 1)[1].split("\n  graphical-e2e:\n", 1)[0]
+        ci_job, release_job = ships(ci), ships(release)
+        rows = lambda job: re.findall(r"- \{ ([^}]+) \}", job)
+        self.assertEqual(len(rows(release_job)), 6)
+        self.assertCountEqual(rows(ci_job), rows(release_job))
+        self.assertIn("needs: evidence", release_job)
+        self.assertIn("if: needs.evidence.outputs.reuse != 'true'", release_job)
+        self.assertIn("ref: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || github.ref }}", release_job)
+        self.assertIn("fail-fast: false", release_job)
+        self.assertNotIn("continue-on-error", release_job)
+        self.assertIn("if: always()", release_job)
+        self.assertIn('python3 tools/verify.py "${{ matrix.mode }}" --ship-size "${{ matrix.ship_size }}"', release_job)
+        configure = lambda job: job.split("      - name: Configure Sable transport\n", 1)[1].split(
+            "      - run: chmod +x ./gradlew\n", 1)[0]
+        self.assertEqual(configure(ci_job), configure(release_job))
+        for path in ("build/verification-ships*.json", "build/sable-ship-flight*-e2e/**",
+                     "${{ env.SHIP_RUNTIME_PREFIX }}-server/server.properties", "${{ env.SHIP_RUNTIME_PREFIX }}-client/options.txt",
+                     "${{ env.SHIP_RUNTIME_PREFIX }}-server/crash-reports/**", "${{ env.SHIP_RUNTIME_PREFIX }}-client/logs/**"):
+            self.assertIn(path, release_job)
+        gate = release.split("\n  verified:\n", 1)[1].split("\n  release:\n", 1)[0]
+        self.assertIn("needs: [evidence, core-verification, graphical-e2e, sable-ship-flight, compatibility]", gate)
+        self.assertIn("SHIPS: ${{ needs.sable-ship-flight.result }}", gate)
+        self.assertIn('"$SHIPS" == success', gate)
+        self.assertIn('"$SHIPS" == skipped', gate)
 
     def test_workflow_provenance_is_bound_to_core_artifact_and_source_run(self):
         ci = (evidence.ROOT / ".github/workflows/ci.yml").read_text()
@@ -292,6 +364,23 @@ class ReleaseEvidenceTest(unittest.TestCase):
         self.assertIn("run-id: ${{ needs.evidence.outputs.run_id }}", release)
         self.assertLess(release.index("python3 tools/release_evidence.py verify-bundle"),
                         release.index("- name: Publish GitHub Release"))
+
+    def test_release_reuse_policy_is_pinned_to_workflow_not_requested_tag(self):
+        release = (evidence.ROOT / ".github/workflows/release.yml").read_text()
+        selection = release.split("  evidence:\n", 1)[1].split("\n  core-verification:\n", 1)[0]
+        policy = selection.split("      - name: Checkout verification policy from the executing workflow\n", 1)[1].split(
+            "      - name: Validate every main CI check and artifact origin\n", 1)[0]
+        self.assertIn("ref: ${{ github.workflow_sha }}", policy)
+        self.assertIn("path: .verification-policy", policy)
+        self.assertIn("tools/release_evidence.py", policy)
+        self.assertIn("tools/ci-coverage.json", policy)
+        self.assertIn("sparse-checkout-cone-mode: false", policy)
+        self.assertIn("ref: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || github.ref }}", selection)
+        self.assertNotIn("working-directory:", selection)
+        self.assertIn('target_commit="$(git rev-parse HEAD)"', selection)
+        self.assertIn("python3 .verification-policy/tools/release_evidence.py resolve", selection)
+        self.assertIn('--target-commit "$target_commit" --run-id "$SOURCE_CI_RUN_ID"', selection)
+        self.assertNotIn("python3 tools/release_evidence.py resolve", selection)
 
 
 if __name__ == "__main__":

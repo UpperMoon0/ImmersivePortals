@@ -43,18 +43,26 @@ jobs:
       - uses: actions/checkout@v6
         with:
           ref: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || github.ref }}
+      - name: Checkout verification policy from the executing workflow
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .verification-policy
+          sparse-checkout: |
+            tools/release_evidence.py
+            tools/ci-coverage.json
+          sparse-checkout-cone-mode: false
       - name: Validate every main CI check and artifact origin
         id: select
         env:
           GH_TOKEN: ${{ github.token }}
           SOURCE_CI_RUN_ID: ${{ inputs.source_ci_run_id }}
         run: |
-          if [[ -f tools/release_evidence.py ]]; then
-            python3 tools/release_evidence.py resolve --run-id "$SOURCE_CI_RUN_ID"
-          else
-            # Older tags have no evidence contract; always verify them afresh.
-            echo 'reuse=false' >> "$GITHUB_OUTPUT"
-          fi
+          # The tag identifies the tested artifact, not the acceptance policy.
+          # An older tag must not downgrade this workflow's required matrix.
+          target_commit="$(git rev-parse HEAD)"
+          python3 .verification-policy/tools/release_evidence.py resolve \
+            --target-commit "$target_commit" --run-id "$SOURCE_CI_RUN_ID"
 
   core-verification:
     name: Core verification
@@ -96,6 +104,95 @@ jobs:
           name: verified-release-jar
           path: build/libs/immersive_portals-*.jar
           if-no-files-found: error
+
+  sable-ship-flight:
+    name: Sable release ship flight / ${{ matrix.mode }} / ${{ matrix.transport }} / ${{ matrix.ship_size }} / bundled
+    needs: evidence
+    if: needs.evidence.outputs.reuse != 'true'
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    # Twelve minutes for a cold dedicated-server startup, twenty for the client,
+    # plus setup, diagnostics, cleanup and always-uploaded artifacts.
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { transport: udp, mode: ships, ship_size: control }
+          - { transport: tcp, mode: ships, ship_size: control }
+          - { transport: udp, mode: ships, ship_size: large }
+          - { transport: tcp, mode: ships, ship_size: large }
+          - { transport: udp, mode: ships-aeronautics, ship_size: control }
+          - { transport: udp, mode: ships-aeronautics, ship_size: large }
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || github.ref }}
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@v6
+      - name: Ensure headless graphics runtime
+        run: |
+          if ! command -v xvfb-run >/dev/null 2>&1 || ! ldconfig -p | grep -F 'libGL.so.1' >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y xvfb libgl1-mesa-dri
+          fi
+      - name: Configure Sable transport
+        env:
+          TRANSPORT: ${{ matrix.transport }}
+          MODE: ${{ matrix.mode }}
+          SHIP_SIZE: ${{ matrix.ship_size }}
+        run: |
+          runtime=run-sable-ship-flight
+          if [[ "$MODE" == ships-aeronautics ]]; then runtime+=-aeronautics; fi
+          if [[ "$SHIP_SIZE" != all ]]; then runtime+="-$SHIP_SIZE"; fi
+          echo "SHIP_RUNTIME_PREFIX=$runtime" >> "$GITHUB_ENV"
+          mkdir -p "$runtime-server/config" "$runtime-client/config"
+          if [[ "$TRANSPORT" == tcp ]]; then
+            cat > "$runtime-server/config/sable-common.toml" <<'EOF'
+          disable_udp_pipeline = true
+          attempt_udp_networking = false
+          EOF
+            cat > "$runtime-client/config/sable-client.toml" <<'EOF'
+          attempt_udp_networking = false
+          EOF
+          else
+            cat > "$runtime-server/config/sable-common.toml" <<'EOF'
+          disable_udp_pipeline = false
+          attempt_udp_networking = true
+          EOF
+            cat > "$runtime-client/config/sable-client.toml" <<'EOF'
+          attempt_udp_networking = true
+          EOF
+          fi
+          cp "$runtime-server/config/sable-common.toml" "$runtime-client/config/sable-common.toml"
+      - run: chmod +x ./gradlew
+      - name: Dedicated complex ship flight and graphical client
+        env:
+          IP_VERIFICATION_NETWORKING: bundled
+          IP_NETWORK_STRESS: 'false'
+        run: python3 tools/verify.py "${{ matrix.mode }}" --ship-size "${{ matrix.ship_size }}"
+      - name: Upload ship flight evidence and diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-sable-ship-flight-e2e-${{ matrix.mode }}-${{ matrix.transport }}-${{ matrix.ship_size }}-bundled
+          if-no-files-found: warn
+          path: |
+            build/verification-ships*.json
+            build/sable-ship-flight*-e2e/**
+            ${{ env.SHIP_RUNTIME_PREFIX }}-server/server.properties
+            ${{ env.SHIP_RUNTIME_PREFIX }}-client/options.txt
+            ${{ env.SHIP_RUNTIME_PREFIX }}-server/config/sable-common.toml
+            ${{ env.SHIP_RUNTIME_PREFIX }}-client/config/sable-common.toml
+            ${{ env.SHIP_RUNTIME_PREFIX }}-client/config/sable-client.toml
+            ${{ env.SHIP_RUNTIME_PREFIX }}-server/crash-reports/**
+            ${{ env.SHIP_RUNTIME_PREFIX }}-client/crash-reports/**
+            ${{ env.SHIP_RUNTIME_PREFIX }}-server/logs/**
+            ${{ env.SHIP_RUNTIME_PREFIX }}-client/logs/**
 
   graphical-e2e:
     name: Sable dedicated graphical E2E / ${{ matrix.transport }} / ${{ matrix.networking }} / ${{ matrix.network }}
@@ -228,7 +325,7 @@ jobs:
   verified:
     name: Enforce complete release verification
     if: always()
-    needs: [evidence, core-verification, graphical-e2e, compatibility]
+    needs: [evidence, core-verification, graphical-e2e, sable-ship-flight, compatibility]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions: {}
@@ -239,13 +336,14 @@ jobs:
           REUSE: ${{ needs.evidence.outputs.reuse }}
           CORE: ${{ needs.core-verification.result }}
           E2E: ${{ needs.graphical-e2e.result }}
+          SHIPS: ${{ needs.sable-ship-flight.result }}
           VISUAL: ${{ needs.compatibility.result }}
         run: |
           [[ "$EVIDENCE" == success ]]
           if [[ "$REUSE" == true ]]; then
-            [[ "$CORE" == skipped && "$E2E" == skipped && "$VISUAL" == skipped ]]
+            [[ "$CORE" == skipped && "$E2E" == skipped && "$SHIPS" == skipped && "$VISUAL" == skipped ]]
           else
-            [[ "$REUSE" == false && "$CORE" == success && "$E2E" == success && "$VISUAL" == success ]]
+            [[ "$REUSE" == false && "$CORE" == success && "$E2E" == success && "$SHIPS" == success && "$VISUAL" == success ]]
           fi
 
   release:

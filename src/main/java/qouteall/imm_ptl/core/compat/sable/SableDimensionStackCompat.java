@@ -2,6 +2,8 @@ package qouteall.imm_ptl.core.compat.sable;
 
 import com.mojang.datafixers.util.Pair;
 import com.mojang.logging.LogUtils;
+import de.nick1st.imm_ptl.events.ServerCleanupEvent;
+import de.nick1st.imm_ptl.events.ServerPortalTickEvent;
 import dev.ryanhcode.sable.Sable;
 import dev.ryanhcode.sable.api.SubLevelHelper;
 import dev.ryanhcode.sable.api.entity.EntitySubLevelUtil;
@@ -25,24 +27,34 @@ import net.minecraft.network.protocol.common.ClientboundCustomPayloadPacket;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.server.MinecraftServer;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.entity.EntitySectionStorage;
 import net.minecraft.world.phys.Vec3;
+import net.neoforged.neoforge.common.NeoForge;
+import net.neoforged.neoforge.event.entity.EntityMountEvent;
+import net.neoforged.neoforge.event.entity.player.PlayerEvent;
+import net.neoforged.neoforge.event.tick.ServerTickEvent;
 import org.joml.Quaterniond;
 import org.joml.Vector2i;
 import org.joml.Vector3d;
 import org.joml.Vector3dc;
 import org.slf4j.Logger;
+import qouteall.imm_ptl.core.McHelper;
 import qouteall.imm_ptl.core.compat.mixin.sable.AccessorSubLevel_SablePortalCompat;
 import qouteall.imm_ptl.core.compat.mixin.sable.InvokerSubLevelTrackingSystem_SablePortalCompat;
 import qouteall.imm_ptl.core.ducks.IEServerEntityManager;
 import qouteall.imm_ptl.core.ducks.IEServerWorld;
 import qouteall.imm_ptl.core.network.PacketRedirection;
 import qouteall.imm_ptl.core.portal.Portal;
+import qouteall.imm_ptl.core.portal.PortalExtension;
+import qouteall.imm_ptl.core.portal.PortalState;
+import qouteall.imm_ptl.core.portal.global_portals.GlobalPortalStorage;
 import qouteall.imm_ptl.core.portal.PortalUtils;
 import qouteall.imm_ptl.core.teleportation.ServerTeleportationManager;
+import qouteall.imm_ptl.core.teleportation.TeleportationUtil;
 import qouteall.q_misc_util.my_util.DQuaternion;
 
 import java.util.ArrayList;
@@ -64,8 +76,242 @@ public final class SableDimensionStackCompat {
     private static final Map<UUID, CrossingSample> LAST_SAMPLES = new HashMap<>();
     private static final Map<UUID, ClientHandoff> CLIENT_HANDOFFS = new HashMap<>();
     private static final Map<UUID, HandoffGuard> HANDOFF_GUARDS = new HashMap<>();
+    private static final SableRiderPortalWitnesses ANIMATED_RIDER_CROSSINGS = new SableRiderPortalWitnesses(100);
+    private static final Set<Portal> ANIMATED_PORTALS = new HashSet<>();
+    private static final Map<UUID, PortalState> CAPTURED_ANIMATION_STATES = new HashMap<>();
+    private static final boolean RIDER_WITNESS_DIAGNOSTICS = Boolean.parseBoolean(System.getenv("IP_SABLE_SHIPS"));
+    private static boolean witnessListenersInitialized;
 
     private SableDimensionStackCompat() {}
+
+    static void initAnimatedRiderWitnesses() {
+        if (witnessListenersInitialized) return;
+        witnessListenersInitialized = true;
+        NeoForge.EVENT_BUS.addListener(ServerPortalTickEvent.class, event -> {
+            if (event.portal.animation.isRoughlyRunningAnimation()) {
+                PortalExtension.forClusterPortals(event.portal, ANIMATED_PORTALS::add);
+            }
+        });
+        NeoForge.EVENT_BUS.addListener(ServerTickEvent.Post.class,
+            event -> captureAnimatedRiderCrossings(event.getServer()));
+        NeoForge.EVENT_BUS.addListener(EntityMountEvent.class, event -> {
+            if (event.getEntityMounting() instanceof ServerPlayer player) {
+                Entity mount = event.getEntityBeingMounted();
+                if (mount != null && Sable.HELPER.getContaining(mount) instanceof ServerSubLevel body) {
+                    ClientHandoff handoff = CLIENT_HANDOFFS.get(body.getUniqueId());
+                    // Transactional detach/restore is not a new mount generation. A failed
+                    // transaction may retry its witness; a committed migration clears it below.
+                    if (handoff != null && !handoff.committed) return;
+                }
+                if (RIDER_WITNESS_DIAGNOSTICS) LOGGER.info(
+                    "Sable rider witness mount invalidation: player={} vehicle={} mounting={} tick={}",
+                    player.getUUID(), mount == null ? null : mount.getUUID(), event.isMounting(), player.serverLevel().getGameTime());
+                ANIMATED_RIDER_CROSSINGS.invalidatePlayer(player.getUUID());
+            }
+        });
+        NeoForge.EVENT_BUS.addListener(PlayerEvent.PlayerLoggedOutEvent.class,
+            event -> ANIMATED_RIDER_CROSSINGS.invalidatePlayer(event.getEntity().getUUID()));
+        NeoForge.EVENT_BUS.addListener(ServerCleanupEvent.class, event -> {
+            ANIMATED_RIDER_CROSSINGS.clear();
+            ANIMATED_PORTALS.clear();
+            CAPTURED_ANIMATION_STATES.clear();
+        });
+    }
+
+    private static void captureAnimatedRiderCrossings(MinecraftServer server) {
+        for (ServerLevel level : server.getAllLevels()) {
+            ANIMATED_RIDER_CROSSINGS.expire(level.dimension(), level.getGameTime());
+        }
+        // Observe mount generations even with no animation, so mounting behind a completed
+        // sweep cannot inherit the preceding frame's crossing, including same-seat remounts.
+        for (ServerPlayer player : server.getPlayerList().getPlayers()) {
+            boolean retained = false;
+            for (Entity vehicle = player.getVehicle(); vehicle != null; vehicle = vehicle.getVehicle()) {
+                if (Sable.HELPER.getContaining(vehicle) instanceof ServerSubLevel body
+                    && body.getLevel() == player.serverLevel() && !body.isRemoved()) {
+                    ANIMATED_RIDER_CROSSINGS.observeMount(player.getUUID(), body.getUniqueId(),
+                        vehicle.getUUID(), player.serverLevel().dimension(), player.serverLevel().getGameTime());
+                    retained = true;
+                    break;
+                }
+            }
+            if (!retained) ANIMATED_RIDER_CROSSINGS.invalidatePlayer(player.getUUID());
+        }
+        for (var key : ANIMATED_RIDER_CROSSINGS.keys()) {
+            ServerPlayer player = server.getPlayerList().getPlayer(key.player());
+            if (player == null || !isStoredRiderCrossingApplicable(player, key)) {
+                if (RIDER_WITNESS_DIAGNOSTICS) LOGGER.info("Sable rider witness invalidated: key={} reason={}",
+                    key, player == null ? "offline" : "current rider/portal/aperture no longer applicable");
+                ANIMATED_RIDER_CROSSINGS.invalidate(key);
+            }
+        }
+        // Only animated candidates are registered, and each state is examined once per server
+        // tick, not once per physics substep or once per body. Static portals cost no scan.
+        for (Portal portal : List.copyOf(ANIMATED_PORTALS)) {
+            if (portal.isRemoved() || !portal.animation.isRoughlyRunningAnimation()) {
+                ANIMATED_PORTALS.remove(portal);
+                CAPTURED_ANIMATION_STATES.remove(portal.getUUID());
+                continue;
+            }
+            var before = portal.animation.lastTickAnimatedState;
+            var after = portal.animation.thisTickAnimatedState;
+            if (before == null || after == null
+                || CAPTURED_ANIMATION_STATES.put(portal.getUUID(), after) == after) continue;
+            ServerLevel level = (ServerLevel) portal.level();
+            if (level.getServer() != server || !level.dimension().equals(before.fromWorld)
+                || !level.dimension().equals(after.fromWorld)) continue;
+            for (ServerPlayer player : level.players()) {
+                if (!portal.canTeleportEntity(player)) continue;
+                Entity passenger = player;
+                for (Entity vehicle = passenger.getVehicle(); vehicle != null; vehicle = vehicle.getVehicle()) {
+                    if (Sable.HELPER.getContaining(vehicle) instanceof ServerSubLevel body) {
+                        if (body.getLevel() != level || body.isRemoved()) break;
+                        ClientHandoff handoff = CLIENT_HANDOFFS.get(body.getUniqueId());
+                        if (handoff != null && !handoff.committed) break;
+                        var key = riderWitnessKey(player, body, vehicle, portal);
+                        if (!ANIMATED_RIDER_CROSSINGS.hasStableMount(key, level.getGameTime())) break;
+                        // The mount attachment and eye offset are authoritative; a stale client
+                        // eye position is never evidence. Sable transforms a seated rider by eye.
+                        Vec3 localAnchor = vehicle.getPassengerRidingPosition(passenger)
+                            .add(McHelper.getEyeOffset(passenger));
+                        Vec3 previousAnchor = new Pose3d(body.lastPose()).transformPosition(localAnchor);
+                        Vec3 currentAnchor = body.logicalPose().transformPosition(localAnchor);
+                        Vec3 localBefore = before.worldPosToPortalLocalPos(previousAnchor);
+                        Vec3 localAfter = after.worldPosToPortalLocalPos(currentAnchor);
+                        boolean crossed = portal.getPortalShape().raytracePortalShapeByLocalPos(
+                            after.getThisSideState(), localBefore, localAfter, 0
+                        ) != null;
+                        boolean contactCrossed = ANIMATED_RIDER_CROSSINGS.samplePlaneContact(
+                            key, before, after, level.getGameTime(), localBefore.z, localAfter.z,
+                            SableRiderPortalSweep.planeContactInsideAperture(
+                                portal.getPortalShape(), before, after, localBefore, localAfter));
+                        if (RIDER_WITNESS_DIAGNOSTICS) LOGGER.info(
+                            "Sable rider witness sample: tick={} key={} before={} after={} previousEye={} currentEye={} crossed={} contactCrossed={} contactArmed={}",
+                            level.getGameTime(), key, localBefore, localAfter, previousAnchor, currentAnchor, crossed,
+                            contactCrossed, ANIMATED_RIDER_CROSSINGS.hasPlaneContact(key, level.getGameTime()));
+                        if (crossed || contactCrossed) {
+                            ANIMATED_RIDER_CROSSINGS.record(key, level.getGameTime());
+                        }
+                        break;
+                    }
+                    passenger = vehicle;
+                }
+            }
+        }
+    }
+
+    /** Read-only diagnostics for the dedicated ship probe; absent outside its explicit test mode. */
+    public static Map<String, Object> describeAnimatedRiderWitness(ServerPlayer player, Portal portal) {
+        if (!RIDER_WITNESS_DIAGNOSTICS) return Map.of();
+        Map<String, Object> result = new java.util.LinkedHashMap<>();
+        result.put("tick", player.serverLevel().getGameTime());
+        result.put("portal_id", portal.getUUID().toString());
+        result.put("player_id", player.getUUID().toString());
+        result.put("dimension", player.serverLevel().dimension().location().toString());
+        result.put("destination", portal.getDestDim().location().toString());
+        result.put("portal_origin", diagnosticVector(portal.getOriginPos()));
+        result.put("portal_normal", diagnosticVector(portal.getNormal()));
+        result.put("portal_removed", portal.isRemoved());
+        result.put("portal_allowed", portal.canTeleportEntity(player));
+        result.put("registered_candidate", ANIMATED_PORTALS.contains(portal));
+        result.put("animation_running", portal.animation.isRoughlyRunningAnimation());
+        var before = portal.animation.lastTickAnimatedState;
+        var after = portal.animation.thisTickAnimatedState;
+        result.put("before_state", before == null ? 0 : System.identityHashCode(before));
+        result.put("after_state", after == null ? 0 : System.identityHashCode(after));
+        result.put("after_already_sampled", after != null && CAPTURED_ANIMATION_STATES.get(portal.getUUID()) == after);
+        Entity passenger = player;
+        for (Entity vehicle = player.getVehicle(); vehicle != null; vehicle = vehicle.getVehicle()) {
+            if (Sable.HELPER.getContaining(vehicle) instanceof ServerSubLevel body) {
+                var key = riderWitnessKey(player, body, vehicle, portal);
+                Vec3 localAnchor = vehicle.getPassengerRidingPosition(passenger).add(McHelper.getEyeOffset(passenger));
+                Vec3 previousEye = new Pose3d(body.lastPose()).transformPosition(localAnchor);
+                Vec3 currentEye = body.logicalPose().transformPosition(localAnchor);
+                result.put("body_id", body.getUniqueId().toString());
+                result.put("vehicle_id", vehicle.getUUID().toString());
+                result.put("body_removed", body.isRemoved());
+                result.put("local_eye", diagnosticVector(localAnchor));
+                result.put("previous_world_eye", diagnosticVector(previousEye));
+                result.put("world_eye", diagnosticVector(currentEye));
+                result.put("signed_plane_distance", portal.getDistanceToPlane(currentEye));
+                result.put("stable_mount", ANIMATED_RIDER_CROSSINGS.hasStableMount(key, player.serverLevel().getGameTime()));
+                result.put("stored_witness", ANIMATED_RIDER_CROSSINGS.has(key, player.serverLevel().getGameTime()));
+                result.put("plane_contact_armed", ANIMATED_RIDER_CROSSINGS.hasPlaneContact(key, player.serverLevel().getGameTime()));
+                result.put("currently_applicable", isStoredRiderCrossingApplicable(player, key));
+                ClientHandoff handoff = CLIENT_HANDOFFS.get(body.getUniqueId());
+                result.put("uncommitted_handoff", handoff != null && !handoff.committed);
+                if (before != null && after != null) {
+                    Vec3 localBefore = before.worldPosToPortalLocalPos(previousEye);
+                    Vec3 localAfter = after.worldPosToPortalLocalPos(currentEye);
+                    result.put("before_local_eye", diagnosticVector(localBefore));
+                    result.put("after_local_eye", diagnosticVector(localAfter));
+                    result.put("sample_crosses", portal.getPortalShape().raytracePortalShapeByLocalPos(
+                        after.getThisSideState(), localBefore, localAfter, 0) != null);
+                }
+                break;
+            }
+            passenger = vehicle;
+        }
+        return result;
+    }
+
+    private static List<Double> diagnosticVector(Vec3 vector) {
+        return List.of(vector.x, vector.y, vector.z);
+    }
+
+    private static SableRiderPortalWitnesses.Key riderWitnessKey(
+        ServerPlayer player, ServerSubLevel body, Entity vehicle, Portal portal
+    ) {
+        return new SableRiderPortalWitnesses.Key(
+            player.getUUID(), body.getUniqueId(), vehicle.getUUID(), portal.getUUID(),
+            body.getLevel().dimension(), portal.getDestDim()
+        );
+    }
+
+    private static boolean isStoredRiderCrossingApplicable(
+        ServerPlayer player, SableRiderPortalWitnesses.Key key
+    ) {
+        if (!player.serverLevel().dimension().equals(key.dimension())) return false;
+        Entity candidate = player.serverLevel().getEntity(key.portal());
+        Portal portal = candidate instanceof Portal found ? found : GlobalPortalStorage
+            .getGlobalPortals(player.serverLevel()).stream()
+            .filter(p -> p.getUUID().equals(key.portal())).findFirst().orElse(null);
+        if (portal == null || !portal.getDestDim().equals(key.destinationDimension())) return false;
+        Entity passenger = player;
+        for (Entity vehicle = passenger.getVehicle(); vehicle != null; vehicle = vehicle.getVehicle()) {
+            if (vehicle.getUUID().equals(key.vehicle())
+                && Sable.HELPER.getContaining(vehicle) instanceof ServerSubLevel body
+                && body.getUniqueId().equals(key.body()) && !body.isRemoved()
+                && body.getLevel() == player.serverLevel()) {
+                return isRiderBehindPortalAperture(player, passenger, vehicle, body, portal);
+            }
+            passenger = vehicle;
+        }
+        return false;
+    }
+
+    private static boolean isRiderBehindPortalAperture(
+        ServerPlayer player, Entity passenger, Entity vehicle, ServerSubLevel body, Portal portal
+    ) {
+        if (portal.level() != player.serverLevel() || portal.isRemoved() || !portal.canTeleportEntity(player)) return false;
+        Vec3 eye = body.logicalPose().transformPosition(
+            vehicle.getPassengerRidingPosition(passenger).add(McHelper.getEyeOffset(passenger))
+        );
+        Vec3 local = portal.transformFromWorldToPortalLocal(eye);
+        // A historical crossing cannot override a real return to the source/front side,
+        // or authorize an edited aperture which no longer contains the mounted rider.
+        return portal.getPortalShape().raytracePortalShapeByLocalPos(
+            portal.getThisSideState(), new Vec3(local.x, local.y, PORTAL_ENDPOINT_EPSILON), local, 0
+        ) != null;
+    }
+
+    private static boolean hasAnimatedRiderCrossing(
+        ServerPlayer player, ServerSubLevel body, Entity vehicle, Portal portal
+    ) {
+        var key = riderWitnessKey(player, body, vehicle, portal);
+        return ANIMATED_RIDER_CROSSINGS.has(key, player.serverLevel().getGameTime())
+            && isStoredRiderCrossingApplicable(player, key);
+    }
 
     /** Invoked after each completed Sable native physics substep. */
     public static void afterPhysicsSubstep(ServerLevel level, ServerSubLevelContainer container) {
@@ -159,7 +405,14 @@ public final class SableDimensionStackCompat {
                 if (sourceSubLevel.getLevel() != player.serverLevel()) return false;
                 ServerSubLevelContainer sourceContainer = SubLevelContainer.getContainer(player.serverLevel());
                 if (sourceContainer == null) return false;
-                if (CLIENT_HANDOFFS.containsKey(sourceSubLevel.getUniqueId())) return true;
+                // Only incomplete staging blocks a new transaction. Committed network cleanup
+                // must not suppress a genuine immediate return, but it never authorizes an
+                // independent player/seat move: every request below needs authoritative evidence
+                // and must execute the complete body migration.
+                ClientHandoff pendingHandoff = CLIENT_HANDOFFS.get(sourceSubLevel.getUniqueId());
+                if (pendingHandoff != null && !pendingHandoff.committed) return false;
+                if (!isRiddenBodyApproachingPortal(sourceSubLevel, vehicle, portal)
+                    && !hasAnimatedRiderCrossing(player, sourceSubLevel, vehicle, portal)) return false;
                 return migrateSubLevel(
                     sourceContainer, sourceSubLevel, portal, new Pose3d(sourceSubLevel.lastPose())
                 ) != null;
@@ -167,6 +420,45 @@ public final class SableDimensionStackCompat {
             vehicle = vehicle.getVehicle();
         }
         return true;
+    }
+
+    private static boolean isRiddenBodyApproachingPortal(
+        ServerSubLevel body, Entity retainedVehicle, Portal portal
+    ) {
+        if (portal.level() != body.getLevel()) return false;
+        RigidBodyHandle handle = RigidBodyHandle.of(body);
+        if (handle == null || !handle.isValid()) return false;
+
+        // A client can still interpolate the rider behind the destination seam after both
+        // the body transfer and network cleanup finish. Its reported crossing alone must
+        // not migrate an outward-moving body back. Check native motion at the retained
+        // vehicle, including rotation, rather than client coordinates or only COM velocity.
+        Vector3d linear = handle.getLinearVelocity(new Vector3d());
+        Vector3d angular = handle.getAngularVelocity(new Vector3d());
+        Vector3d worldVehicle = body.logicalPose().transformPosition(
+            JOMLConversion.toJOML(retainedVehicle.position())
+        );
+        Vec3 portalVelocityPerTick = Vec3.ZERO;
+        var lastAnimatedState = portal.animation.lastTickAnimatedState;
+        var currentAnimatedState = portal.animation.thisTickAnimatedState;
+        if (lastAnimatedState != null && currentAnimatedState != null) {
+            // Real portal animations support a moving/rotating source plane sweeping a
+            // stationary rider. Use its projected point, not destination-side transform
+            // velocity. Client-only default interpolation has no such server-side motion.
+            Vec3 local = currentAnimatedState.worldPosToPortalLocalPos(JOMLConversion.toMojang(worldVehicle));
+            portalVelocityPerTick = TeleportationUtil.getPortalPointVelocity(
+                lastAnimatedState, currentAnimatedState, new Vec3(local.x, local.y, 0)
+            ).thisSidePointVelocity();
+        }
+        Vector3d offset = worldVehicle.sub(JOMLConversion.toJOML(
+            getWorldCenterOfMass(body, body.logicalPose())
+        ));
+        Vec3 normal = portal.getNormal();
+        return SableRiderPortalApproach.movesIntoPortal(
+            linear.x, linear.y, linear.z, angular.x, angular.y, angular.z,
+            offset.x, offset.y, offset.z, normal.x, normal.y, normal.z,
+            portalVelocityPerTick.x, portalVelocityPerTick.y, portalVelocityPerTick.z
+        );
     }
 
     /**
@@ -366,6 +658,7 @@ public final class SableDimensionStackCompat {
         }
         for (MigrationUnit unit : units) {
             commitClientHandoff(sourceWorld, unit.source().getUniqueId());
+            ANIMATED_RIDER_CROSSINGS.invalidateBody(unit.source().getUniqueId());
             Vec3 destinationAnchor = getWorldCenterOfMass(unit.destination(), unit.destination().logicalPose());
             rememberSample(destinationWorld, unit.destination().getUniqueId(), destinationAnchor);
             HANDOFF_GUARDS.put(unit.destination().getUniqueId(), new HandoffGuard(
