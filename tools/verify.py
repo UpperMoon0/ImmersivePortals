@@ -1844,6 +1844,8 @@ def wait_for_client(server: subprocess.Popen, client: subprocess.Popen, timeout:
     diagnosed_stall = False
     server_log = AppendedLogReader(SERVER_LOG)
     reporter = ClientProgressReporter(started, deadline)
+    disconnect_reason = None
+    cleanup_deadline = None
     while True:
         now = time.monotonic()
         if now >= deadline:
@@ -1854,13 +1856,25 @@ def wait_for_client(server: subprocess.Popen, client: subprocess.Popen, timeout:
         # Preserve the original server reason; negative controls must never accept it.
         disconnect = next((line for line in reversed(server_log.read_new_lines()) if " lost connection: " in line), None)
         if disconnect is not None:
+            disconnect_reason = disconnect
+        if disconnect_reason is not None:
             try:
-                # A successful client also disconnects while shutting down.
-                # Still wait for its actual exit code below.
+                # Closing the network precedes world teardown; its final receipts can arrive
+                # shortly after the server records the intentional disconnect.
                 validate_results(0, smoke=smoke, ships=ships, aeronautics=aeronautics, ship_size=ship_size)
             except RuntimeError:
-                collect_thread_diagnostics(server, client, "disconnect")
-                raise RuntimeError(f"graphical client disconnected: {disconnect}")
+                expected_cleanup = not smoke and not ships and all(
+                    (RESULT_DIR / name).is_file() and (RESULT_DIR / name).read_text().strip()
+                    for name in ("server-pass.txt", "client-movement-disconnect-started.txt")
+                )
+                if expected_cleanup and cleanup_deadline is None:
+                    cleanup_deadline = now + 10
+                if not expected_cleanup or now >= cleanup_deadline:
+                    collect_thread_diagnostics(server, client, "disconnect")
+                    raise RuntimeError(f"graphical client disconnected: {disconnect_reason}")
+            else:
+                disconnect_reason = None
+                cleanup_deadline = None
         if server.poll() is not None:
             raise RuntimeError(f"dedicated server exited during E2E (exit={server.returncode})")
         if client.poll() is not None:
