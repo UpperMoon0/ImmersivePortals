@@ -27,6 +27,7 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import qouteall.imm_ptl.core.ClientWorldLoader;
+import qouteall.imm_ptl.core.gametest.sablee2e.SableInterpolationHistoryProbe;
 import qouteall.imm_ptl.core.compat.sable.SableClientPacketContext;
 import qouteall.imm_ptl.core.compat.sable.SableServerFirstClientHandoff;
 import qouteall.q_misc_util.my_util.DQuaternion;
@@ -171,6 +172,11 @@ public abstract class MixinClientboundStartTrackingSubLevelPacket_SablePortalCom
             SableClientPacketContext.resolve(context).dimension().location(), subLevelID(), gameTick(), ip_sourceReferenceTick,
             destinationContainer.getInterpolation().getTickPointer(),
             interpolator.buffer.stream().map(SubLevelSnapshotInterpolator.Snapshot::gameTick).toList());
+        List<SubLevelSnapshotInterpolator.Snapshot> expectedHistory = ip_historyDiagnostics
+            ? ip_sourceHistory.stream().filter(snapshot -> snapshot.gameTick() < gameTick() - 1)
+                .map(snapshot -> new SubLevelSnapshotInterpolator.Snapshot(snapshot.gameTick(),
+                    ip_transformHistoricalPose(snapshot.pose(), rotationDelta, translation))).toList()
+            : List.of();
         for (ip_SnapshotCopy snapshot : ip_sourceHistory) {
             if (snapshot.gameTick() >= gameTick() - 1) continue;
             boolean duplicate = interpolator.buffer.stream()
@@ -182,6 +188,9 @@ public abstract class MixinClientboundStartTrackingSubLevelPacket_SablePortalCom
             ));
         }
         interpolator.buffer.sort(Comparator.comparingInt(SubLevelSnapshotInterpolator.Snapshot::gameTick));
+
+        if (ip_historyDiagnostics) SableInterpolationHistoryProbe.verify(
+            destination, gameTick(), expectedHistory, interpolator.buffer);
 
         // Re-sample logical/last poses using the now-complete history. The start packet already
         // built render data and bounds, so only bounds need refreshing after the pose graft.

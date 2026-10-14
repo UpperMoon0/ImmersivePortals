@@ -45,6 +45,7 @@ final class SableSnapshotDimensionProbe {
         require(minecraft.getConnection().hasChannel(SableSnapshotProtocol.Capability.TYPE),
             "New/new fixture must negotiate snapshot-dimension v1");
         verifyQueueIsolation();
+        SableInterpolationHistoryProbe.verifyNativePruning();
         ClientLevel sourceWorld = ClientWorldLoader.getWorld(Level.OVERWORLD);
         ClientLevel destinationWorld = ClientWorldLoader.getWorld(Level.NETHER);
         var source = (ClientSubLevelContainer) SubLevelContainer.getContainer(sourceWorld);
@@ -64,6 +65,7 @@ final class SableSnapshotDimensionProbe {
             sourceBody.updateRenderData();
             destinationBody = (ClientSubLevel) destination.allocateSubLevel(bodyId, x, z, pose(210));
             destinationBody.updateRenderData();
+            SableInterpolationHistoryProbe.verifyReceiptIsolation(sourceBody, destinationBody);
             long plot = ChunkPos.asLong(x, z);
             // Negative control: the unchanged native packet API reproduces the old dispatch
             // failure when execution-time current world is passed instead of provenance.
@@ -133,6 +135,7 @@ final class SableSnapshotDimensionProbe {
                 }
             }
         }
+        SableInterpolationHistoryProbe.reset();
         complete = true;
         udpBaseline = SableSnapshotProtocol.udpSnapshots();
         tcpBaseline = SableSnapshotProtocol.tcpSnapshots();

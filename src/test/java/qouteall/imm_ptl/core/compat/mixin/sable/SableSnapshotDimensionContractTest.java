@@ -71,6 +71,35 @@ class SableSnapshotDimensionContractTest {
         assertTrue(index(run, "removeSubLevel") < index(run, "acknowledge"), "Receipt follows successful cleanup");
     }
 
+    @Test void historyOracleRunsAtGraftBeforeNativeSamplingAndRequiresReceipts() throws Exception {
+        MethodNode graft = read("qouteall/imm_ptl/core/compat/mixin/sable/MixinClientboundStartTrackingSubLevelPacket_SablePortalCompat")
+            .methods.stream().filter(m -> m.name.equals("ip_graftSourceInterpolation")).findFirst().orElseThrow();
+        assertTrue(index(graft, "verify") > index(graft, "sort"));
+        assertTrue(index(graft, "verify") < index(graft, "setInitialPosesFrom"));
+        ClassNode client = read("qouteall/imm_ptl/core/gametest/sablee2e/SableDimensionStackDedicatedClientTest");
+        for (String name : new String[] {"waitForReturnRide", "waitForGravityRecross"}) {
+            MethodNode method = client.methods.stream().filter(m -> m.name.equals(name)).findFirst().orElseThrow();
+            assertEquals(1, count(method, "requireVerified"), "Every later crossing requires a checked graft");
+        }
+        MethodNode probe = read("qouteall/imm_ptl/core/gametest/sablee2e/SableSnapshotDimensionProbe").methods.stream()
+            .filter(m -> m.name.equals("run")).findFirst().orElseThrow();
+        assertEquals(1, count(probe, "verifyNativePruning"));
+        assertEquals(1, count(probe, "verifyReceiptIsolation"));
+    }
+
+    @Test void lifecycleProbeClosesNetworkBeforeSyntheticCleanupOrWorldTeardown() throws Exception {
+        MethodNode cleanup = read("qouteall/imm_ptl/core/gametest/sablee2e/SableRiderLifecycleProbe").methods.stream()
+            .filter(m -> m.name.equals("cleanupAndDisconnect")).findFirst().orElseThrow();
+        int close = -1, clear = -1;
+        for (int i = 0; i < cleanup.instructions.size(); i++) {
+            if (!(cleanup.instructions.get(i) instanceof MethodInsnNode call) || !call.name.equals("disconnect")) continue;
+            if (call.owner.equals("net/minecraft/network/Connection")) close = i;
+            if (call.owner.equals("net/minecraft/client/Minecraft")) clear = i;
+        }
+        assertTrue(close >= 0 && close < index(cleanup, "post") && close < clear);
+        assertEquals(1, count(cleanup, "isConnected"));
+    }
+
     private static int count(MethodNode method, String name) {
         int result = 0; for (var i : method.instructions) if (i instanceof MethodInsnNode c && c.name.equals(name)) result++; return result;
     }

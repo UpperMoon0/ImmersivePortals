@@ -25,3 +25,11 @@ The dedicated graphical client creates two temporary client plots at the same lo
 A thread-selective forwarding queue isolates synthetic submissions while concurrent network submissions retain the live queue; a background-thread sentinel checks that separation. Temporary plots are removed and both worlds' interpolation clocks are restored in `finally`; the real flight plots are never reused for the probe. Legacy TCP/UDP snapshot bytes are compared against the pinned native format. Core tests reject malformed, truncated, unknown-version and extra trailers, and pin the two native send/dispatch/codec paths.
 
 The eight existing rider/network CI lanes require both `client-snapshot-dimensions` and `client-snapshot-transport` receipts. After excluding synthetic probe deliveries, UDP lanes require actual native addressed movement and TCP lanes require actual ordered movement with no native UDP movement. The existing 32-block continuity threshold, handoff deadlines, impaired networking, renderer checks and all six ship lanes are unchanged. Exact-head runtime results belong in PR #31; adding these tests does not imply they have passed.
+
+## Interpolation-history oracle
+
+The original graphical oracle required three samples after the return handoff. Diagnostic run 38511745783 demonstrated successful grafting of `[1707,1708,1709,1718,1719]`, followed by normal native pruning to `[1718,1719]` when the pointer reached 1718. That post-tick count did not prove a reset.
+
+The replacement checks every eligible transformed source sample (tick and complete pose components) immediately at the graft boundary, before native sampling/pruning, and requires a checked-graft receipt bound to the actual destination instance at return and recross. The two native full-sync samples remain required at the graphical assertion. A deterministic native pruning control reproduces the observed sequence, and a missing-history negative control must fail. Flight continuity, camera checks and deadlines are unchanged.
+
+The terminal cleanup fixture closes and checks the native connection before posting its synthetic cleanup event and tearing down client worlds. This preserves the disconnect assertions while preventing incoming ordinary block updates from decoding against reverted registries; no critical-error filter is disabled.
