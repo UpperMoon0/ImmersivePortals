@@ -398,7 +398,11 @@ public final class SableDimensionStackDedicatedClientTest {
         int snapshots = subLevel.getInterpolator().buffer.size();
         require(snapshots >= minimumSnapshots,
             phaseName + " Sable interpolation history was reset during portal handoff: snapshots=" + snapshots
-                + " minimum=" + minimumSnapshots);
+                + " minimum=" + minimumSnapshots
+                + " ticks=" + subLevel.getInterpolator().buffer.stream()
+                    .map(dev.ryanhcode.sable.network.client.SubLevelSnapshotInterpolator.Snapshot::gameTick).toList()
+                + " pointer=" + ((dev.ryanhcode.sable.api.sublevel.ClientSubLevelContainer)
+                    SubLevelContainer.getContainer(subLevel.getLevel())).getInterpolation().getTickPointer());
     }
 
     /** Sable stores mounted yaw locally; the mixed getLookAngle() is the actual world-facing view. */
