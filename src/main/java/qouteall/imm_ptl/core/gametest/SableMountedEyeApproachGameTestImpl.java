@@ -19,6 +19,7 @@ import org.joml.Vector3d;
 import qouteall.imm_ptl.core.McHelper;
 import qouteall.imm_ptl.core.compat.sable.SableDimensionStackCompat;
 import qouteall.imm_ptl.core.portal.Portal;
+import qouteall.imm_ptl.core.ducks.IEServerPlayerEntity;
 
 import java.lang.reflect.Method;
 import java.util.UUID;
@@ -51,11 +52,18 @@ final class SableMountedEyeApproachGameTestImpl {
                 "isRiddenBodyApproachingPortal", ServerSubLevel.class, Entity.class, Entity.class, Portal.class);
             approach.setAccessible(true);
 
-            helper.assertTrue(player.startRiding(seat, true), "Direct rider must actually mount the seat");
+            // NeoForge FakePlayer.startRiding always returns false. Use IP's existing
+            // server-player helper, which calls Player.startRiding and builds the real
+            // vanilla passenger relation without a network teleport request.
+            ((IEServerPlayerEntity) player).ip_startRidingWithoutTeleportRequest(seat);
+            helper.assertTrue(player.getVehicle() == seat && seat.hasPassenger(player),
+                "Direct rider must actually mount the seat");
             checkAngles(helper, body, handle, player, seat, portal, approach);
-            player.stopRiding();
+            ((IEServerPlayerEntity) player).ip_stopRidingWithoutTeleportRequest();
             helper.assertTrue(intermediate.startRiding(seat, true), "Intermediate passenger must mount the seat");
-            helper.assertTrue(player.startRiding(intermediate, true), "Player must mount the intermediate passenger");
+            ((IEServerPlayerEntity) player).ip_startRidingWithoutTeleportRequest(intermediate);
+            helper.assertTrue(player.getVehicle() == intermediate && intermediate.hasPassenger(player),
+                "Player must mount the intermediate passenger");
             helper.assertTrue(player.getVehicle() == intermediate && intermediate.getVehicle() == seat,
                 "Nested graph must remain connected");
             // The outer retained vehicle's immediate passenger is the intermediate entity,
@@ -65,7 +73,7 @@ final class SableMountedEyeApproachGameTestImpl {
         } catch (ReflectiveOperationException error) {
             throw new IllegalStateException("Cannot exercise production mounted-eye guard", error);
         } finally {
-            player.stopRiding();
+            ((IEServerPlayerEntity) player).ip_stopRidingWithoutTeleportRequest();
             intermediate.stopRiding();
             player.discard();
             intermediate.discard();
