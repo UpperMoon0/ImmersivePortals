@@ -28,6 +28,37 @@ class SableRiderPortalApproachTest {
         assertFalse(approachesFloor(-6, 2, 3), "Exact cancellation is stationary at the seat");
     }
 
+    @Test void rollCanCarryTheMountedEyeInwardWhileSeatAndComDoNotApproach() {
+        // Static +X plane: omega=(0,0,2), eye one block above COM.
+        assertFalse(SableRiderPortalApproach.movesIntoPortal(
+            0, 0, 0, 0, 0, 2, 0, 0, 0, 1, 0, 0));
+        assertTrue(SableRiderPortalApproach.movesIntoPortal(
+            0, 0, 0, 0, 0, 2, 0, 1, 0, 1, 0, 0));
+        // Seat is below COM and moves outward; its eye is above COM and moves inward.
+        assertFalse(SableRiderPortalApproach.movesIntoPortal(
+            0, 0, 0, 0, 0, 2, 0, -0.5, 0, 1, 0, 0));
+        assertTrue(SableRiderPortalApproach.movesIntoPortal(
+            0, 0, 0, 0, 0, 2, 0, 0.5, 0, 1, 0, 0));
+    }
+
+    @Test void inwardSeatRotationCannotAuthorizeAnOutwardMountedEye() {
+        assertTrue(SableRiderPortalApproach.movesIntoPortal(
+            0, 0, 0, 0, 0, -2, 0, -0.5, 0, 1, 0, 0));
+        assertFalse(SableRiderPortalApproach.movesIntoPortal(
+            0, 0, 0, 0, 0, -2, 0, 0.5, 0, 1, 0, 0));
+    }
+
+    @Test void pitchUsesEyeOffsetAndPreservesRelativePortalMotion() {
+        // omega=(2,0,0), eye offset +Y: eye moves +Z into a -Z-facing plane.
+        assertFalse(SableRiderPortalApproach.movesIntoPortal(
+            0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, -1));
+        assertTrue(SableRiderPortalApproach.movesIntoPortal(
+            0, 0, 0, 2, 0, 0, 0, 1, 0, 0, 0, -1));
+        assertFalse(SableRiderPortalApproach.movesIntoPortal(
+            0, 0, 0, 2, 0, 0, 0, 1, 0, 0, 0, -1, 0, 0, 0.1),
+            "A plane matching the eye's two blocks/second does not approach");
+    }
+
     @Test void allAngularAxesAndPortalNormalComponentsAreUsed() {
         assertTrue(SableRiderPortalApproach.movesIntoPortal(
             0, 0, 0, 2, 0, 0, 0, 0, 3, 0, 1, 0
