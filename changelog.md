@@ -10,6 +10,7 @@ and this project tries to adhere to [Semantic Versioning](https://semver.org/spe
 
 ### Fixed
 
+- Preserve explicit dimension provenance for Sable UDP snapshots and interpolation-clock updates across dimension-packet ordering; negotiate native UDP support and retain unchanged-wire TCP fallback with older peers.
 - Evaluate retained Sable rider portal approach at the authoritative mounted eye rather than the seat origin, so roll/pitch does not incorrectly reject inward eye motion or authorize outward eye motion. Keep the existing stale-request guards.
 
 ### Verification

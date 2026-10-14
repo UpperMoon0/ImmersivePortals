@@ -29,6 +29,8 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 import qouteall.imm_ptl.core.chunk_loading.ImmPtlChunkTracking;
 import qouteall.imm_ptl.core.compat.sable.SableDimensionStackCompat;
+import qouteall.imm_ptl.core.compat.sable.SableDimensionTaggedSnapshot;
+import qouteall.imm_ptl.core.compat.sable.SableSnapshotProtocol;
 import qouteall.imm_ptl.core.network.PacketRedirection;
 
 import java.util.Collection;
@@ -134,7 +136,7 @@ public abstract class MixinSubLevelTrackingSystem_SablePortalCompat {
         SableDimensionStackCompat.onDestinationFullSync(level, player, subLevel);
     }
 
-    /** Remote Sable UDP has no dimension envelope; use redirected TCP for portal watchers. */
+    /** Native UDP needs negotiated dimension provenance; remote/legacy peers retain redirected TCP. */
     @WrapOperation(
         method = "sendMovementUpdates",
         at = @At(
@@ -149,11 +151,16 @@ public abstract class MixinSubLevelTrackingSystem_SablePortalCompat {
         boolean flush,
         Operation<Boolean> original
     ) {
-        if (player.serverLevel() != level && packet instanceof SableTCPPacket tcpPacket) {
+        boolean taggedUdp = SableSnapshotProtocol.useTaggedUdp(
+            player.connection.hasChannel(SableSnapshotProtocol.Capability.TYPE), player.serverLevel() == level);
+        if (!taggedUdp && packet instanceof SableTCPPacket tcpPacket) {
             PacketRedirection.withForceRedirect(level, () -> player.connection.send(
                 new ClientboundCustomPayloadPacket(tcpPacket)
             ));
             return true;
+        }
+        if (packet instanceof SableDimensionTaggedSnapshot snapshot) {
+            snapshot.ip_setSnapshotDimension(level.dimension());
         }
         return original.call(udpServer, player, packet, flush);
     }

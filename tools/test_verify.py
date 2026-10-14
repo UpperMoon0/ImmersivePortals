@@ -146,7 +146,7 @@ class VerificationHarnessTest(unittest.TestCase):
             self.addCleanup(log_patch.stop)
         for name in ("server-pass", "client-pass", "client-source", "client-destination", "client-return", "client-recross", "client-dismount",
                      "client-movement-hold", "client-movement-lifecycle", "client-movement-ack-timeout", "client-movement-soak", "client-movement-disconnect",
-                     "client-networking-api"):
+                     "client-networking-api", "client-snapshot-dimensions", "client-snapshot-transport"):
             (self.results / f"{name}.txt").write_text("verified\n")
 
     def test_both_sides_and_every_phase_are_required(self):

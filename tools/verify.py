@@ -1617,7 +1617,7 @@ def validate_results(client_exit: int, smoke: bool = False, ships: bool = False,
     required = ("server-pass", "client-pass") if ships else ("server-pass", "client-pass", "visual-pass") if smoke else (
         "server-pass", "client-pass", "client-source", "client-destination", "client-return", "client-recross", "client-dismount",
         "client-movement-hold", "client-movement-lifecycle", "client-movement-ack-timeout", "client-movement-soak", "client-movement-disconnect",
-        "client-networking-api")
+        "client-networking-api", "client-snapshot-dimensions", "client-snapshot-transport")
     for name in required:
         marker = RESULT_DIR / f"{name}.txt"
         if not marker.exists() or not marker.read_text(encoding="utf-8").strip():

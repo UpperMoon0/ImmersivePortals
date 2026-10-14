@@ -172,6 +172,7 @@ public final class SableDimensionStackDedicatedClientTest {
         remoteSourceX = Double.NaN;
         verifyContinuousClientOwnership(minecraft);
 
+        SableSnapshotDimensionProbe.run(minecraft);
         if (!movementHoldProbeComplete) {
             // The server holds the real source body until client-source is published.
             // Reproduce the packet gap deterministically: capture its actual seat/portal,
@@ -587,6 +588,7 @@ public final class SableDimensionStackDedicatedClientTest {
             .stream().filter(p -> p.getDestDim().equals(Level.NETHER)).findFirst().orElseThrow();
         var cleanupSeat = net.minecraft.world.entity.EntityType.ARMOR_STAND.create(minecraft.level);
         require(cleanupSeat != null, "Cannot create terminal cleanup fixture");
+        SableSnapshotDimensionProbe.verifyActualTransport(minecraft);
         SableRiderLifecycleProbe.cleanupAndDisconnect(minecraft, portal, cleanupSeat);
         phase = Phase.DONE;
         SableDimensionStackIntegrationMarkers.clientPass(
