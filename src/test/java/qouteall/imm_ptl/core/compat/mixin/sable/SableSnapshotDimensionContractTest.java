@@ -57,6 +57,20 @@ class SableSnapshotDimensionContractTest {
         assertEquals(1, count(gate, "cancel"));
     }
 
+    @Test void nativeProbeInitializesRenderLifecycleBeforeDispatchAndReceipts() throws Exception {
+        MethodNode run = read("qouteall/imm_ptl/core/gametest/sablee2e/SableSnapshotDimensionProbe").methods.stream()
+            .filter(m -> m.name.equals("run")).findFirst().orElseThrow();
+        assertEquals(2, count(run, "updateRenderData"), "Both temporary plots need native renderer initialization");
+        int firstSnapshot = index(run, "snapshot");
+        assertTrue(firstSnapshot >= 0);
+        for (int i = 0; i < run.instructions.size(); i++) {
+            if (run.instructions.get(i) instanceof MethodInsnNode call && call.name.equals("updateRenderData")) {
+                assertTrue(i < firstSnapshot, "Each renderer must initialize before any probe packet");
+            }
+        }
+        assertTrue(index(run, "removeSubLevel") < index(run, "acknowledge"), "Receipt follows successful cleanup");
+    }
+
     private static int count(MethodNode method, String name) {
         int result = 0; for (var i : method.instructions) if (i instanceof MethodInsnNode c && c.name.equals(name)) result++; return result;
     }

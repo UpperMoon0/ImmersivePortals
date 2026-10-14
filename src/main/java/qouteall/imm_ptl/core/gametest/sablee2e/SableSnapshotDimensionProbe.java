@@ -59,7 +59,11 @@ final class SableSnapshotDimensionProbe {
         try {
             UUID bodyId = UUID.randomUUID();
             sourceBody = (ClientSubLevel) source.allocateSubLevel(bodyId, x, z, pose(10));
+            // allocateSubLevel does not perform the render-data initialization normally
+            // done by the native start-tracking packet; removal requires that lifecycle step.
+            sourceBody.updateRenderData();
             destinationBody = (ClientSubLevel) destination.allocateSubLevel(bodyId, x, z, pose(210));
+            destinationBody.updateRenderData();
             long plot = ChunkPos.asLong(x, z);
             // Negative control: the unchanged native packet API reproduces the old dispatch
             // failure when execution-time current world is passed instead of provenance.
@@ -117,16 +121,22 @@ final class SableSnapshotDimensionProbe {
             dispatch(minecraft, snapshot(plot, 1000004, 999), sourceWorld);
             require(sourceBody.getInterpolator().buffer.size() == sourceSize, "Untagged negotiated UDP was accepted");
             legacyRoundTrips(minecraft, plot);
-            complete = true;
-            udpBaseline = SableSnapshotProtocol.udpSnapshots();
-            tcpBaseline = SableSnapshotProtocol.tcpSnapshots();
-            SableDimensionStackIntegrationMarkers.acknowledge("snapshot-dimensions");
         } finally {
-            if (sourceBody != null) source.removeSubLevel(sourceBody, SubLevelRemovalReason.REMOVED);
-            if (destinationBody != null) destination.removeSubLevel(destinationBody, SubLevelRemovalReason.REMOVED);
-            restoreClock(source.getInterpolation(), sourceClock);
-            restoreClock(destination.getInterpolation(), destinationClock);
+            try {
+                if (sourceBody != null) source.removeSubLevel(sourceBody, SubLevelRemovalReason.REMOVED);
+            } finally {
+                try {
+                    if (destinationBody != null) destination.removeSubLevel(destinationBody, SubLevelRemovalReason.REMOVED);
+                } finally {
+                    try { restoreClock(source.getInterpolation(), sourceClock); }
+                    finally { restoreClock(destination.getInterpolation(), destinationClock); }
+                }
+            }
         }
+        complete = true;
+        udpBaseline = SableSnapshotProtocol.udpSnapshots();
+        tcpBaseline = SableSnapshotProtocol.tcpSnapshots();
+        SableDimensionStackIntegrationMarkers.acknowledge("snapshot-dimensions");
     }
 
     static void verifyActualTransport(Minecraft minecraft) {
