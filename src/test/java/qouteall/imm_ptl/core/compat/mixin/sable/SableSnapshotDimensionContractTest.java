@@ -77,10 +77,30 @@ class SableSnapshotDimensionContractTest {
         assertTrue(index(graft, "verify") > index(graft, "sort"));
         assertTrue(index(graft, "verify") < index(graft, "setInitialPosesFrom"));
         ClassNode client = read("qouteall/imm_ptl/core/gametest/sablee2e/SableDimensionStackDedicatedClientTest");
-        MethodNode tick = client.methods.stream().filter(m -> m.name.equals("onClientTick")).findFirst().orElseThrow();
-        assertTrue(index(tick, "setObserver") >= 0);
-        assertTrue(index(tick, "setObserver") < index(tick, "connectWhenReady"),
-            "Install the graft oracle before starting the connection");
+        for (String name : new String[] {"waitForReturnRide", "waitForGravityRecross"}) {
+            MethodNode method = client.methods.stream().filter(m -> m.name.equals(name)).findFirst().orElseThrow();
+            assertEquals(1, count(method, "requireVerified"), "Every later crossing requires a checked graft");
+        }
+        MethodNode probe = read("qouteall/imm_ptl/core/gametest/sablee2e/SableSnapshotDimensionProbe").methods.stream()
+            .filter(m -> m.name.equals("run")).findFirst().orElseThrow();
+        assertEquals(1, count(probe, "verifyNativePruning"));
+        assertEquals(1, count(probe, "verifyReceiptIsolation"));
+    }
+
+    @Test void sharedLifecycleInstallsHistoryOracleBeforeBothClientDrivers() throws Exception {
+        String e2e = "qouteall/imm_ptl/core/gametest/sablee2e/";
+        MethodNode tick = read(e2e + "SableE2EEvents$Client").methods.stream()
+            .filter(m -> m.name.equals("tick")).findFirst().orElseThrow();
+        assertEquals(1, count(tick, "setObserver"));
+        int registration = index(tick, "qouteall/imm_ptl/core/compat/sable/SableInterpolationHistoryDiagnostics", "setObserver");
+        int enabled = index(tick, e2e + "SableE2EEvents", "enabled");
+        int laneSelection = index(tick, e2e + "SableShipFlightTest", "enabled");
+        assertTrue(enabled >= 0 && enabled < registration, "Only enabled E2E clients install the oracle");
+        assertTrue(laneSelection > registration, "Registration must precede the branch selecting either driver");
+        for (String driver : new String[] {"SableDimensionStackDedicatedClientTest", "SableShipFlightClientTest"}) {
+            int dispatch = index(tick, e2e + driver, "onClientTick");
+            assertTrue(dispatch > laneSelection, "Install the oracle before selecting " + driver + " to connect");
+        }
         boolean oracleInstalled = false;
         for (var instruction : tick.instructions) {
             if (instruction instanceof org.objectweb.asm.tree.InvokeDynamicInsnNode lambda) {
@@ -92,14 +112,6 @@ class SableSnapshotDimensionContractTest {
             }
         }
         assertTrue(oracleInstalled, "The observer must retain the original preservation oracle");
-        for (String name : new String[] {"waitForReturnRide", "waitForGravityRecross"}) {
-            MethodNode method = client.methods.stream().filter(m -> m.name.equals(name)).findFirst().orElseThrow();
-            assertEquals(1, count(method, "requireVerified"), "Every later crossing requires a checked graft");
-        }
-        MethodNode probe = read("qouteall/imm_ptl/core/gametest/sablee2e/SableSnapshotDimensionProbe").methods.stream()
-            .filter(m -> m.name.equals("run")).findFirst().orElseThrow();
-        assertEquals(1, count(probe, "verifyNativePruning"));
-        assertEquals(1, count(probe, "verifyReceiptIsolation"));
     }
 
     @Test void lifecycleProbeClosesNetworkBeforeSyntheticCleanupOrWorldTeardown() throws Exception {
@@ -120,6 +132,12 @@ class SableSnapshotDimensionContractTest {
     }
     private static int index(MethodNode method, String name) {
         for (int i = 0; i < method.instructions.size(); i++) if (method.instructions.get(i) instanceof MethodInsnNode c && c.name.equals(name)) return i;
+        return -1;
+    }
+    private static int index(MethodNode method, String owner, String name) {
+        for (int i = 0; i < method.instructions.size(); i++) {
+            if (method.instructions.get(i) instanceof MethodInsnNode call && call.owner.equals(owner) && call.name.equals(name)) return i;
+        }
         return -1;
     }
     private static MethodNode method(ClassNode type, String name, String descriptor) {

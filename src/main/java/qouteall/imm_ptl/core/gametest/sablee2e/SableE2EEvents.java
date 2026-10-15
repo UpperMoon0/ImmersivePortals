@@ -7,6 +7,7 @@ import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.neoforge.client.event.ClientTickEvent;
 import net.neoforged.neoforge.event.entity.player.PlayerEvent;
 import net.neoforged.neoforge.event.tick.ServerTickEvent;
+import qouteall.imm_ptl.core.compat.sable.SableInterpolationHistoryDiagnostics;
 import qouteall.imm_ptl.core.platform_specific.IPModEntry;
 
 /** Keep optional Sable types out of auto-subscribers' reflected method signatures. */
@@ -38,6 +39,9 @@ public final class SableE2EEvents {
         @SubscribeEvent
         public static void tick(ClientTickEvent.Post event) {
             if (enabled()) {
+                // Both drivers can connect on their first tick. Install the test-only
+                // oracle before selecting either lane, including complex ship flights.
+                SableInterpolationHistoryDiagnostics.setObserver(SableInterpolationHistoryProbe::verify);
                 if (SableShipFlightTest.enabled()) SableShipFlightClientTest.onClientTick(event);
                 else SableDimensionStackDedicatedClientTest.onClientTick(event);
             }

@@ -82,10 +82,6 @@ public final class SableDimensionStackDedicatedClientTest {
         if (!SableDimensionStackIntegrationMarkers.enabled() || phase == Phase.DONE) return;
 
         try {
-            if (ticks == 0) {
-                qouteall.imm_ptl.core.compat.sable.SableInterpolationHistoryDiagnostics.setObserver(
-                    SableInterpolationHistoryProbe::verify);
-            }
             ticks++;
             phaseTicks++;
             if (ticks > TIMEOUT_TICKS) {
