@@ -77,6 +77,21 @@ class SableSnapshotDimensionContractTest {
         assertTrue(index(graft, "verify") > index(graft, "sort"));
         assertTrue(index(graft, "verify") < index(graft, "setInitialPosesFrom"));
         ClassNode client = read("qouteall/imm_ptl/core/gametest/sablee2e/SableDimensionStackDedicatedClientTest");
+        MethodNode tick = client.methods.stream().filter(m -> m.name.equals("onClientTick")).findFirst().orElseThrow();
+        assertTrue(index(tick, "setObserver") >= 0);
+        assertTrue(index(tick, "setObserver") < index(tick, "connectWhenReady"),
+            "Install the graft oracle before starting the connection");
+        boolean oracleInstalled = false;
+        for (var instruction : tick.instructions) {
+            if (instruction instanceof org.objectweb.asm.tree.InvokeDynamicInsnNode lambda) {
+                for (Object argument : lambda.bsmArgs) {
+                    if (argument instanceof org.objectweb.asm.Handle handle
+                        && handle.getOwner().equals("qouteall/imm_ptl/core/gametest/sablee2e/SableInterpolationHistoryProbe")
+                        && handle.getName().equals("verify")) oracleInstalled = true;
+                }
+            }
+        }
+        assertTrue(oracleInstalled, "The observer must retain the original preservation oracle");
         for (String name : new String[] {"waitForReturnRide", "waitForGravityRecross"}) {
             MethodNode method = client.methods.stream().filter(m -> m.name.equals(name)).findFirst().orElseThrow();
             assertEquals(1, count(method, "requireVerified"), "Every later crossing requires a checked graft");

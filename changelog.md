@@ -6,6 +6,16 @@ and this project tries to adhere to [Semantic Versioning](https://semver.org/spe
 
 ## [Unreleased Changes]
 
+## [6.1.4] - Unreleased
+
+### Fixed
+
+- Fix startup with Sable when Mixin resolves an interpolation diagnostic helper excluded from the release jar. Keep the preservation oracle in the development test runtime behind a packaged observer interface.
+
+### Verification
+
+- Scan every class in the actual release jar for references to excluded GameTests, with a negative control reproducing the missing helper reference.
+
 ## [6.1.3] - Unreleased
 
 ### Fixed

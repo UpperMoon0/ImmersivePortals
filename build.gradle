@@ -379,12 +379,15 @@ dependencies {
 
 tasks.named('test').configure {
     useJUnitPlatform()
+    dependsOn tasks.named('jar')
+    inputs.file(tasks.named('jar').flatMap { it.archiveFile })
     if (verificationNetworking != 'bundled') {
         reports.junitXml.outputLocation = layout.buildDirectory.dir("test-results/networking-${verificationNetworking}")
         reports.html.outputLocation = layout.buildDirectory.dir("reports/tests/networking-${verificationNetworking}")
     }
     inputs.files((0..2).collect { configurations.getByName("fabricNetworkingContract${it}") })
     doFirst {
+        systemProperty 'ip.releaseJar', tasks.named('jar').get().archiveFile.get().asFile.absolutePath
         systemProperty 'ip.irisJar', configurations.irisContract.singleFile.absolutePath
         systemProperty 'ip.neoculusJar', configurations.neoculusContract.singleFile.absolutePath
         systemProperty 'ip.fabricNetworkingJars', (0..2).collect {
