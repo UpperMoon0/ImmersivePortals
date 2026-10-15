@@ -27,7 +27,7 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import qouteall.imm_ptl.core.ClientWorldLoader;
-import qouteall.imm_ptl.core.gametest.sablee2e.SableInterpolationHistoryProbe;
+import qouteall.imm_ptl.core.compat.sable.SableInterpolationHistoryDiagnostics;
 import qouteall.imm_ptl.core.compat.sable.SableClientPacketContext;
 import qouteall.imm_ptl.core.compat.sable.SableServerFirstClientHandoff;
 import qouteall.q_misc_util.my_util.DQuaternion;
@@ -189,7 +189,7 @@ public abstract class MixinClientboundStartTrackingSubLevelPacket_SablePortalCom
         }
         interpolator.buffer.sort(Comparator.comparingInt(SubLevelSnapshotInterpolator.Snapshot::gameTick));
 
-        if (ip_historyDiagnostics) SableInterpolationHistoryProbe.verify(
+        if (ip_historyDiagnostics) SableInterpolationHistoryDiagnostics.verify(
             destination, gameTick(), expectedHistory, interpolator.buffer);
 
         // Re-sample logical/last poses using the now-complete history. The start packet already

@@ -25,7 +25,7 @@ class SableShipStagingAreaTest {
     }
 
     @Test void setupCannotReviveOrRemountADeadRiderAndCannotInterveneInFlight() throws Exception {
-        String s=Files.readString(Path.of("src/main/java/qouteall/imm_ptl/core/gametest/sablee2e/SableShipFlightTest.java"));
+        String s=Files.readString(Path.of("src/main/java/qouteall/imm_ptl/core/gametest/sablee2e/SableShipFlightTest.java")).replace("\r\n", "\n");
         String staging=s.substring(s.indexOf("private static void parkPlayerForSetup()"),s.indexOf("private static void verifySetupStaging()"));
         assertTrue(staging.contains("phase!=Phase.FLY && phase!=Phase.CLEAR_SEAM"));
         assertTrue(staging.indexOf("requireOriginalPlayerAlive")<staging.indexOf("player.teleportTo"));

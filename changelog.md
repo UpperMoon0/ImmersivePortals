@@ -6,6 +6,16 @@ and this project tries to adhere to [Semantic Versioning](https://semver.org/spe
 
 ## [Unreleased Changes]
 
+## [6.1.3.1] - Unreleased
+
+### Fixed
+
+- Fix startup with Sable when Mixin resolves an interpolation diagnostic helper excluded from the release jar. Keep the preservation oracle in the development test runtime behind a packaged observer interface.
+
+### Verification
+
+- Scan every class in the actual release jar for references to excluded GameTests, with a negative control reproducing the missing helper reference.
+
 ## [6.1.3] - Unreleased
 
 ### Fixed
@@ -200,6 +210,7 @@ See [`changelog/6.0.9.md`](changelog/6.0.9.md) for the complete release notes.
 - Crash with SecurityCraft
 
 [Unreleased Changes]: https://github.com/UpperMoon0/ImmersivePortals/compare/v6.1.1...HEAD
+[6.1.3.1]: changelog/6.1.3.1.md
 [6.1.3]: changelog/6.1.3.md
 [6.1.2]: https://github.com/UpperMoon0/ImmersivePortals/pull/30
 [6.1.1]: https://github.com/UpperMoon0/ImmersivePortals/compare/v6.1.0...v6.1.1
