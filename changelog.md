@@ -6,7 +6,7 @@ and this project tries to adhere to [Semantic Versioning](https://semver.org/spe
 
 ## [Unreleased Changes]
 
-## [6.1.4] - Unreleased
+## [6.1.3.1] - Unreleased
 
 ### Fixed
 
@@ -210,6 +210,7 @@ See [`changelog/6.0.9.md`](changelog/6.0.9.md) for the complete release notes.
 - Crash with SecurityCraft
 
 [Unreleased Changes]: https://github.com/UpperMoon0/ImmersivePortals/compare/v6.1.1...HEAD
+[6.1.3.1]: changelog/6.1.3.1.md
 [6.1.3]: changelog/6.1.3.md
 [6.1.2]: https://github.com/UpperMoon0/ImmersivePortals/pull/30
 [6.1.1]: https://github.com/UpperMoon0/ImmersivePortals/compare/v6.1.0...v6.1.1
