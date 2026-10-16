@@ -17,6 +17,17 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 
 class SableClientHandoffContractTest {
     @Test
+    void standingMigrationAcknowledgementRequiresCrossDimensionEvidence() throws Exception {
+        ClassNode compat = readClass("qouteall/imm_ptl/core/compat/sable/SableDimensionStackCompat.class");
+        MethodNode alreadyMigrated = findMethodByName(compat, "isRiderAlreadyMigrated");
+        assertNotNull(alreadyMigrated);
+        assertTrue(invokesNamed(alreadyMigrated, "hasCompletedCrossDimensionTransfer"),
+            "Standing support ownership alone must not suppress a same-dimension on-foot teleport");
+        assertTrue(invokesNamed(alreadyMigrated, "getSubLevel"),
+            "Delayed cross-dimension acknowledgements must still verify destination body ownership");
+    }
+
+    @Test
     void diagnosticSnapshotCorrelatesBothInitiationOrdersWithoutChangingTheHandshake() throws Exception {
         ClassNode handoff = readClass("qouteall/imm_ptl/core/compat/sable/SableServerFirstClientHandoff.class");
         assertTrue(invokesNamed(findMethodByName(handoff, "begin"), "captureRider"));

@@ -397,7 +397,10 @@ public final class SableDimensionStackCompat {
 
         SubLevel support = SableStandingPassenger.getSupport(player);
         if (support instanceof ServerSubLevel body) {
-            return SubLevelContainer.getContainer(player.serverLevel()).getSubLevel(body.getUniqueId()) == body;
+            return SableStandingMigrationState.hasCompletedCrossDimensionTransfer(
+                portal.level().dimension(), portal.getDestDim(), player.serverLevel().dimension(),
+                SubLevelContainer.getContainer(player.serverLevel()).getSubLevel(body.getUniqueId()) == body
+            );
         }
         Entity vehicle = player.getVehicle();
         while (vehicle != null) {
