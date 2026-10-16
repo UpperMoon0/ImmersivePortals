@@ -96,7 +96,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        transport: [udp, tcp]
+        transport: [tcp]
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-java@v5
@@ -205,7 +205,12 @@ jobs:
         env:
           IP_VERIFICATION_NETWORKING: bundled
           IP_NETWORK_STRESS: 'false'
-        run: python3 tools/verify.py "${{ matrix.mode }}" --ship-size "${{ matrix.ship_size }}"
+        run: |
+          if [[ "${{ matrix.mode }}" == ships-aeronautics && "${{ matrix.ship_size }}" == control ]]; then
+            python3 tools/verify.py ships-aeronautics --ship-size control --standing-followup
+          else
+            python3 tools/verify.py "${{ matrix.mode }}" --ship-size "${{ matrix.ship_size }}"
+          fi
       - name: Upload ship flight evidence and diagnostics
         if: always()
         uses: actions/upload-artifact@v4

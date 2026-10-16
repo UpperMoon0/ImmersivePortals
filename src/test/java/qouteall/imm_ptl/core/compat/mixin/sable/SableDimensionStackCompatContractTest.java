@@ -200,7 +200,7 @@ class SableDimensionStackCompatContractTest {
         ClassNode compat = readClass(
             "qouteall/imm_ptl/core/compat/sable/SableDimensionStackCompat.class"
         );
-        MethodNode prepare = findMethodByName(compat, "beforePlayerPortalTeleport");
+        MethodNode prepare = findMethodByName(compat, "beforeMountedPlayerPortalTeleport");
         assertNotNull(prepare);
 
         FieldInsnNode handoffs = null;
@@ -246,7 +246,7 @@ class SableDimensionStackCompatContractTest {
         ClassNode compat = readClass(
             "qouteall/imm_ptl/core/compat/sable/SableDimensionStackCompat.class"
         );
-        MethodNode prepare = findMethodByName(compat, "beforePlayerPortalTeleport");
+        MethodNode prepare = findMethodByName(compat, "beforeMountedPlayerPortalTeleport");
         MethodNode approach = findMethodByName(compat, "isRiddenBodyApproachingPortal");
         MethodNode substep = findMethodByName(compat, "afterPhysicsSubstep");
         assertNotNull(prepare);

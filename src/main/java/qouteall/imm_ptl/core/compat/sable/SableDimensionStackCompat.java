@@ -408,6 +408,10 @@ public final class SableDimensionStackCompat {
             if (!isStandingBodyApproachingPortal(support, player, portal)) return false;
             return migrateSubLevel(container, support, portal, new Pose3d(support.lastPose())) != null;
         }
+        return beforeMountedPlayerPortalTeleport(player, portal);
+    }
+
+    private static boolean beforeMountedPlayerPortalTeleport(ServerPlayer player, Portal portal) {
         Entity passenger = player;
         Entity vehicle = passenger.getVehicle();
         while (vehicle != null) {

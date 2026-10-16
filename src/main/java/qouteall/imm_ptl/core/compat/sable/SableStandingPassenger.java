@@ -10,7 +10,8 @@ public final class SableStandingPassenger {
     private SableStandingPassenger() {}
 
     public static @Nullable SubLevel getSupport(Entity entity) {
-        if (entity.getVehicle() != null || entity.isRemoved() || !entity.isAlive()) return null;
+        if (entity.getVehicle() != null || entity.isRemoved() || !entity.isAlive()
+            || Sable.HELPER.getContaining(entity) != null) return null;
         SubLevel body = Sable.HELPER.getTrackingSubLevel(entity);
         return body != null && !body.isRemoved() && body.getLevel() == entity.level() ? body : null;
     }

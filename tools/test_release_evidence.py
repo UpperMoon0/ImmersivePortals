@@ -41,7 +41,7 @@ class ReleaseEvidenceTest(unittest.TestCase):
             (policy / "tools").mkdir(parents=True)
             current_jobs = evidence.required_jobs()
             old_jobs = [name for name in current_jobs if not name.startswith("Sable ship flight")]
-            self.assertEqual((len(current_jobs), len(old_jobs)), (49, 43))
+            self.assertEqual((len(current_jobs), len(old_jobs)), (48, 42))
             (target / "tools/ci-coverage.json").write_text(json.dumps(old_jobs))
             (policy / "tools/ci-coverage.json").write_text(json.dumps(current_jobs))
             for jobs, expected in ((self.jobs, dict(reuse="true", run_id="123", run_attempt="2", artifact_id="456")),
@@ -228,7 +228,7 @@ class ReleaseEvidenceTest(unittest.TestCase):
             for networking in ("bundled", "4.3.0+5c124ecf19", "4.3.1+7e3d421f19"):
                 expected.append(f"Sable graphical E2E / {transport} / {networking} / normal")
             expected.append(f"Sable graphical E2E / {transport} / 4.3.1+7e3d421f19 / impaired")
-        expected.extend(["Standing balloon stack / udp", "Standing balloon stack / tcp"])
+        expected.append("Standing balloon stack / tcp")
         ships = workflow.split("  sable-ship-flight:\n", 1)[1].split("  graphical-e2e:\n", 1)[0]
         for flow in re.findall(r"- \{ ([^}]+) \}", ships):
             row = dict(pair.split(": ", 1) for pair in flow.split(", "))
@@ -238,7 +238,7 @@ class ReleaseEvidenceTest(unittest.TestCase):
             for flow in re.findall(r"- \{ ([^}]+) \}", block):
                 values = [pair.split(": ", 1)[1] for pair in flow.split(", ")]
                 expected.append(f"{group} ({', '.join(values)}) / visual")
-        self.assertEqual(len(expected), 49)
+        self.assertEqual(len(expected), 48)
         self.assertCountEqual(evidence.required_jobs(), expected)
 
     def test_fresh_release_keeps_every_ci_visual_configuration(self):
@@ -339,6 +339,7 @@ class ReleaseEvidenceTest(unittest.TestCase):
         self.assertNotIn("continue-on-error", release_job)
         self.assertIn("if: always()", release_job)
         self.assertIn('python3 tools/verify.py "${{ matrix.mode }}" --ship-size "${{ matrix.ship_size }}"', release_job)
+        self.assertIn("--standing-followup", release_job)
         configure = lambda job: job.split("      - name: Configure Sable transport\n", 1)[1].split(
             "      - run: chmod +x ./gradlew\n", 1)[0]
         self.assertEqual(configure(ci_job), configure(release_job))

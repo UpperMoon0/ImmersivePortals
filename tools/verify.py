@@ -237,7 +237,7 @@ def launch_windows_interactive(
 
 
     wrapper = RESULT_DIR / "client-session.cmd"
-    inherited = ("IP_SABLE_E2E", "IP_SABLE_STANDING_BALLOON", "IP_SABLE_SHIPS", "IP_SABLE_SHIPS_AERONAUTICS", "IP_SABLE_SHIPS_SIZE",
+    inherited = ("IP_SABLE_E2E", "IP_SABLE_STANDING_BALLOON", "IP_SABLE_STANDING_AFTER_SHIPS", "IP_SABLE_SHIPS", "IP_SABLE_SHIPS_AERONAUTICS", "IP_SABLE_SHIPS_SIZE",
                  "IP_SABLE_E2E_PORT", "IP_SABLE_E2E_RESULT_DIR", "IP_SABLE_E2E_SERVER_DIR", "IP_SABLE_E2E_CLIENT_DIR", "GRADLE_USER_HOME",
                  "IP_PORTAL_SMOKE", "IP_SHADOW_SMOKE", "IP_SMOKE_SAMPLES", "IP_SMOKE_RENDERER", "IP_SMOKE_SABLE",
                  "IP_SMOKE_NEGATIVE_CONTROL", "IP_SMOKE_FLYWHEEL_BACKEND", "IP_SMOKE_RENDER_MODE",
@@ -931,6 +931,7 @@ def prepare_e2e(*, ships: bool = False) -> dict[str, str]:
     env["IP_SABLE_E2E_PORT"] = str(port)
     env["IP_SABLE_E2E"] = "true"
     # An inherited opt-in must never silently replace the established E2E suite.
+    env["IP_SABLE_STANDING_AFTER_SHIPS"] = "false"
     env["IP_SABLE_STANDING_BALLOON"] = "false"
     env["IP_SABLE_SHIPS"] = "false"
     env["IP_SABLE_SHIPS_AERONAUTICS"] = "false"
@@ -1621,7 +1622,10 @@ def validate_results(client_exit: int, smoke: bool = False, ships: bool = False,
         for r in receipts:
             if not r["support"] or r["force_loaded"] or r["native_flight_body_writes"] != 0 or r["standing_error"] >= 1:
                 raise RuntimeError("Invalid standing balloon receipt")
-        return
+        if not ships: return
+        for name in ("ships-server-pass.txt", "ships-client-pass.txt"):
+            if not (RESULT_DIR/name).is_file() or not (RESULT_DIR/name).read_text().strip():
+                raise RuntimeError("Missing preceding powered-suite acceptance: " + name)
     if smoke and ships:
         raise ValueError("visual and ship verification are separate modes")
     if aeronautics and not ships:
@@ -1984,7 +1988,7 @@ def run_e2e(smoke: bool = False, renderer: str = "sodium", sable: bool = True, s
             disable_copy_image: bool = False, shaderpack_file: Path | None = None, shaderpack_profile: str | None = None,
             gl_context: str = "default", shadow_fixture: bool = False, ships: bool = False,
             aeronautics: bool = False, ship_size: str = "all", standing_balloon: bool = False) -> None:
-    if standing_balloon and (smoke or ships or not sable):
+    if standing_balloon and (smoke or not sable or (ships and not aeronautics)):
         raise ValueError("standing balloon requires its own Sable mode")
     if ships and (smoke or not sable):
         raise ValueError("ship verification requires Sable and its own mode")
@@ -1996,6 +2000,7 @@ def run_e2e(smoke: bool = False, renderer: str = "sodium", sable: bool = True, s
     run_deadline = visual_run_deadline() if smoke else None
     env = prepare_e2e(ships=ships)
     env["IP_SABLE_STANDING_BALLOON"] = str(standing_balloon).lower()
+    env["IP_SABLE_STANDING_AFTER_SHIPS"] = str(standing_balloon and ships).lower()
     env["IP_SABLE_SHIPS"] = str(ships).lower()
     env["IP_SABLE_SHIPS_AERONAUTICS"] = str(aeronautics).lower()
     env["IP_SABLE_SHIPS_SIZE"] = ship_size
@@ -2100,7 +2105,7 @@ def run_e2e(smoke: bool = False, renderer: str = "sodium", sable: bool = True, s
             addon_context.close()
 
 
-def run_ships(aeronautics: bool = False, ship_size: str = "all") -> None:
+def run_ships(aeronautics: bool = False, ship_size: str = "all", standing_followup: bool = False) -> None:
     """Keep new flight evidence separate from the established dimension-stack gate."""
     if ship_size not in ("all", "control", "large"):
         raise ValueError("unknown ship size")
@@ -2113,7 +2118,10 @@ def run_ships(aeronautics: bool = False, ship_size: str = "all") -> None:
     SERVER_DIR, CLIENT_DIR = ROOT / ("run-" + name + "-server"), ROOT / ("run-" + name + "-client")
     SERVER_LOG, CLIENT_LOG = RESULT_DIR / "server.log", RESULT_DIR / "client.log"
     try:
-        run_e2e(ships=True, aeronautics=aeronautics, ship_size=ship_size)
+        if standing_followup:
+            run_e2e(ships=True, aeronautics=aeronautics, ship_size=ship_size, standing_balloon=True)
+        else:
+            run_e2e(ships=True, aeronautics=aeronautics, ship_size=ship_size)
     finally:
         RESULT_DIR, SERVER_LOG, CLIENT_LOG, SERVER_DIR, CLIENT_DIR = previous
 
@@ -2184,12 +2192,16 @@ def main() -> int:
     parser.add_argument("--no-sable", action="store_true")
     parser.add_argument("--ship-size", choices=("all", "control", "large"), default="all",
                         help="Run one ship size in isolated worlds/results, or both sizes (default)")
+    parser.add_argument("--standing-followup", action="store_true",
+                        help="Reuse the Aeronautics CONTROL process for envelope/deck standing cases")
     parser.add_argument("--samples", type=int, default=200)
     parser.add_argument("--shadow-fixture", action="store_true", help="Run owned actual shadow-map/receiver acceptance instead of ordinary smoke scenes")
     args = parser.parse_args()
+    if args.standing_followup and (args.mode != "ships-aeronautics" or args.ship_size != "control"):
+        parser.error("--standing-followup requires ships-aeronautics --ship-size control")
     if args.ship_size != "all" and args.mode not in ("ships", "ships-aeronautics"):
         parser.error("--ship-size requires ships or ships-aeronautics mode")
-    if args.mode in ("ships", "ships-aeronautics") and args.no_sable:
+    if args.mode in ("ships", "ships-aeronautics", "standing-balloon") and args.no_sable:
         parser.error("ships requires Sable")
     if args.shadow_fixture and (args.mode != "visual" or args.renderer not in ACTIVE_RENDERERS or args.shaderpack_file is not None or args.render_mode != "normal" or args.negative_control not in ("none", "shadow-clipping-enabled")):
         parser.error("--shadow-fixture requires normal active-renderer visual mode and its own optional shadow negative")
@@ -2230,7 +2242,8 @@ def main() -> int:
                     elif args.mode == "ships":
                         actions = [(result_mode, lambda: run_ships(ship_size=args.ship_size))]
                     elif args.mode == "ships-aeronautics":
-                        actions = [(result_mode, lambda: run_ships(aeronautics=True, ship_size=args.ship_size))]
+                        actions = [(result_mode, lambda: run_ships(aeronautics=True, ship_size=args.ship_size,
+                            **({"standing_followup": True} if args.standing_followup else {})))]
                 for name, action in actions:
                     stage_started = time.monotonic()
                     stage = {"name": name, "status": "failed"}

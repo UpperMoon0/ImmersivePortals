@@ -96,6 +96,14 @@ public final class SableServerFirstClientHandoff {
 
     public static boolean shouldHoldDetachedMovement(LocalPlayer player) {
         if (movementHold == null) return false;
+        RiderIdentity identity = pending != null ? pending.rider() : readyToApply != null ? readyToApply.rider() : null;
+        SubLevel currentSupport = SableStandingPassenger.getSupport(player);
+        if (identity != null && identity.supportId() != null && currentSupport != null
+            && !identity.supportId().equals(currentSupport.getUniqueId())) {
+            clear();
+            clearClientPendingGate(player);
+            return false;
+        }
         boolean hold = movementHold.shouldHold(player,
             player.getVehicle() == null ? null : player.getVehicle().getUUID(), player.level().dimension());
         if (movementHold.invalidated() || !player.isAlive()) {
