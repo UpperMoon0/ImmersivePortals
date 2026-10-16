@@ -37,6 +37,27 @@ final class SableStandingSupportGameTestImpl {
                 "Standing passenger bypassed coordinated handoff");
             helper.assertTrue(!SableInterface.invoker.shouldUseServerFirstStandingTeleport(nearby,portal),
                 "Untracked nearby entity entered ship handoff");
+            try {
+                var guard = qouteall.imm_ptl.core.compat.sable.SableDimensionStackCompat.class.getDeclaredMethod(
+                    "isStandingBodyApproachingPortal", dev.ryanhcode.sable.sublevel.ServerSubLevel.class,
+                    net.minecraft.world.entity.Entity.class, Portal.class);
+                guard.setAccessible(true);
+                var handle = dev.ryanhcode.sable.api.physics.handle.RigidBodyHandle.of(
+                    (dev.ryanhcode.sable.sublevel.ServerSubLevel)body);
+                handle.addLinearAndAngularVelocity(new org.joml.Vector3d(0,-3,0)
+                    .sub(handle.getLinearVelocity(new org.joml.Vector3d())),new org.joml.Vector3d());
+                portal.setOrientationAndSize(new Vec3(0,0,1),new Vec3(1,0,0),8,8);
+                Vec3 eye = qouteall.imm_ptl.core.McHelper.getEyePos(standing);
+                portal.setOriginPos(eye.add(0,-1,0));
+                helper.assertTrue(!(boolean)guard.invoke(null,body,standing,portal),
+                    "Native inward motion accepted a standing eye still in front of the portal");
+                portal.setOriginPos(eye.add(0,.01,0));
+                helper.assertTrue((boolean)guard.invoke(null,body,standing,portal),
+                    "Actual standing eye entry with inward native motion was rejected");
+                handle.addLinearAndAngularVelocity(new org.joml.Vector3d(0,6,0),new org.joml.Vector3d());
+                helper.assertTrue(!(boolean)guard.invoke(null,body,standing,portal),
+                    "Outward standing body accepted a stale request");
+            } catch (ReflectiveOperationException error) { throw new IllegalStateException(error); }
             portal.setScaling(2);
             helper.assertTrue(!SableInterface.invoker.shouldUseServerFirstStandingTeleport(standing,portal),
                 "Standing path bypassed unsupported ship scaling");

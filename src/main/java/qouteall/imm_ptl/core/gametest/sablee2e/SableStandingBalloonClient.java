@@ -29,9 +29,14 @@ final class SableStandingBalloonClient {
                 }
                 return;
             }
-            if(mc.player.getVehicle()!=null)throw new IllegalStateException("balloon test became mounted");
+            if(PortalSmokeSupport.exists("balloon-reset.txt") && mc.level.dimension().equals(Level.NETHER)
+                && mc.player.position().distanceTo(new net.minecraft.world.phys.Vec3(32.5,81,.5))<.2
+                && mc.player.onGround() && Sable.HELPER.getTrackingSubLevel(mc.player)==null) {
+                PortalSmokeSupport.write("balloon-client-reset.txt","Native ordinary collision settled");
+            }
             String request=PortalSmokeSupport.read("balloon-request.json");
             if(request.isEmpty())return;
+            if(mc.player.getVehicle()!=null)throw new IllegalStateException("balloon test became mounted");
             var json=JsonParser.parseString(request).getAsJsonObject();
             int testCase=json.get("case").getAsInt();
             UUID id=UUID.fromString(json.get("body").getAsString());
@@ -39,7 +44,12 @@ final class SableStandingBalloonClient {
             var container=SubLevelContainer.getContainer(mc.level);
             var body=container==null?null:container.getSubLevel(id);
             boolean supported=body!=null && !body.isRemoved() && Sable.HELPER.getTrackingSubLevel(mc.player)==body;
-            if(mc.level.dimension().equals(Level.NETHER) && supported) {
+            var expectedFeet=new net.minecraft.world.phys.Vec3(json.get("feet_x").getAsDouble(),
+                json.get("feet_y").getAsDouble(),json.get("feet_z").getAsDouble());
+            if(ticks%100==0 && mc.level.dimension().equals(Level.NETHER) && body!=null)
+                PortalSmokeSupport.write("balloon-preflight-client.json",body.logicalPose().transformPositionInverse(mc.player.position())+" expected "+expectedFeet+" support="+supported);
+            if(mc.level.dimension().equals(Level.NETHER) && supported
+                && body.logicalPose().transformPositionInverse(mc.player.position()).distanceTo(expectedFeet)<.2) {
                 PortalSmokeSupport.write("balloon-client-ready-"+testCase+".txt","native standing support "+id);
             }
             if(mc.level.dimension().equals(Level.OVERWORLD) && supported

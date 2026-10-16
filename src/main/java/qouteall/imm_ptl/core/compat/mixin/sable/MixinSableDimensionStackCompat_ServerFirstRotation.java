@@ -60,6 +60,10 @@ public abstract class MixinSableDimensionStackCompat_ServerFirstRotation {
         // Removing or mounting a Sable seat converts the client's facing. Prepare must
         // arrive before those packets as well as before the player's position packet.
         for (ServerPlayer player : sourceWorld.players()) {
+            if (qouteall.imm_ptl.core.compat.sable.SableStandingPassenger.getSupport(player) == sourceSubLevel) {
+                ip_prepareRider(player, portal);
+                continue;
+            }
             for (Entity vehicle = player.getVehicle(); vehicle != null; vehicle = vehicle.getVehicle()) {
                 if (dev.ryanhcode.sable.Sable.HELPER.getContaining(vehicle) == sourceSubLevel) {
                     ip_prepareRider(player, portal);

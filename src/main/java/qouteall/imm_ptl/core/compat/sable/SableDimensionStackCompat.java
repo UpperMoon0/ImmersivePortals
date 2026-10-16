@@ -375,6 +375,9 @@ public final class SableDimensionStackCompat {
                 continue;
             }
 
+            LOGGER.debug("Native Sable crossing body={} source={} target={} COMBefore={} COMAfter={} earlyHullReturn={}",
+                id, level.dimension().location(), portal.getDestDim().location(), previousAnchor, currentAnchor,
+                earlyHullReturn != null);
             ServerSubLevel migrated = migrateSubLevel(
                 container, subLevel, portal, new Pose3d(subLevel.lastPose())
             );
@@ -416,7 +419,11 @@ public final class SableDimensionStackCompat {
             if (container == null || container.getSubLevel(support.getUniqueId()) != support) return false;
             ClientHandoff pending = CLIENT_HANDOFFS.get(support.getUniqueId());
             if (pending != null && !pending.committed) return false;
-            if (!isStandingBodyApproachingPortal(support, player, portal)) return false;
+            boolean approaching = isStandingBodyApproachingPortal(support, player, portal);
+            LOGGER.debug("Standing Sable request body={} source={} target={} serverEyeDistance={} accepted={}",
+                support.getUniqueId(), player.serverLevel().dimension().location(), portal.getDestDim().location(),
+                portal.getDistanceToPlane(McHelper.getEyePos(player)), approaching);
+            if (!approaching) return false;
             return migrateSubLevel(container, support, portal, new Pose3d(support.lastPose())) != null;
         }
         return beforeMountedPlayerPortalTeleport(player, portal);
@@ -500,6 +507,10 @@ public final class SableDimensionStackCompat {
     private static boolean isStandingBodyApproachingPortal(
         ServerSubLevel body, Entity passenger, Portal portal
     ) {
+        // Direction alone cannot authenticate a delayed reverse prediction after Ack:
+        // native buoyancy can briefly reverse while the actual player eye is still in
+        // front of that portal. Require authoritative eye entry, not client coordinates.
+        if (portal.getDistanceToPlane(McHelper.getEyePos(passenger)) > PORTAL_ENDPOINT_EPSILON) return false;
         RigidBodyHandle handle = RigidBodyHandle.of(body);
         if (handle == null || !handle.isValid() || portal.level() != body.getLevel()) return false;
         Vector3d linear = handle.getLinearVelocity(new Vector3d());
@@ -576,7 +587,8 @@ public final class SableDimensionStackCompat {
             ? new Vec3[] {previous.bottom(), previous.top()} : verticalHullAnchors(body, new Pose3d(body.lastPose()));
         for (Portal portal : GlobalPortalStorage.getGlobalPortals(level)) {
             if (!(portal instanceof VerticalConnectingPortal) || !portal.isTeleportable()
-                || portal.hasScaling() || portal.getDestDim().equals(level.dimension())) continue;
+                || portal.hasScaling() || portal.getDestDim().equals(level.dimension())
+                || portal.getNormal().y >= 0) continue;
             int tip = portal.getNormal().y < 0 ? 1 : 0;
             double from = portal.getDistanceToPlane(before[tip]);
             double to = portal.getDistanceToPlane(now[tip]);
@@ -759,6 +771,7 @@ public final class SableDimensionStackCompat {
 
         for (MigrationUnit unit : units) {
             sourceContainer.removeSubLevel(unit.source(), SubLevelRemovalReason.REMOVED);
+            if (unit.aeronautics() != null) unit.aeronautics().retireSource();
         }
         for (MigrationUnit unit : units) {
             commitClientHandoff(sourceWorld, unit.source().getUniqueId());
@@ -823,6 +836,7 @@ public final class SableDimensionStackCompat {
 
         List<EntityTransfer> entities = capturePlotEntities(sourceWorld, sourceSubLevel, portal);
         List<SubLevelLoadingTicket<?>> tickets = captureForceLoadTickets(sourceContainer, sourceSubLevel);
+        SableAeronauticsMigration aeronautics = SableAeronauticsMigration.capture(sourceSubLevel);
         SubLevelData sourceData = SubLevelSerializer.toData(sourceSubLevel, dependencyIds);
         SubLevelData destinationData = transformSerializedState(sourceData, portal);
         if (!rebasePlotSections(
@@ -842,6 +856,7 @@ public final class SableDimensionStackCompat {
         }
 
         try {
+            if (aeronautics != null) aeronautics.restore(destinationWorld);
             restoreExactVelocity(destinationSubLevel, destinationLinearVelocity, destinationAngularVelocity);
             destinationSubLevel.latestLinearVelocity.set(destinationLinearVelocity);
             destinationSubLevel.latestAngularVelocity.set(destinationAngularVelocity);
@@ -852,6 +867,7 @@ public final class SableDimensionStackCompat {
         catch (RuntimeException failure) {
             removeForceLoadTicketsBestEffort(destinationContainer, destinationSubLevel, tickets);
             destinationContainer.removeSubLevel(destinationSubLevel, SubLevelRemovalReason.REMOVED);
+            if (aeronautics != null) aeronautics.discard(destinationWorld);
             throw failure;
         }
 
@@ -859,7 +875,7 @@ public final class SableDimensionStackCompat {
             sourceSubLevel, destinationSubLevel,
             localPlotX(sourceContainer, sourceSubLevel),
             localPlotZ(sourceContainer, sourceSubLevel),
-            entities, tickets, new HashMap<>()
+            entities, tickets, new HashMap<>(), aeronautics
         );
     }
 
@@ -961,6 +977,7 @@ public final class SableDimensionStackCompat {
             if (!unit.destination().isRemoved()) {
                 destinationContainer.removeSubLevel(unit.destination(), SubLevelRemovalReason.REMOVED);
             }
+            if (unit.aeronautics() != null) unit.aeronautics().discard(destinationContainer.getLevel());
         }
     }
 
@@ -1395,7 +1412,8 @@ public final class SableDimensionStackCompat {
         int localPlotZ,
         List<EntityTransfer> entities,
         List<SubLevelLoadingTicket<?>> tickets,
-        Map<UUID, Entity> movedById
+        Map<UUID, Entity> movedById,
+        SableAeronauticsMigration aeronautics
     ) {}
 
     private record EntityTransfer(

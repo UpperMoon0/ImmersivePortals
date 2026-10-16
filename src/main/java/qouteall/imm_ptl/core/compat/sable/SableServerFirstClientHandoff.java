@@ -170,7 +170,8 @@ public final class SableServerFirstClientHandoff {
     private static RiderIdentity captureRider(LocalPlayer player) {
         SubLevel support = SableStandingPassenger.getSupport(player);
         return new RiderIdentity(player.getVehicle() == null ? null : player.getVehicle().getUUID(),
-            player.level().dimension(), support == null ? null : support.getUniqueId());
+            player.level().dimension(), support == null ? null : support.getUniqueId(),
+            support == null ? null : support.logicalPose().transformPositionInverse(player.position()));
     }
 
     public record HandoffSnapshot(
@@ -295,6 +296,13 @@ public final class SableServerFirstClientHandoff {
             if (support == null || support.isRemoved()) return false;
             ((dev.ryanhcode.sable.mixinterface.entity.entity_sublevel_collision.EntityMovementExtension) player)
                 .sable$setTrackingSubLevel(support);
+            // Preserve the standing attachment in the destination interpolation frame.
+            // A world-space position packet describes the server physics frame, which can
+            // be several snapshots ahead of the client deck during a physics-first entry.
+            if (ready.rider().supportPosition() != null) {
+                player.setPos(support.logicalPose().transformPosition(ready.rider().supportPosition()));
+                dev.ryanhcode.sable.api.entity.EntitySubLevelUtil.setOldPosNoMovement(player);
+            }
             // Standing players use world-space facing, unlike retained-seat riders.
             applyFallbackTransform(player, ready);
             readyToApply = null;
@@ -401,7 +409,7 @@ public final class SableServerFirstClientHandoff {
         }
     }
 
-    private record RiderIdentity(@Nullable UUID vehicleId, ResourceKey<Level> sourceDimension, @Nullable UUID supportId) {}
+    private record RiderIdentity(@Nullable UUID vehicleId, ResourceKey<Level> sourceDimension, @Nullable UUID supportId, @Nullable Vec3 supportPosition) {}
 
     private record PreparedTransform(
         ResourceKey<Level> destinationDimension,

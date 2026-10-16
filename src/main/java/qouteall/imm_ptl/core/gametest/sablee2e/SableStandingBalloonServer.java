@@ -36,7 +36,7 @@ final class SableStandingBalloonServer {
     private static int ticks, phaseTicks, testCase, phase;
     private static Vec3 localFeet;
     private static BlockPos plotOrigin;
-    private static double sourceY, arrivalY, seamY;
+    private static double sourceY, arrivalY, seamY, sourceGas, arrivedGas;
     private static final List<Map<String,Object>> receipts = new ArrayList<>();
     private static final Map<BlockPos,BlockState> manifest = new LinkedHashMap<>();
     static boolean afterShips() { return "true".equals(System.getenv("IP_SABLE_STANDING_AFTER_SHIPS")); }
@@ -54,6 +54,7 @@ final class SableStandingBalloonServer {
                     PortalSmokeSupport.directory().resolve("ships-server-pass.txt"),
                     java.nio.file.StandardCopyOption.REPLACE_EXISTING);
             } catch (java.io.IOException error) { throw new IllegalStateException(error); }
+            player.stopRiding();
             ticks=phaseTicks=testCase=phase=0; receipts.clear(); startedAfterShips=true;
             PortalSmokeSupport.write("standing-balloon-start.txt","Mounted powered suite passed; begin unmounted cases");
         }
@@ -72,6 +73,7 @@ final class SableStandingBalloonServer {
             else if (phase==1) warmup();
             else if (phase==2) fly();
             else if (phase==3) observe();
+            else if (phase==4 && phaseTicks>=60 && PortalSmokeSupport.exists("balloon-client-reset.txt")) setup();
         } catch (Throwable error) {
             phase=99; error.printStackTrace();
             PortalSmokeSupport.write("server-fail.txt",error+state());
@@ -126,7 +128,8 @@ final class SableStandingBalloonServer {
         ServerTeleportationManager.of(player.server).forceTeleportPlayer(player,source.dimension(),feet);
         phase=1; phaseTicks=0;
         PortalSmokeSupport.write("balloon-request.json",new Gson().toJson(Map.of(
-            "case",testCase,"body",id.toString(),"standing",testCase==0?"envelope":"deck","blocks",manifest.size())));
+            "case",testCase,"body",id.toString(),"standing",testCase==0?"envelope":"deck","blocks",manifest.size(),
+            "feet_x",localFeet.x,"feet_y",localFeet.y,"feet_z",localFeet.z)));
     }
     private static void warmup() throws Exception {
         ServerSubLevel body=body(source);
@@ -137,12 +140,19 @@ final class SableStandingBalloonServer {
         handle.addLinearAndAngularVelocity(handle.getLinearVelocity(new Vector3d()).negate(),
             handle.getAngularVelocity(new Vector3d()).negate());
         SubLevelContainer.getContainer(source).physicsSystem().updatePose(body);
+        body.updateLastPose(); body.updateBoundingBox();
         require(player.getVehicle()==null,"standing fixture mounted a vehicle");
+        if(phaseTicks%40==0) PortalSmokeSupport.write("balloon-preflight-server.json",new Gson().toJson(Map.of(
+            "case",testCase,"feet",body.logicalPose().transformPositionInverse(player.position()).toString(),
+            "expected",localFeet.toString(),"support",SableStandingPassenger.getSupport(player)==body)));
         if(phaseTicks<100 || !PortalSmokeSupport.exists("balloon-client-ready-"+testCase+".txt")) return;
         require(SableStandingPassenger.getSupport(player)==body,"native collision did not establish standing support");
+        require(body.logicalPose().transformPositionInverse(player.position()).distanceTo(localFeet)<.2,
+            "preflight passenger is not on the intended surface: "+body.logicalPose().transformPositionInverse(player.position())+" expected "+localFeet);
         Object burner=burner(body,source);
         Object balloon=burner.getClass().getMethod("getBalloon").invoke(burner);
         if(balloon==null) return;
+        sourceGas=((Number)balloon.getClass().getMethod("getTotalFilledVolume").invoke(balloon)).doubleValue();
         double lift=((Number)balloon.getClass().getMethod("getTotalLift").invoke(balloon)).doubleValue();
         double pressure=dev.ryanhcode.sable.physics.config.dimension_physics.DimensionPhysicsData.getAirPressure(
             source,new Vector3d(body.logicalPose().position()));
@@ -157,7 +167,7 @@ final class SableStandingBalloonServer {
         PortalSmokeSupport.write("balloon-release-"+testCase+".txt","lift="+lift+" sourceY="+sourceY);
         phase=2; phaseTicks=0;
     }
-    private static void fly() {
+    private static void fly() throws Exception {
         if(phaseTicks%20==0) {
             ServerSubLevel active=body(player.serverLevel());
             if(active!=null) PortalSmokeSupport.write("balloon-flight-"+testCase+".json",new Gson().toJson(Map.of(
@@ -173,6 +183,10 @@ final class SableStandingBalloonServer {
             require(SableStandingPassenger.getSupport(player)==arrived,"standing support still references the source ship");
             require(arrived.logicalPose().position().y>sourceY-seamY+destination.getMinBuildHeight()+3,
                 "balloon did not make natural pre-seam travel");
+            Object balloon=burner(arrived,destination).getClass().getMethod("getBalloon").invoke(burner(arrived,destination));
+            require(balloon!=null,"destination balloon gas state missing");
+            arrivedGas=((Number)balloon.getClass().getMethod("getTotalFilledVolume").invoke(balloon)).doubleValue();
+            require(arrivedGas>=sourceGas*.95,"destination balloon lost stored gas: "+arrivedGas+" from "+sourceGas);
             arrivalY=arrived.logicalPose().position().y;
             phase=3;phaseTicks=0;
         } else require(body(source)!=null,"ship migrated without standing passenger");
@@ -190,17 +204,23 @@ final class SableStandingBalloonServer {
         Object burner=burner(body,destination);
         require((boolean)burner.getClass().getMethod("canOutputGas").invoke(burner),"destination burner stopped");
         receipts.add(Map.of("standing",testCase==0?"envelope":"deck","blocks",manifest.size(),"support",true,
-            "force_loaded",false,"source_y",sourceY,"arrival_y",arrivalY,"observed_y",body.logicalPose().position().y,
-            "standing_error",relative.distanceTo(localFeet),"native_flight_body_writes",0));
+            "force_loaded",false,"arrival_y",arrivalY,"observed_y",body.logicalPose().position().y,
+            "standing_error",relative.distanceTo(localFeet),"native_flight_body_writes",0,
+            "source_gas",sourceGas,"arrived_gas",arrivedGas));
         if(++testCase==2) {
             PortalSmokeSupport.write("balloon-server.json",new Gson().toJson(receipts));
             PortalSmokeSupport.write("server-pass.txt","Both unmounted burner-balloon stack ascents passed");
             phase=99;
         } else {
-            // Reuse the original live player; safely stage before removing the old ship.
-            ServerTeleportationManager.of(player.server).forceTeleportPlayer(player,source.dimension(),new Vec3(0,100,0));
+            // Settle ordinary native movement on a stationary pad before the next case.
+            // Reusing airborne collision/inherited-motion state can launch the player into
+            // the next envelope; this is setup only, after all flight assertions passed.
             SubLevelContainer.getContainer(destination).removeSubLevel(body,SubLevelRemovalReason.REMOVED);
-            setup();
+            for(BlockPos pos:BlockPos.betweenClosed(29,80,-3,35,87,3)) source.setBlock(pos,
+                pos.getY()==80 || pos.getY()==87 ? Blocks.OAK_PLANKS.defaultBlockState() : Blocks.AIR.defaultBlockState(),2);
+            ServerTeleportationManager.of(player.server).forceTeleportPlayer(player,source.dimension(),new Vec3(32.5,81,.5));
+            PortalSmokeSupport.write("balloon-reset.txt","Settle between independent standing cases");
+            phase=4; phaseTicks=0;
         }
     }
     private static Object burner(ServerSubLevel body,ServerLevel level) {

@@ -12,7 +12,7 @@ class StandingBalloonEvidenceTest(unittest.TestCase):
             for name in ("server-pass", "client-pass", "balloon-client-ready-0", "balloon-client-ready-1",
                          "balloon-client-arrived-0", "balloon-client-arrived-1"):
                 (root/(name+".txt")).write_text("observed")
-            receipts=[dict(standing=standing,support=True,force_loaded=False,native_flight_body_writes=0,standing_error=.01)
+            receipts=[dict(standing=standing,support=True,force_loaded=False,native_flight_body_writes=0,standing_error=.01,source_gas=300,arrived_gas=400)
                       for standing in ("envelope","deck")]
             def validate(data):
                 (root/"balloon-server.json").write_text(json.dumps(data))
@@ -20,7 +20,7 @@ class StandingBalloonEvidenceTest(unittest.TestCase):
             with patch.object(verify,"RESULT_DIR",root):
                 validate(receipts)
                 with self.assertRaises(RuntimeError): validate(receipts[:1])
-                for key,value in (("support",False),("force_loaded",True),("native_flight_body_writes",1),("standing_error",1)):
+                for key,value in (("support",False),("force_loaded",True),("native_flight_body_writes",1),("standing_error",1),("source_gas",0),("arrived_gas",0)):
                     broken=[dict(row) for row in receipts];broken[0][key]=value
                     with self.assertRaises(RuntimeError):validate(broken)
                 (root/"balloon-client-arrived-1.txt").unlink()
@@ -39,7 +39,7 @@ class StandingBalloonEvidenceTest(unittest.TestCase):
                          "balloon-client-arrived-0", "balloon-client-arrived-1"):
                 (root/(name+".txt")).write_text("observed")
             (root/"balloon-server.json").write_text(json.dumps([
-                dict(standing=kind,support=True,force_loaded=False,native_flight_body_writes=0,standing_error=.01)
+                dict(standing=kind,support=True,force_loaded=False,native_flight_body_writes=0,standing_error=.01,source_gas=300,arrived_gas=400)
                 for kind in ("envelope","deck")]))
             with patch.object(verify,"RESULT_DIR",root),patch.object(verify,"validate_ship_reports") as original:
                 with self.assertRaisesRegex(RuntimeError,"preceding powered-suite"):
