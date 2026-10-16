@@ -86,6 +86,10 @@ public final class SableServerFirstClientHandoff {
 
     private static void startMovementHold(LocalPlayer player, RiderIdentity rider, ResourceKey<Level> destination) {
         if (movementHold != null) movementHold.cancel();
+        if (rider.supportId() != null) {
+            movementHold = SableRiderMovementHold.standing(player, rider.sourceDimension(), destination, RIDER_SYNC_TIMEOUT_TICKS);
+            return;
+        }
         movementHold = rider.vehicleId() == null ? null : new SableRiderMovementHold(player, rider.vehicleId(),
             rider.sourceDimension(), destination, RIDER_SYNC_TIMEOUT_TICKS);
     }
@@ -156,8 +160,9 @@ public final class SableServerFirstClientHandoff {
     }
 
     private static RiderIdentity captureRider(LocalPlayer player) {
+        SubLevel support = SableStandingPassenger.getSupport(player);
         return new RiderIdentity(player.getVehicle() == null ? null : player.getVehicle().getUUID(),
-            player.level().dimension());
+            player.level().dimension(), support == null ? null : support.getUniqueId());
     }
 
     public record HandoffSnapshot(
@@ -276,6 +281,18 @@ public final class SableServerFirstClientHandoff {
         ReadyToApply ready = readyToApply;
         if (ready == null || !player.level().dimension().equals(ready.destinationDimension())) return false;
 
+        if (ready.rider().supportId() != null) {
+            var container = dev.ryanhcode.sable.api.sublevel.SubLevelContainer.getContainer(player.level());
+            SubLevel support = container == null ? null : container.getSubLevel(ready.rider().supportId());
+            if (support == null || support.isRemoved()) return false;
+            ((dev.ryanhcode.sable.mixinterface.entity.entity_sublevel_collision.EntityMovementExtension) player)
+                .sable$setTrackingSubLevel(support);
+            // Standing players use world-space facing, unlike retained-seat riders.
+            applyFallbackTransform(player, ready);
+            readyToApply = null;
+            clearMovementHold();
+            return true;
+        }
         if (!isAttachedToCurrentSableSubLevel(player)) return false;
 
         Portal transformSnapshot = createTransformSnapshot(player, ready);
@@ -376,7 +393,7 @@ public final class SableServerFirstClientHandoff {
         }
     }
 
-    private record RiderIdentity(@Nullable UUID vehicleId, ResourceKey<Level> sourceDimension) {}
+    private record RiderIdentity(@Nullable UUID vehicleId, ResourceKey<Level> sourceDimension, @Nullable UUID supportId) {}
 
     private record PreparedTransform(
         ResourceKey<Level> destinationDimension,

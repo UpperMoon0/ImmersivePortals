@@ -21,14 +21,16 @@ public final class SableE2EEvents {
         @SubscribeEvent
         public static void login(PlayerEvent.PlayerLoggedInEvent event) {
             if (enabled()) {
-                if (SableShipFlightTest.enabled()) SableShipFlightTest.onPlayerLogin(event);
+                if (SableStandingBalloonServer.enabled()) SableStandingBalloonServer.login(event);
+                else if (SableShipFlightTest.enabled()) SableShipFlightTest.onPlayerLogin(event);
                 else SableDimensionStackDedicatedServerTest.onPlayerLogin(event);
             }
         }
         @SubscribeEvent
         public static void tick(ServerTickEvent.Post event) {
             if (enabled()) {
-                if (SableShipFlightTest.enabled()) SableShipFlightTest.onServerTick(event);
+                if (SableStandingBalloonServer.enabled()) SableStandingBalloonServer.tick(event);
+                else if (SableShipFlightTest.enabled()) SableShipFlightTest.onServerTick(event);
                 else SableDimensionStackDedicatedServerTest.onServerTick(event);
             }
         }
@@ -42,7 +44,8 @@ public final class SableE2EEvents {
                 // Both drivers can connect on their first tick. Install the test-only
                 // oracle before selecting either lane, including complex ship flights.
                 SableInterpolationHistoryDiagnostics.setObserver(SableInterpolationHistoryProbe::verify);
-                if (SableShipFlightTest.enabled()) SableShipFlightClientTest.onClientTick(event);
+                if (SableStandingBalloonServer.enabled()) SableStandingBalloonClient.tick(event);
+                else if (SableShipFlightTest.enabled()) SableShipFlightClientTest.onClientTick(event);
                 else SableDimensionStackDedicatedClientTest.onClientTick(event);
             }
         }

@@ -237,7 +237,7 @@ def launch_windows_interactive(
 
 
     wrapper = RESULT_DIR / "client-session.cmd"
-    inherited = ("IP_SABLE_E2E", "IP_SABLE_SHIPS", "IP_SABLE_SHIPS_AERONAUTICS", "IP_SABLE_SHIPS_SIZE",
+    inherited = ("IP_SABLE_E2E", "IP_SABLE_STANDING_BALLOON", "IP_SABLE_SHIPS", "IP_SABLE_SHIPS_AERONAUTICS", "IP_SABLE_SHIPS_SIZE",
                  "IP_SABLE_E2E_PORT", "IP_SABLE_E2E_RESULT_DIR", "IP_SABLE_E2E_SERVER_DIR", "IP_SABLE_E2E_CLIENT_DIR", "GRADLE_USER_HOME",
                  "IP_PORTAL_SMOKE", "IP_SHADOW_SMOKE", "IP_SMOKE_SAMPLES", "IP_SMOKE_RENDERER", "IP_SMOKE_SABLE",
                  "IP_SMOKE_NEGATIVE_CONTROL", "IP_SMOKE_FLYWHEEL_BACKEND", "IP_SMOKE_RENDER_MODE",
@@ -931,6 +931,7 @@ def prepare_e2e(*, ships: bool = False) -> dict[str, str]:
     env["IP_SABLE_E2E_PORT"] = str(port)
     env["IP_SABLE_E2E"] = "true"
     # An inherited opt-in must never silently replace the established E2E suite.
+    env["IP_SABLE_STANDING_BALLOON"] = "false"
     env["IP_SABLE_SHIPS"] = "false"
     env["IP_SABLE_SHIPS_AERONAUTICS"] = "false"
     env["IP_SABLE_SHIPS_SIZE"] = "all"
@@ -1606,7 +1607,21 @@ def validate_ship_reports(aeronautics: bool = False, ship_size: str = "all") -> 
 
 
 def validate_results(client_exit: int, smoke: bool = False, ships: bool = False, aeronautics: bool = False,
-                     ship_size: str = "all") -> None:
+                     ship_size: str = "all", standing_balloon: bool = False) -> None:
+    if standing_balloon:
+        check_failures()
+        if client_exit != 0: raise RuntimeError("Standing balloon client failed")
+        for name in ("server-pass.txt", "client-pass.txt", "balloon-client-ready-0.txt", "balloon-client-ready-1.txt",
+                     "balloon-client-arrived-0.txt", "balloon-client-arrived-1.txt"):
+            if not (RESULT_DIR / name).is_file() or not (RESULT_DIR / name).read_text().strip():
+                raise RuntimeError("Missing standing balloon evidence: " + name)
+        receipts = json.loads((RESULT_DIR / "balloon-server.json").read_text())
+        if len(receipts) != 2 or {r["standing"] for r in receipts} != {"envelope", "deck"}:
+            raise RuntimeError("Missing standing balloon cases")
+        for r in receipts:
+            if not r["support"] or r["force_loaded"] or r["native_flight_body_writes"] != 0 or r["standing_error"] >= 1:
+                raise RuntimeError("Invalid standing balloon receipt")
+        return
     if smoke and ships:
         raise ValueError("visual and ship verification are separate modes")
     if aeronautics and not ships:
@@ -1836,7 +1851,7 @@ class ClientProgressReporter:
 
 def wait_for_client(server: subprocess.Popen, client: subprocess.Popen, timeout: float = 300,
                     smoke: bool = False, ships: bool = False, aeronautics: bool = False,
-                    ship_size: str = "all") -> None:
+                    ship_size: str = "all", standing_balloon: bool = False) -> None:
     started = time.monotonic()
     deadline = started + timeout
     last_progress = started
@@ -1861,7 +1876,7 @@ def wait_for_client(server: subprocess.Popen, client: subprocess.Popen, timeout:
             try:
                 # Closing the network precedes world teardown; its final receipts can arrive
                 # shortly after the server records the intentional disconnect.
-                validate_results(0, smoke=smoke, ships=ships, aeronautics=aeronautics, ship_size=ship_size)
+                validate_results(0, smoke=smoke, ships=ships, aeronautics=aeronautics, ship_size=ship_size, standing_balloon=standing_balloon)
             except RuntimeError:
                 expected_cleanup = not smoke and not ships and all(
                     (RESULT_DIR / name).is_file() and (RESULT_DIR / name).read_text().strip()
@@ -1878,7 +1893,7 @@ def wait_for_client(server: subprocess.Popen, client: subprocess.Popen, timeout:
         if server.poll() is not None:
             raise RuntimeError(f"dedicated server exited during E2E (exit={server.returncode})")
         if client.poll() is not None:
-            validate_results(client.returncode, smoke=smoke, ships=ships, aeronautics=aeronautics, ship_size=ship_size)
+            validate_results(client.returncode, smoke=smoke, ships=ships, aeronautics=aeronautics, ship_size=ship_size, standing_balloon=standing_balloon)
             return
         current = client_progress_token()
         if current != progress:
@@ -1968,7 +1983,9 @@ def run_e2e(smoke: bool = False, renderer: str = "sodium", sable: bool = True, s
             negative_control: str = "none", flywheel_backend: str = "default", render_mode: str = "normal",
             disable_copy_image: bool = False, shaderpack_file: Path | None = None, shaderpack_profile: str | None = None,
             gl_context: str = "default", shadow_fixture: bool = False, ships: bool = False,
-            aeronautics: bool = False, ship_size: str = "all") -> None:
+            aeronautics: bool = False, ship_size: str = "all", standing_balloon: bool = False) -> None:
+    if standing_balloon and (smoke or ships or not sable):
+        raise ValueError("standing balloon requires its own Sable mode")
     if ships and (smoke or not sable):
         raise ValueError("ship verification requires Sable and its own mode")
     if aeronautics and not ships:
@@ -1978,6 +1995,7 @@ def run_e2e(smoke: bool = False, renderer: str = "sodium", sable: bool = True, s
     print(f"[verify] {'visual ' + renderer if smoke else 'ships-aeronautics' if aeronautics else 'ships' if ships else 'e2e'}: dedicated server + automated graphical client", flush=True)
     run_deadline = visual_run_deadline() if smoke else None
     env = prepare_e2e(ships=ships)
+    env["IP_SABLE_STANDING_BALLOON"] = str(standing_balloon).lower()
     env["IP_SABLE_SHIPS"] = str(ships).lower()
     env["IP_SABLE_SHIPS_AERONAUTICS"] = str(aeronautics).lower()
     env["IP_SABLE_SHIPS_SIZE"] = ship_size
@@ -2018,7 +2036,7 @@ def run_e2e(smoke: bool = False, renderer: str = "sodium", sable: bool = True, s
     network_context = ExitStack()
     addon_context = ExitStack()
     try:
-        if aeronautics:
+        if aeronautics or standing_balloon:
             addon_context.enter_context(aeronautics_bundle.stage(ROOT, RESULT_DIR, (SERVER_DIR, CLIENT_DIR)))
         server = subprocess.Popen(
             gradle_cmd("run" + server_run, *properties),
@@ -2047,7 +2065,7 @@ def run_e2e(smoke: bool = False, renderer: str = "sodium", sable: bool = True, s
             if smoke:
                 timeout = min(timeout, max(0, run_deadline - time.monotonic() - VISUAL_CLEANUP_SECONDS))
                 print(f"[verify] Graphical client budget: {timeout:.0f}s; bounded by 120-minute job with diagnostics/cleanup reserve", flush=True)
-            wait_for_client(server, client, timeout=timeout, smoke=smoke, ships=ships, aeronautics=aeronautics, ship_size=ship_size)
+            wait_for_client(server, client, timeout=1200 if standing_balloon else timeout, smoke=smoke, ships=ships, aeronautics=aeronautics, ship_size=ship_size, standing_balloon=standing_balloon)
         finally:
             stop_process_tree(client)
             if client_log is not None:
@@ -2154,7 +2172,7 @@ def run_visual(renderer: str, sable: bool, samples: int, negative_control: str =
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run the canonical Immersive Portals verification suite")
-    parser.add_argument("mode", choices=("core", "e2e", "ships", "ships-aeronautics", "visual", "full", "matrix", "staff"), nargs="?", default="full")
+    parser.add_argument("mode", choices=("core", "e2e", "ships", "ships-aeronautics", "standing-balloon", "visual", "full", "matrix", "staff"), nargs="?", default="full")
     parser.add_argument("--renderer", choices=RENDERERS, default="sodium")
     parser.add_argument("--negative-control", choices=("none", "pack-disabled", "clipping-disabled", "entity-clipping-disabled", "particle-clipping-disabled", "shadow-clipping-enabled"), default="none")
     parser.add_argument("--flywheel-backend", choices=("default", "off", "instancing", "indirect"), default="default")
@@ -2205,7 +2223,9 @@ def main() -> int:
                                for renderer, sable in MATRIX]
                 else:
                     actions = [(name, action) for name, action in actions if args.mode in (name, "full")]
-                    if args.mode == "staff":
+                    if args.mode == "standing-balloon":
+                        actions = [("standing-balloon", lambda: run_e2e(standing_balloon=True))]
+                    elif args.mode == "staff":
                         actions = [("staff", run_staff)]
                     elif args.mode == "ships":
                         actions = [(result_mode, lambda: run_ships(ship_size=args.ship_size))]

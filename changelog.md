@@ -6,6 +6,14 @@ and this project tries to adhere to [Semantic Versioning](https://semver.org/spe
 
 ## [Unreleased Changes]
 
+## [6.1.4] - Unreleased
+
+### Fixed
+
+- Coordinate dimension-stack crossings for players standing on Sable ships, including envelope and deck passengers.
+- Preserve standing support through body migration and bound client prediction while destination support synchronizes.
+- Add a real unmounted burner/envelope stack regression without command force-loading.
+
 ## [6.1.3.1] - Unreleased
 
 ### Fixed

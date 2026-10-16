@@ -14,6 +14,7 @@ public final class SableRiderMovementHold {
     private boolean detached;
     private boolean invalidated;
     private boolean completed;
+    private boolean standing;
 
     public SableRiderMovementHold(Object playerIdentity, UUID vehicleId, Object sourceDimension,
         Object destinationDimension, int maximumTicks) {
@@ -22,9 +23,23 @@ public final class SableRiderMovementHold {
         this.sourceDimension = sourceDimension; this.destinationDimension = destinationDimension;
         this.maximumTicks = maximumTicks;
     }
+    public static SableRiderMovementHold standing(Object player, Object source, Object destination, int ticks) {
+        SableRiderMovementHold hold = new SableRiderMovementHold(player, null, source, destination, ticks);
+        hold.standing = true;
+        return hold;
+    }
     /** Observe the actual local player, even while mounted, so a completed hold cannot rearm. */
     public boolean shouldHold(Object currentPlayer, UUID currentVehicle, Object dimension) {
-        if (expired() || vehicleId == null) return false;
+        if (expired() || (vehicleId == null && !standing)) return false;
+        if (standing) {
+            if (playerIdentity != currentPlayer || currentVehicle != null
+                || (!sourceDimension.equals(dimension) && !destinationDimension.equals(dimension))) {
+                invalidated = true;
+                cancel();
+                return false;
+            }
+            return true;
+        }
         if (playerIdentity != currentPlayer
             || (!sourceDimension.equals(dimension) && !destinationDimension.equals(dimension))
             || (currentVehicle != null && !vehicleId.equals(currentVehicle))) {

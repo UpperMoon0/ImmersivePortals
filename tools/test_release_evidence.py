@@ -41,7 +41,7 @@ class ReleaseEvidenceTest(unittest.TestCase):
             (policy / "tools").mkdir(parents=True)
             current_jobs = evidence.required_jobs()
             old_jobs = [name for name in current_jobs if not name.startswith("Sable ship flight")]
-            self.assertEqual((len(current_jobs), len(old_jobs)), (47, 41))
+            self.assertEqual((len(current_jobs), len(old_jobs)), (49, 43))
             (target / "tools/ci-coverage.json").write_text(json.dumps(old_jobs))
             (policy / "tools/ci-coverage.json").write_text(json.dumps(current_jobs))
             for jobs, expected in ((self.jobs, dict(reuse="true", run_id="123", run_attempt="2", artifact_id="456")),
@@ -228,6 +228,7 @@ class ReleaseEvidenceTest(unittest.TestCase):
             for networking in ("bundled", "4.3.0+5c124ecf19", "4.3.1+7e3d421f19"):
                 expected.append(f"Sable graphical E2E / {transport} / {networking} / normal")
             expected.append(f"Sable graphical E2E / {transport} / 4.3.1+7e3d421f19 / impaired")
+        expected.extend(["Standing balloon stack / udp", "Standing balloon stack / tcp"])
         ships = workflow.split("  sable-ship-flight:\n", 1)[1].split("  graphical-e2e:\n", 1)[0]
         for flow in re.findall(r"- \{ ([^}]+) \}", ships):
             row = dict(pair.split(": ", 1) for pair in flow.split(", "))
@@ -237,7 +238,7 @@ class ReleaseEvidenceTest(unittest.TestCase):
             for flow in re.findall(r"- \{ ([^}]+) \}", block):
                 values = [pair.split(": ", 1)[1] for pair in flow.split(", ")]
                 expected.append(f"{group} ({', '.join(values)}) / visual")
-        self.assertEqual(len(expected), 47)
+        self.assertEqual(len(expected), 49)
         self.assertCountEqual(evidence.required_jobs(), expected)
 
     def test_fresh_release_keeps_every_ci_visual_configuration(self):
@@ -312,12 +313,12 @@ class ReleaseEvidenceTest(unittest.TestCase):
         block = workflow.split("      - name: Enforce reused or fresh coverage\n", 1)[1].split("\n  release:", 1)[0]
         script = "\n".join(line[10:] for line in block.split("        run: |\n", 1)[1].splitlines())
         for reuse in ("true", "false", ""):
-            for values in itertools.product(("success", "skipped", "failure", "cancelled"), repeat=4):
-                env = dict(os.environ, REUSE=reuse, EVIDENCE="success", **dict(zip(("CORE", "E2E", "SHIPS", "VISUAL"), values)))
+            for values in itertools.product(("success", "skipped", "failure", "cancelled"), repeat=5):
+                env = dict(os.environ, REUSE=reuse, EVIDENCE="success", **dict(zip(("CORE", "E2E", "SHIPS", "VISUAL", "BALLOON"), values)))
                 result = subprocess.run([bash, "-e", "-c", script], env=env, capture_output=True)
                 expected = reuse in ("true", "false") and all(v == ("skipped" if reuse == "true" else "success") for v in values)
                 self.assertEqual(result.returncode == 0, expected, (reuse, values))
-        env = dict(os.environ, EVIDENCE="failure", REUSE="true", CORE="skipped", E2E="skipped", SHIPS="skipped", VISUAL="skipped")
+        env = dict(os.environ, EVIDENCE="failure", REUSE="true", CORE="skipped", E2E="skipped", SHIPS="skipped", VISUAL="skipped", BALLOON="skipped")
         self.assertNotEqual(subprocess.run([bash, "-e", "-c", script], env=env).returncode, 0)
         publish = workflow.split("\n  release:\n", 1)[1]
         self.assertIn("!cancelled() && needs.evidence.result == 'success' && needs.verified.result == 'success'", publish)
@@ -346,7 +347,7 @@ class ReleaseEvidenceTest(unittest.TestCase):
                      "${{ env.SHIP_RUNTIME_PREFIX }}-server/crash-reports/**", "${{ env.SHIP_RUNTIME_PREFIX }}-client/logs/**"):
             self.assertIn(path, release_job)
         gate = release.split("\n  verified:\n", 1)[1].split("\n  release:\n", 1)[0]
-        self.assertIn("needs: [evidence, core-verification, graphical-e2e, sable-ship-flight, compatibility]", gate)
+        self.assertIn("needs: [evidence, core-verification, graphical-e2e, sable-ship-flight, compatibility, standing-balloon]", gate)
         self.assertIn("SHIPS: ${{ needs.sable-ship-flight.result }}", gate)
         self.assertIn('"$SHIPS" == success', gate)
         self.assertIn('"$SHIPS" == skipped', gate)

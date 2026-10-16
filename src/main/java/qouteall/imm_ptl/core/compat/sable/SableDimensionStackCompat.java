@@ -15,6 +15,7 @@ import dev.ryanhcode.sable.api.sublevel.ticket.SubLevelLoadingTicketType;
 import dev.ryanhcode.sable.companion.math.JOMLConversion;
 import dev.ryanhcode.sable.companion.math.Pose3d;
 import dev.ryanhcode.sable.mixinhelpers.entity.entity_riding_sub_level_vehicle.EntityRidingSubLevelVehicleHelper;
+import dev.ryanhcode.sable.mixinterface.entity.entity_sublevel_collision.EntityMovementExtension;
 import dev.ryanhcode.sable.network.packets.tcp.ClientboundStopTrackingSubLevelPacket;
 import dev.ryanhcode.sable.sublevel.ServerSubLevel;
 import dev.ryanhcode.sable.sublevel.SubLevel;
@@ -380,6 +381,10 @@ public final class SableDimensionStackCompat {
     public static boolean isRiderAlreadyMigrated(ServerPlayer player, Portal portal) {
         if (!player.serverLevel().dimension().equals(portal.getDestDim())) return false;
 
+        SubLevel support = SableStandingPassenger.getSupport(player);
+        if (support instanceof ServerSubLevel body) {
+            return SubLevelContainer.getContainer(player.serverLevel()).getSubLevel(body.getUniqueId()) == body;
+        }
         Entity vehicle = player.getVehicle();
         while (vehicle != null) {
             SubLevel containing = Sable.HELPER.getContaining(vehicle);
@@ -391,6 +396,18 @@ public final class SableDimensionStackCompat {
         return false;
     }
     public static boolean beforePlayerPortalTeleport(ServerPlayer player, Portal portal) {
+        if (player.getVehicle() == null
+            && SableStandingPassenger.getSupport(player) instanceof ServerSubLevel support) {
+            if (isRiderAlreadyMigrated(player, portal)) return true;
+            if (portal.hasScaling() || portal.level() != player.serverLevel()
+                || !portal.canTeleportEntity(player)) return false;
+            ServerSubLevelContainer container = SubLevelContainer.getContainer(player.serverLevel());
+            if (container == null || container.getSubLevel(support.getUniqueId()) != support) return false;
+            ClientHandoff pending = CLIENT_HANDOFFS.get(support.getUniqueId());
+            if (pending != null && !pending.committed) return false;
+            if (!isStandingBodyApproachingPortal(support, player, portal)) return false;
+            return migrateSubLevel(container, support, portal, new Pose3d(support.lastPose())) != null;
+        }
         Entity passenger = player;
         Entity vehicle = passenger.getVehicle();
         while (vehicle != null) {
@@ -463,6 +480,29 @@ public final class SableDimensionStackCompat {
             offset.x, offset.y, offset.z, normal.x, normal.y, normal.z,
             portalVelocityPerTick.x, portalVelocityPerTick.y, portalVelocityPerTick.z
         );
+    }
+
+    private static boolean isStandingBodyApproachingPortal(
+        ServerSubLevel body, Entity passenger, Portal portal
+    ) {
+        RigidBodyHandle handle = RigidBodyHandle.of(body);
+        if (handle == null || !handle.isValid() || portal.level() != body.getLevel()) return false;
+        Vector3d linear = handle.getLinearVelocity(new Vector3d());
+        Vector3d angular = handle.getAngularVelocity(new Vector3d());
+        Vec3 offset = McHelper.getEyePos(passenger).subtract(getWorldCenterOfMass(body, body.logicalPose()));
+        Vec3 planeVelocity = Vec3.ZERO;
+        var before = portal.animation.lastTickAnimatedState;
+        var after = portal.animation.thisTickAnimatedState;
+        if (before != null && after != null) {
+            Vec3 local = after.worldPosToPortalLocalPos(McHelper.getEyePos(passenger));
+            planeVelocity = TeleportationUtil.getPortalPointVelocity(
+                before, after, new Vec3(local.x, local.y, 0)).thisSidePointVelocity();
+        }
+        Vec3 normal = portal.getNormal();
+        return SableRiderPortalApproach.movesIntoPortal(
+            linear.x, linear.y, linear.z, angular.x, angular.y, angular.z,
+            offset.x, offset.y, offset.z, normal.x, normal.y, normal.z,
+            planeVelocity.x, planeVelocity.y, planeVelocity.z);
     }
 
     /**
@@ -1130,6 +1170,13 @@ public final class SableDimensionStackCompat {
             }
         }
 
+        // Standing players live in ordinary world chunks, outside the hidden plot.
+        // Capture every collision-tracked passenger before removing the source body.
+        for (ServerPlayer player : List.copyOf(sourceWorld.players())) {
+            if (SableStandingPassenger.getSupport(player) == sourceSubLevel
+                && migrationIds.add(player.getUUID())) migrationEntities.add(player);
+        }
+
         for (int i = 0; i < migrationEntities.size(); i++) {
             Entity vehicle = migrationEntities.get(i);
             for (Entity passenger : vehicle.getPassengers()) {
@@ -1149,6 +1196,7 @@ public final class SableDimensionStackCompat {
             Vec3 destinationPosition = storedPosition;
             Vec3 destinationVelocity = storedVelocity;
 
+            boolean standingPassenger = SableStandingPassenger.getSupport(entity) == sourceSubLevel;
             boolean kickedPassenger = vehicleId != null && EntitySubLevelUtil.shouldKick(entity);
             if (kickedPassenger) {
                 Vec3 logicalPosition = plotResidentIds.contains(entity.getUUID())
@@ -1158,9 +1206,14 @@ public final class SableDimensionStackCompat {
                 destinationVelocity = portal.transformLocalVec(storedVelocity);
             }
 
+            if (standingPassenger) {
+                destinationPosition = portal.transformPoint(storedPosition);
+                destinationVelocity = portal.transformLocalVec(storedVelocity);
+            }
             transfers.add(new EntityTransfer(
                 entity, storedPosition, storedVelocity,
-                destinationPosition, destinationVelocity, vehicleId
+                destinationPosition, destinationVelocity, vehicleId,
+                standingPassenger ? sourceSubLevel.getUniqueId() : null
             ));
         }
         return transfers;
@@ -1180,6 +1233,7 @@ public final class SableDimensionStackCompat {
                 );
             }
             moved.setDeltaMovement(transfer.destinationVelocity());
+            restoreStandingSupport(transfer, moved, destinationWorld);
             movedById.put(transfer.entity().getUUID(), moved);
         }
         restoreRidingRelations(transfers, movedById, true);
@@ -1197,6 +1251,7 @@ public final class SableDimensionStackCompat {
                 );
                 if (entity == null || entity.level() != sourceWorld) return false;
                 entity.setDeltaMovement(transfer.storedVelocity());
+                restoreStandingSupport(transfer, entity, sourceWorld);
                 sourceById.put(transfer.entity().getUUID(), entity);
             }
             restoreRidingRelations(transfers, sourceById, false);
@@ -1206,6 +1261,13 @@ public final class SableDimensionStackCompat {
             LOGGER.error("Failed rolling back partial Sable cross-dimension entity migration", rollbackFailure);
             return false;
         }
+    }
+
+    private static void restoreStandingSupport(EntityTransfer transfer, Entity entity, ServerLevel level) {
+        if (transfer.supportId() == null) return;
+        SubLevel body = SubLevelContainer.getContainer(level).getSubLevel(transfer.supportId());
+        if (body == null || body.isRemoved()) throw new IllegalStateException("Missing standing passenger support");
+        ((EntityMovementExtension) entity).sable$setTrackingSubLevel(body);
     }
 
     private static void detachEntityGraph(List<EntityTransfer> transfers) {
@@ -1281,6 +1343,7 @@ public final class SableDimensionStackCompat {
         Vec3 storedVelocity,
         Vec3 destinationPosition,
         Vec3 destinationVelocity,
-        UUID vehicleId
+        UUID vehicleId,
+        UUID supportId
     ) {}
 }
