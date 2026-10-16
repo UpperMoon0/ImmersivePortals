@@ -40,8 +40,8 @@ class ReleaseEvidenceTest(unittest.TestCase):
             (target / "tools").mkdir(parents=True)
             (policy / "tools").mkdir(parents=True)
             current_jobs = evidence.required_jobs()
-            old_jobs = [name for name in current_jobs if not name.startswith("Sable ship flight")]
-            self.assertEqual((len(current_jobs), len(old_jobs)), (48, 42))
+            old_jobs = [name for name in current_jobs if not name.startswith(("Sable ship flight", "Standing balloon stack"))]
+            self.assertEqual((len(current_jobs), len(old_jobs)), (48, 41))
             (target / "tools/ci-coverage.json").write_text(json.dumps(old_jobs))
             (policy / "tools/ci-coverage.json").write_text(json.dumps(current_jobs))
             for jobs, expected in ((self.jobs, dict(reuse="true", run_id="123", run_attempt="2", artifact_id="456")),

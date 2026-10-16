@@ -46,11 +46,10 @@ public final class SableE2EEvents {
                 // Both drivers can connect on their first tick. Install the test-only
                 // oracle before selecting either lane, including complex ship flights.
                 SableInterpolationHistoryDiagnostics.setObserver(SableInterpolationHistoryProbe::verify);
-                if (SableStandingBalloonServer.afterShips()) {
-                    if (PortalSmokeSupport.exists("standing-balloon-start.txt")) SableStandingBalloonClient.tick(event);
-                    else SableShipFlightClientTest.onClientTick(event);
-                }
-                else if (SableStandingBalloonServer.enabled()) SableStandingBalloonClient.tick(event);
+                boolean standing = SableStandingBalloonServer.afterShips()
+                    ? PortalSmokeSupport.exists("standing-balloon-start.txt")
+                    : SableStandingBalloonServer.enabled();
+                if (standing) SableStandingBalloonClient.tick(event);
                 else if (SableShipFlightTest.enabled()) SableShipFlightClientTest.onClientTick(event);
                 else SableDimensionStackDedicatedClientTest.onClientTick(event);
             }
