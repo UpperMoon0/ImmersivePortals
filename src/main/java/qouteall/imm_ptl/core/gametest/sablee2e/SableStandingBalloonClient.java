@@ -39,10 +39,10 @@ final class SableStandingBalloonClient {
             var container=SubLevelContainer.getContainer(mc.level);
             var body=container==null?null:container.getSubLevel(id);
             boolean supported=body!=null && !body.isRemoved() && Sable.HELPER.getTrackingSubLevel(mc.player)==body;
-            if(mc.level.dimension().equals(Level.OVERWORLD) && supported) {
+            if(mc.level.dimension().equals(Level.NETHER) && supported) {
                 PortalSmokeSupport.write("balloon-client-ready-"+testCase+".txt","native standing support "+id);
             }
-            if(mc.level.dimension().equals(Level.NETHER) && supported
+            if(mc.level.dimension().equals(Level.OVERWORLD) && supported
                 && SableServerFirstClientHandoff.getActiveHandoffSnapshot()==null) {
                 if(++stable>=40)PortalSmokeSupport.write("balloon-client-arrived-"+testCase+".txt","stable unmounted destination support "+id);
             } else stable=0;

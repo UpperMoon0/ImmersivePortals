@@ -10,6 +10,7 @@ and this project tries to adhere to [Semantic Versioning](https://semver.org/spe
 
 ### Fixed
 
+- Detect swept leading-hull entry at dimension stacks before Sable ceiling atmosphere reaches zero; preserve immediate reversals before COM entry.
 - Coordinate dimension-stack crossings for players standing on Sable ships, including envelope and deck passengers.
 - Preserve standing support through body migration and bound client prediction while destination support synchronizes.
 - Add a real unmounted burner/envelope stack regression without command force-loading.

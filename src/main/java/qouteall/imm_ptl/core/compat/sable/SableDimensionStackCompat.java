@@ -53,6 +53,7 @@ import qouteall.imm_ptl.core.portal.Portal;
 import qouteall.imm_ptl.core.portal.PortalExtension;
 import qouteall.imm_ptl.core.portal.PortalState;
 import qouteall.imm_ptl.core.portal.global_portals.GlobalPortalStorage;
+import qouteall.imm_ptl.core.portal.global_portals.VerticalConnectingPortal;
 import qouteall.imm_ptl.core.portal.PortalUtils;
 import qouteall.imm_ptl.core.teleportation.ServerTeleportationManager;
 import qouteall.imm_ptl.core.teleportation.TeleportationUtil;
@@ -329,6 +330,7 @@ public final class SableDimensionStackCompat {
                 ? previousSample.anchor()
                 : getWorldCenterOfMass(subLevel, new Pose3d(subLevel.lastPose()));
 
+            Portal earlyHullReturn = null;
             HandoffGuard guard = HANDOFF_GUARDS.get(id);
             if (guard != null && guard.destinationDimension().equals(level.dimension())) {
                 // A rider can trigger migration before the body's COM enters the destination.
@@ -339,7 +341,14 @@ public final class SableDimensionStackCompat {
                 boolean enteredDestination = Math.max(previousClearance, currentClearance) >= HANDOFF_CLEARANCE;
                 boolean reversedFromSeam = Math.abs(previousClearance) <= HANDOFF_CLEARANCE
                     && currentClearance < -HANDOFF_CLEARANCE;
-                if (enteredDestination || reversedFromSeam) {
+                if (!enteredDestination && guard.stackPortal() && previousSample != null
+                    && previousSample.dimension().equals(level.dimension())) {
+                    // A leading hull can enter before COM. If buoyancy reverses immediately,
+                    // its entered tip leaving the destination is a real return, not a stale
+                    // client prediction. Test the same entered tip, not the still-outside COM.
+                    earlyHullReturn = findEarlyHullReturnPortal(level, subLevel, previousSample, guard);
+                }
+                if (enteredDestination || reversedFromSeam || earlyHullReturn != null) {
                     HANDOFF_GUARDS.remove(id);
                     guard = null;
                 }
@@ -347,20 +356,22 @@ public final class SableDimensionStackCompat {
 
             ClientHandoff pendingHandoff = CLIENT_HANDOFFS.get(id);
             if (pendingHandoff != null && !pendingHandoff.committed) {
-                rememberSample(level, id, currentAnchor);
+                rememberSample(level, id, currentAnchor, subLevel);
                 continue;
             }
 
-            Portal portal = findCrossedPortal(level, previousAnchor, currentAnchor);
+            Portal portal = earlyHullReturn != null ? earlyHullReturn
+                : findCrossedStackPortal(level, subLevel, previousSample);
+            if (portal == null) portal = findCrossedPortal(level, previousAnchor, currentAnchor);
             if (portal == null) {
-                rememberSample(level, id, currentAnchor);
+                rememberSample(level, id, currentAnchor, subLevel);
                 continue;
             }
 
             if (guard != null
                 && portal.getDestDim().equals(guard.sourceDimension())
                 && signedDestinationClearance(guard, currentAnchor) < HANDOFF_CLEARANCE) {
-                rememberSample(level, id, currentAnchor);
+                rememberSample(level, id, currentAnchor, subLevel);
                 continue;
             }
 
@@ -368,7 +379,7 @@ public final class SableDimensionStackCompat {
                 container, subLevel, portal, new Pose3d(subLevel.lastPose())
             );
             if (migrated == null) {
-                rememberSample(level, id, currentAnchor);
+                rememberSample(level, id, currentAnchor, subLevel);
             }
         }
     }
@@ -542,8 +553,53 @@ public final class SableDimensionStackCompat {
         return null;
     }
 
-    private static void rememberSample(ServerLevel level, UUID id, Vec3 anchor) {
-        LAST_SAMPLES.put(id, new CrossingSample(level.dimension(), anchor, level.getGameTime()));
+    private static void rememberSample(ServerLevel level, UUID id, Vec3 anchor, ServerSubLevel body) {
+        Vec3[] tips = verticalHullAnchors(body, body.logicalPose());
+        LAST_SAMPLES.put(id, new CrossingSample(level.dimension(), anchor, level.getGameTime(), tips[0], tips[1]));
+    }
+
+    private static Portal findEarlyHullReturnPortal(ServerLevel level, ServerSubLevel body,
+        CrossingSample previous, HandoffGuard guard) {
+        Vec3[] currentTips = verticalHullAnchors(body, body.logicalPose());
+        boolean upward = guard.destinationDirection().y > 0;
+        Vec3 previousTip = upward ? previous.top() : previous.bottom();
+        Vec3 currentTip = currentTips[upward ? 1 : 0];
+        Portal candidate = findCrossedPortal(level, previousTip, currentTip);
+        return candidate instanceof VerticalConnectingPortal
+            && candidate.getDestDim().equals(guard.sourceDimension()) ? candidate : null;
+    }
+
+    /** Global horizontal stacks must accept the leading hull before ceiling atmosphere vanishes. */
+    private static Portal findCrossedStackPortal(ServerLevel level, ServerSubLevel body, CrossingSample previous) {
+        Vec3[] now = verticalHullAnchors(body, body.logicalPose());
+        Vec3[] before = previous != null && previous.dimension().equals(level.dimension())
+            ? new Vec3[] {previous.bottom(), previous.top()} : verticalHullAnchors(body, new Pose3d(body.lastPose()));
+        for (Portal portal : GlobalPortalStorage.getGlobalPortals(level)) {
+            if (!(portal instanceof VerticalConnectingPortal) || !portal.isTeleportable()
+                || portal.hasScaling() || portal.getDestDim().equals(level.dimension())) continue;
+            int tip = portal.getNormal().y < 0 ? 1 : 0;
+            double from = portal.getDistanceToPlane(before[tip]);
+            double to = portal.getDistanceToPlane(now[tip]);
+            if (from >= -PORTAL_ENDPOINT_EPSILON && to <= PORTAL_ENDPOINT_EPSILON && to < from) return portal;
+        }
+        return null;
+    }
+
+    private static Vec3[] verticalHullAnchors(ServerSubLevel body, Pose3d pose) {
+        var bounds = body.getPlot().getBoundingBox();
+        if (bounds == null) {
+            Vec3 center = getWorldCenterOfMass(body, pose);
+            return new Vec3[] {center, center};
+        }
+        double bottom = Double.POSITIVE_INFINITY, top = Double.NEGATIVE_INFINITY;
+        for (int x : new int[] {bounds.minX(), bounds.maxX() + 1})
+            for (int y : new int[] {bounds.minY(), bounds.maxY() + 1})
+                for (int z : new int[] {bounds.minZ(), bounds.maxZ() + 1}) {
+                    double height = pose.transformPosition(new Vector3d(x, y, z)).y;
+                    bottom = Math.min(bottom, height); top = Math.max(top, height);
+                }
+        Vec3 center = getWorldCenterOfMass(body, pose);
+        return new Vec3[] {new Vec3(center.x, bottom, center.z), new Vec3(center.x, top, center.z)};
     }
 
     /** Use physical COM because Sable may recenter Pose3d.position() during serialization. */
@@ -708,10 +764,10 @@ public final class SableDimensionStackCompat {
             commitClientHandoff(sourceWorld, unit.source().getUniqueId());
             ANIMATED_RIDER_CROSSINGS.invalidateBody(unit.source().getUniqueId());
             Vec3 destinationAnchor = getWorldCenterOfMass(unit.destination(), unit.destination().logicalPose());
-            rememberSample(destinationWorld, unit.destination().getUniqueId(), destinationAnchor);
+            rememberSample(destinationWorld, unit.destination().getUniqueId(), destinationAnchor, unit.destination());
             HANDOFF_GUARDS.put(unit.destination().getUniqueId(), new HandoffGuard(
                 sourceWorld.dimension(), destinationWorld.dimension(), portal.getDestPos(),
-                portal.getContentDirection().normalize()
+                portal.getContentDirection().normalize(), portal instanceof VerticalConnectingPortal
             ));
         }
 
@@ -1298,13 +1354,14 @@ public final class SableDimensionStackCompat {
         }
     }
 
-    private record CrossingSample(ResourceKey<Level> dimension, Vec3 anchor, long gameTime) {}
+    private record CrossingSample(ResourceKey<Level> dimension, Vec3 anchor, long gameTime, Vec3 bottom, Vec3 top) {}
 
     private record HandoffGuard(
         ResourceKey<Level> sourceDimension,
         ResourceKey<Level> destinationDimension,
         Vec3 destinationPlane,
-        Vec3 destinationDirection
+        Vec3 destinationDirection,
+        boolean stackPortal
     ) {}
 
     private static final class ClientHandoff {

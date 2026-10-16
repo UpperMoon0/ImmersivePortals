@@ -35,7 +35,7 @@ final class SableStandingBalloonServer {
     private static Vector3d held;
     private static int ticks, phaseTicks, testCase, phase;
     private static Vec3 localFeet;
-    private static double sourceY, arrivalY;
+    private static double sourceY, arrivalY, seamY;
     private static final List<Map<String,Object>> receipts = new ArrayList<>();
     private static final Map<BlockPos,BlockState> manifest = new LinkedHashMap<>();
     static boolean afterShips() { return "true".equals(System.getenv("IP_SABLE_STANDING_AFTER_SHIPS")); }
@@ -77,10 +77,13 @@ final class SableStandingBalloonServer {
         }
     }
     private static void setup() {
-        source=player.server.getLevel(Level.OVERWORLD); destination=player.server.getLevel(Level.NETHER);
-        // Upward Overworld ceiling -> Nether floor, using real global stack connectors.
-        VerticalConnectingPortal.connectMutually(Level.NETHER, Level.OVERWORLD, false);
-        for (BlockPos pos : BlockPos.betweenClosed(-12,0,-12,12,64,12))
+        source=player.server.getLevel(Level.NETHER); destination=player.server.getLevel(Level.OVERWORLD);
+        // Upward Nether logical ceiling -> Overworld floor, using default global connectors.
+        VerticalConnectingPortal.connectMutually(Level.OVERWORLD, Level.NETHER, false);
+        seamY=VerticalConnectingPortal.getConnectingPortal(source,VerticalConnectingPortal.ConnectorType.ceil).getY();
+        for (BlockPos pos : BlockPos.betweenClosed(-12,16,-12,12,128,12))
+            if (!source.getBlockState(pos).isAir()) source.setBlock(pos,Blocks.AIR.defaultBlockState(),2);
+        for (BlockPos pos : BlockPos.betweenClosed(-12,destination.getMinBuildHeight(),-12,12,-30,12))
             if (!destination.getBlockState(pos).isAir()) destination.setBlock(pos,Blocks.AIR.defaultBlockState(),2);
         manifest.clear();
         for(int x=-2;x<=2;x++) for(int z=-2;z<=2;z++)
@@ -113,7 +116,7 @@ final class SableStandingBalloonServer {
         var handle=RigidBodyHandle.of(body);
         Vector3d position=new Vector3d(body.logicalPose().position());
         Vec3 roof=body.logicalPose().transformPosition(Vec3.atBottomCenterOf(body.getPlot().getCenterBlock().offset(0,18,0)));
-        position.y += source.getMaxBuildHeight()-12-roof.y;
+        position.y += seamY-12-roof.y;
         handle.teleport(position,body.logicalPose().orientation());
         SubLevelContainer.getContainer(source).physicsSystem().updatePose(body);
         body.updateLastPose(); body.updateBoundingBox(); held=new Vector3d(body.logicalPose().position());
@@ -167,7 +170,7 @@ final class SableStandingBalloonServer {
         if(player.serverLevel()==destination) {
             require(arrived!=null && body(source)==null,"player crossed without exclusive destination ship ownership");
             require(SableStandingPassenger.getSupport(player)==arrived,"standing support still references the source ship");
-            require(arrived.logicalPose().position().y>sourceY-source.getMaxBuildHeight()+3,
+            require(arrived.logicalPose().position().y>sourceY-seamY+destination.getMinBuildHeight()+3,
                 "balloon did not make natural pre-seam travel");
             arrivalY=arrived.logicalPose().position().y;
             phase=3;phaseTicks=0;
@@ -182,6 +185,7 @@ final class SableStandingBalloonServer {
         for(var entry:manifest.entrySet()) require(body.getPlot().getEmbeddedLevelAccessor()
             .getBlockState(body.getPlot().getCenterBlock().offset(entry.getKey())).equals(entry.getValue()),"balloon block changed: "+entry.getKey());
         if(phaseTicks<80 || !PortalSmokeSupport.exists("balloon-client-arrived-"+testCase+".txt")) return;
+        require(body.logicalPose().position().y-arrivalY>0.5,"destination ship froze at the stack seam");
         Object burner=burner(body,destination);
         require((boolean)burner.getClass().getMethod("canOutputGas").invoke(burner),"destination burner stopped");
         receipts.add(Map.of("standing",testCase==0?"envelope":"deck","blocks",manifest.size(),"support",true,
@@ -193,7 +197,7 @@ final class SableStandingBalloonServer {
             phase=99;
         } else {
             // Reuse the original live player; safely stage before removing the old ship.
-            ServerTeleportationManager.of(player.server).forceTeleportPlayer(player,Level.OVERWORLD,new Vec3(0,100,0));
+            ServerTeleportationManager.of(player.server).forceTeleportPlayer(player,source.dimension(),new Vec3(0,100,0));
             SubLevelContainer.getContainer(destination).removeSubLevel(body,SubLevelRemovalReason.REMOVED);
             setup();
         }
