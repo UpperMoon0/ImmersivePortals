@@ -1620,8 +1620,17 @@ def validate_results(client_exit: int, smoke: bool = False, ships: bool = False,
         if len(receipts) != 2 or {r["standing"] for r in receipts} != {"envelope", "deck"}:
             raise RuntimeError("Missing standing balloon cases")
         for r in receipts:
-            if not r["support"] or r["force_loaded"] or r["native_flight_body_writes"] != 0 or r["standing_error"] >= 1 or not (r["source_gas"] > 0 and r["arrived_gas"] >= r["source_gas"] * .95):
+            if (not r["support"] or r["force_loaded"] or r["native_flight_body_writes"] != 0
+                or not 0 <= r["standing_error"] < 1 or r.get("server_samples", 0) < 80
+                or not (r["source_gas"] > 0 and r["arrived_gas"] >= r["source_gas"] * .95)):
                 raise RuntimeError("Invalid standing balloon receipt")
+        for case in (0, 1):
+            path = RESULT_DIR / f"balloon-standing-client-{case}.json"
+            if not path.is_file(): raise RuntimeError("Missing native standing client samples")
+            client = json.loads(path.read_text())
+            if (client.get("supported") is not True or client.get("samples", 0) < 40
+                or not 0 <= client.get("maximum", float("inf")) < 1):
+                raise RuntimeError("Invalid native standing client samples")
         if not ships: return
         for name in ("ships-server-pass.txt", "ships-client-pass.txt"):
             if not (RESULT_DIR/name).is_file() or not (RESULT_DIR/name).read_text().strip():

@@ -410,7 +410,8 @@ public final class SableDimensionStackCompat {
         return false;
     }
     public static boolean beforePlayerPortalTeleport(ServerPlayer player, Portal portal) {
-        if (player.getVehicle() == null
+        if (portal instanceof VerticalConnectingPortal && !portal.hasScaling()
+            && player.getVehicle() == null
             && SableStandingPassenger.getSupport(player) instanceof ServerSubLevel support) {
             if (isRiderAlreadyMigrated(player, portal)) return true;
             if (portal.hasScaling() || portal.level() != player.serverLevel()

@@ -15,6 +15,7 @@ import java.util.UUID;
 final class SableStandingBalloonClient {
     private static int ticks, currentCase=-1, stable;
     private static boolean connecting, done;
+    private static double maximumError;
     static void tick(ClientTickEvent.Post e) {
         if(done)return;
         Minecraft mc=Minecraft.getInstance();
@@ -40,7 +41,7 @@ final class SableStandingBalloonClient {
             var json=JsonParser.parseString(request).getAsJsonObject();
             int testCase=json.get("case").getAsInt();
             UUID id=UUID.fromString(json.get("body").getAsString());
-            if(testCase!=currentCase){currentCase=testCase;stable=0;}
+            if(testCase!=currentCase){currentCase=testCase;stable=0;maximumError=0;}
             var container=SubLevelContainer.getContainer(mc.level);
             var body=container==null?null:container.getSubLevel(id);
             boolean supported=body!=null && !body.isRemoved() && Sable.HELPER.getTrackingSubLevel(mc.player)==body;
@@ -52,8 +53,15 @@ final class SableStandingBalloonClient {
                 && body.logicalPose().transformPositionInverse(mc.player.position()).distanceTo(expectedFeet)<.2) {
                 PortalSmokeSupport.write("balloon-client-ready-"+testCase+".txt","native standing support "+id);
             }
-            if(mc.level.dimension().equals(Level.OVERWORLD) && supported
+            if(mc.level.dimension().equals(Level.OVERWORLD)
+                && !(testCase==0 && PortalSmokeSupport.exists("balloon-reset.txt"))
                 && SableServerFirstClientHandoff.getActiveHandoffSnapshot()==null) {
+                if(!supported)throw new IllegalStateException("Client lost standing support after handoff");
+                double error=body.logicalPose().transformPositionInverse(mc.player.position()).distanceTo(expectedFeet);
+                maximumError=Math.max(maximumError,error);
+                PortalSmokeSupport.write("balloon-standing-client-"+testCase+".json",new com.google.gson.Gson().toJson(
+                    java.util.Map.of("samples",stable+1,"error",error,"maximum",maximumError,"supported",supported)));
+                if(error>=1)throw new IllegalStateException("Client standing displacement="+error);
                 if(++stable>=40)PortalSmokeSupport.write("balloon-client-arrived-"+testCase+".txt","stable unmounted destination support "+id);
             } else stable=0;
             if(PortalSmokeSupport.exists("server-pass.txt")) {

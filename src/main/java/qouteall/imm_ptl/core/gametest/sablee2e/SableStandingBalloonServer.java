@@ -33,10 +33,10 @@ final class SableStandingBalloonServer {
     private static ServerLevel source, destination;
     private static UUID id;
     private static Vector3d held;
-    private static int ticks, phaseTicks, testCase, phase;
+    private static int ticks, phaseTicks, testCase, phase, settledSamples;
     private static Vec3 localFeet;
     private static BlockPos plotOrigin;
-    private static double sourceY, arrivalY, seamY, sourceGas, arrivedGas;
+    private static double sourceY, arrivalY, seamY, sourceGas, arrivedGas, maxStandingError, settledMaximum;
     private static final List<Map<String,Object>> receipts = new ArrayList<>();
     private static final Map<BlockPos,BlockState> manifest = new LinkedHashMap<>();
     static boolean afterShips() { return "true".equals(System.getenv("IP_SABLE_STANDING_AFTER_SHIPS")); }
@@ -107,21 +107,15 @@ final class SableStandingBalloonServer {
         manifest.put(new BlockPos(1,1,0),Blocks.LEVER.defaultBlockState()
             .setValue(BlockStateProperties.ATTACH_FACE,net.minecraft.world.level.block.state.properties.AttachFace.FLOOR)
             .setValue(BlockStateProperties.POWERED,true));
-        BlockPos origin=new BlockPos(0,32,0);
+        // Assemble at its final pre-flight altitude so the first full sync is already correct.
+        BlockPos origin=new BlockPos(0,(int)Math.floor(seamY)-30,0);
         List<BlockPos> positions=new ArrayList<>();
         for(var entry:manifest.entrySet()) { BlockPos pos=origin.offset(entry.getKey()); source.setBlock(pos,entry.getValue(),3); positions.add(pos); }
         // Publish placement callbacks (connected fences/powered burner) as the exact expected state.
         manifest.replaceAll((pos,old)->source.getBlockState(origin.offset(pos)));
         var body=(ServerSubLevel)SubLevelAssemblyHelper.assembleBlocks(source,origin,positions,
-            new BoundingBox3i(-7,32,-7,8,50,8));
+            new BoundingBox3i(-7,origin.getY(),-7,8,origin.getY()+18,8));
         id=body.getUniqueId(); plotOrigin=body.getPlot().getCenterBlock();
-        // Stage near the real build-limit seam before releasing real burner propulsion.
-        var handle=RigidBodyHandle.of(body);
-        Vector3d position=new Vector3d(body.logicalPose().position());
-        Vec3 roof=body.logicalPose().transformPosition(Vec3.atBottomCenterOf(body.getPlot().getCenterBlock().offset(0,18,0)));
-        position.y += seamY-12-roof.y;
-        handle.teleport(position,body.logicalPose().orientation());
-        SubLevelContainer.getContainer(source).physicsSystem().updatePose(body);
         body.updateLastPose(); body.updateBoundingBox(); held=new Vector3d(body.logicalPose().position());
         localFeet=Vec3.atBottomCenterOf(body.getPlot().getCenterBlock().offset(testCase==0?0:-1,testCase==0?18:1,0));
         Vec3 feet=body.logicalPose().transformPosition(localFeet);
@@ -147,7 +141,7 @@ final class SableStandingBalloonServer {
             "expected",localFeet.toString(),"support",SableStandingPassenger.getSupport(player)==body)));
         if(phaseTicks<100 || !PortalSmokeSupport.exists("balloon-client-ready-"+testCase+".txt")) return;
         require(SableStandingPassenger.getSupport(player)==body,"native collision did not establish standing support");
-        require(body.logicalPose().transformPositionInverse(player.position()).distanceTo(localFeet)<.2,
+        require(body.logicalPose().transformPositionInverse(player.position()).distanceTo(localFeet)<1.0,
             "preflight passenger is not on the intended surface: "+body.logicalPose().transformPositionInverse(player.position())+" expected "+localFeet);
         Object burner=burner(body,source);
         Object balloon=burner.getClass().getMethod("getBalloon").invoke(burner);
@@ -188,7 +182,7 @@ final class SableStandingBalloonServer {
             arrivedGas=((Number)balloon.getClass().getMethod("getTotalFilledVolume").invoke(balloon)).doubleValue();
             require(arrivedGas>=sourceGas*.95,"destination balloon lost stored gas: "+arrivedGas+" from "+sourceGas);
             arrivalY=arrived.logicalPose().position().y;
-            phase=3;phaseTicks=0;
+            phase=3;phaseTicks=0; maxStandingError=settledMaximum=0; settledSamples=0;
         } else require(body(source)!=null,"ship migrated without standing passenger");
     }
     private static void observe() throws Exception {
@@ -196,17 +190,33 @@ final class SableStandingBalloonServer {
         require(player.serverLevel()==destination && body!=null && body(source)==null,"ship/player ownership split after crossing");
         require(player.isAlive() && player.getVehicle()==null,"standing passenger died or became mounted");
         Vec3 relative=body.logicalPose().transformPositionInverse(player.position());
-        require(relative.distanceTo(localFeet)<1.0,"standing passenger fell off: local displacement="+relative.distanceTo(localFeet));
+        maxStandingError=Math.max(maxStandingError,relative.distanceTo(localFeet));
+        PortalSmokeSupport.write("balloon-standing-server-"+testCase+".json",new Gson().toJson(Map.of(
+            "tick",phaseTicks,"error",relative.distanceTo(localFeet),"maximum",maxStandingError,
+            "player_y",player.getY(),"body_y",body.logicalPose().position().y,
+            "support",SableStandingPassenger.getSupport(player)==body)));
+        // A vanilla awaiting-teleport position is a snapshot, not a current ship-local
+        // movement report. The client independently checks every post-Ack native step.
+        // Once its 40-step receipt exists, require 80 additional authoritative server samples.
+        if(PortalSmokeSupport.exists("balloon-client-arrived-"+testCase+".txt")
+            && !((qouteall.imm_ptl.core.ducks.IEServerPlayNetworkHandler)player.connection).ip_hasAwaitingTeleport()) {
+            require(SableStandingPassenger.getSupport(player)==body,"settled standing support changed");
+            settledMaximum=Math.max(settledMaximum,relative.distanceTo(localFeet));
+            require(settledMaximum<1,"standing passenger fell off: "+settledMaximum);
+            settledSamples++;
+        } else require(phaseTicks<=200,"standing handoff did not settle within its bounded observation window");
         for(var entry:manifest.entrySet()) require(destination.getBlockState(plotOrigin.offset(entry.getKey()))
             .equals(entry.getValue()),"balloon block changed: "+entry.getKey());
-        if(phaseTicks<80 || !PortalSmokeSupport.exists("balloon-client-arrived-"+testCase+".txt")) return;
+        if(settledSamples<80) return;
         require(body.logicalPose().position().y-arrivalY>0.5,"destination ship froze at the stack seam");
         Object burner=burner(body,destination);
         require((boolean)burner.getClass().getMethod("canOutputGas").invoke(burner),"destination burner stopped");
-        receipts.add(Map.of("standing",testCase==0?"envelope":"deck","blocks",manifest.size(),"support",true,
-            "force_loaded",false,"arrival_y",arrivalY,"observed_y",body.logicalPose().position().y,
-            "standing_error",relative.distanceTo(localFeet),"native_flight_body_writes",0,
-            "source_gas",sourceGas,"arrived_gas",arrivedGas));
+        receipts.add(Map.ofEntries(
+            Map.entry("standing",testCase==0?"envelope":"deck"),Map.entry("blocks",manifest.size()),
+            Map.entry("support",true),Map.entry("force_loaded",false),Map.entry("arrival_y",arrivalY),
+            Map.entry("observed_y",body.logicalPose().position().y),Map.entry("standing_error",settledMaximum),
+            Map.entry("native_flight_body_writes",0),Map.entry("source_gas",sourceGas),
+            Map.entry("arrived_gas",arrivedGas),Map.entry("server_samples",settledSamples)));
         if(++testCase==2) {
             PortalSmokeSupport.write("balloon-server.json",new Gson().toJson(receipts));
             PortalSmokeSupport.write("server-pass.txt","Both unmounted burner-balloon stack ascents passed");

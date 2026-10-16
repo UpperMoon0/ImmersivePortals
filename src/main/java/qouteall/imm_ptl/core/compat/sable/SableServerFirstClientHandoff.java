@@ -30,6 +30,7 @@ public final class SableServerFirstClientHandoff {
     private static Pending pending;
     private static ReadyToApply readyToApply;
     private static SableRiderMovementHold movementHold;
+    private static StandingRebase standingRebase;
 
     static {
         NeoForge.EVENT_BUS.addListener(ClientCleanupEvent.class, event -> clear());
@@ -86,6 +87,7 @@ public final class SableServerFirstClientHandoff {
 
     private static void startMovementHold(LocalPlayer player, RiderIdentity rider, ResourceKey<Level> destination) {
         if (movementHold != null) movementHold.cancel();
+        standingRebase = null;
         if (rider.supportId() != null) {
             movementHold = SableRiderMovementHold.standing(player, rider.sourceDimension(), destination, RIDER_SYNC_TIMEOUT_TICKS);
             return;
@@ -96,7 +98,8 @@ public final class SableServerFirstClientHandoff {
 
     public static boolean shouldHoldDetachedMovement(LocalPlayer player) {
         if (movementHold == null) return false;
-        RiderIdentity identity = pending != null ? pending.rider() : readyToApply != null ? readyToApply.rider() : null;
+        RiderIdentity identity = pending != null ? pending.rider() : readyToApply != null ? readyToApply.rider()
+            : standingRebase != null ? standingRebase.handoff().rider() : null;
         SubLevel currentSupport = SableStandingPassenger.getSupport(player);
         if (identity != null && identity.supportId() != null && currentSupport != null
             && !identity.supportId().equals(currentSupport.getUniqueId())) {
@@ -151,7 +154,7 @@ public final class SableServerFirstClientHandoff {
      */
     public static boolean hasActiveServerInitiatedHandoff() {
         Pending current = pending;
-        return (current != null && current.serverTransform() != null) || readyToApply != null;
+        return (current != null && current.serverTransform() != null) || readyToApply != null || standingRebase != null;
     }
     /** Read-only correlated lifecycle state for diagnostics and integration assertions. */
     public static @Nullable HandoffSnapshot getActiveHandoffSnapshot() {
@@ -160,6 +163,11 @@ public final class SableServerFirstClientHandoff {
             return new HandoffSnapshot(current.handoffId(), current.rider().vehicleId(),
                 current.rider().sourceDimension(), current.interpolationTransform().destinationDimension(),
                 current.serverTransform() != null, "awaiting-authoritative-ack");
+        }
+        if (standingRebase != null) {
+            ReadyToApply standing = standingRebase.handoff();
+            return new HandoffSnapshot(standing.handoffId(), null, standing.rider().sourceDimension(),
+                standing.destinationDimension(), standing.serverInitiated(), "awaiting-standing-movement");
         }
         ReadyToApply ready = readyToApply;
         return ready == null ? null : new HandoffSnapshot(ready.handoffId(), ready.rider().vehicleId(),
@@ -296,17 +304,12 @@ public final class SableServerFirstClientHandoff {
             if (support == null || support.isRemoved()) return false;
             ((dev.ryanhcode.sable.mixinterface.entity.entity_sublevel_collision.EntityMovementExtension) player)
                 .sable$setTrackingSubLevel(support);
-            // Preserve the standing attachment in the destination interpolation frame.
-            // A world-space position packet describes the server physics frame, which can
-            // be several snapshots ahead of the client deck during a physics-first entry.
-            if (ready.rider().supportPosition() != null) {
-                player.setPos(support.logicalPose().transformPosition(ready.rider().supportPosition()));
-                dev.ryanhcode.sable.api.entity.EntitySubLevelUtil.setOldPosNoMovement(player);
-            }
-            // Standing players use world-space facing, unlike retained-seat riders.
+            // Sable's next native travel step inherits lastPose -> logicalPose. Rebase
+            // at that step's entry, into lastPose, so body motion is applied exactly once.
+            // Doing this in the packet handler races the next interpolation-clock update.
+            standingRebase = new StandingRebase(player, ready);
             applyFallbackTransform(player, ready);
             readyToApply = null;
-            clearMovementHold();
             return true;
         }
         if (!isAttachedToCurrentSableSubLevel(player)) return false;
@@ -323,6 +326,31 @@ public final class SableServerFirstClientHandoff {
         readyToApply = null;
         clearMovementHold();
         return true;
+    }
+
+    /** Called at aiStep HEAD after native body interpolation and before native inherited motion. */
+    public static void prepareStandingMovement(LocalPlayer player) {
+        StandingRebase rebase = standingRebase;
+        if (rebase == null) return;
+        ReadyToApply ready = rebase.handoff();
+        if (rebase.player() != player || !ready.destinationDimension().equals(player.level().dimension())
+            || !player.isAlive() || player.getVehicle() != null) {
+            clear();
+            clearClientPendingGate(player);
+            return;
+        }
+        var container = dev.ryanhcode.sable.api.sublevel.SubLevelContainer.getContainer(player.level());
+        SubLevel support = container == null ? null : container.getSubLevel(ready.rider().supportId());
+        if (support == null || support.isRemoved()) return;
+        ((dev.ryanhcode.sable.mixinterface.entity.entity_sublevel_collision.EntityMovementExtension) player)
+            .sable$setTrackingSubLevel(support);
+        if (ready.rider().supportPosition() != null) {
+            Vec3 position = support.lastPose().transformPosition(ready.rider().supportPosition());
+            McHelper.setPosAndLastTickPos(player, position, position);
+            McHelper.updateBoundingBox(player);
+        }
+        standingRebase = null;
+        clearMovementHold();
     }
 
     private static boolean isAttachedToCurrentSableSubLevel(LocalPlayer player) {
@@ -362,11 +390,13 @@ public final class SableServerFirstClientHandoff {
     }
 
     private static void clearMovementHold() {
+        standingRebase = null;
         if (movementHold != null) movementHold.cancel();
         movementHold = null;
     }
 
     public static void clear() {
+        standingRebase = null;
         clearMovementHold();
         pending = null;
         readyToApply = null;
@@ -408,6 +438,8 @@ public final class SableServerFirstClientHandoff {
             );
         }
     }
+
+    private record StandingRebase(LocalPlayer player, ReadyToApply handoff) {}
 
     private record RiderIdentity(@Nullable UUID vehicleId, ResourceKey<Level> sourceDimension, @Nullable UUID supportId, @Nullable Vec3 supportPosition) {}
 

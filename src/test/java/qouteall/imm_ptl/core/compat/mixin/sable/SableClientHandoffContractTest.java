@@ -13,6 +13,7 @@ import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 
 class SableClientHandoffContractTest {
     @Test
@@ -246,6 +247,20 @@ class SableClientHandoffContractTest {
             "completed Sable handoff must guard against a stale client portal retrigger during dismount projection");
         assertTrue(invokesNamed(clientAck, "clearClientPendingGate"),
             "negative or out-of-order acknowledgements must release a client-deferred teleport gate");
+        assertFalse(invokesNamed(clientApply, "transformPosition"),
+            "packet-time standing placement double-applies the next native inherited motion");
+        MethodNode standingMove = findMethodByName(clientHandoff, "prepareStandingMovement");
+        assertNotNull(standingMove, "standing attachment must be consumed at native movement entry");
+        assertTrue(invokesNamed(standingMove, "lastPose"),
+            "standing travel must start in lastPose so native last-to-logical motion occurs once");
+        assertTrue(invokesNamed(standingMove, "updateBoundingBox"),
+            "the native collision box must follow a standing interpolation-frame rebase");
+        ClassNode movementMixin = readClass(
+            "qouteall/imm_ptl/core/compat/mixin/sable/MixinLocalPlayer_SableRiderMovementHold.class");
+        MethodNode movement = findMethodByName(movementMixin, "ip_holdDetachedRiderMotion");
+        assertTrue(invocationIndex(movement, "prepareStandingMovement") >= 0
+            && invocationIndex(movement, "prepareStandingMovement") < invocationIndex(movement, "shouldHoldDetachedMovement"),
+            "the final standing rebase must run before the movement hold can cancel native travel");
     }
 
     @Test

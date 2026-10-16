@@ -27,11 +27,17 @@ final class SableStandingSupportGameTestImpl {
         body.getPlot().updateBoundingBox();body.updateBoundingBox();
         var standing=new ItemEntity(level,pos.getX()+.5,pos.getY()+1.05,pos.getZ()+.5,new ItemStack(Items.DIAMOND));
         var nearby=new ItemEntity(level,pos.getX()+2,pos.getY()+1.05,pos.getZ()+.5,new ItemStack(Items.DIAMOND));
-        Portal portal=Portal.ENTITY_TYPE.create(level);
+        Portal portal=qouteall.imm_ptl.core.portal.global_portals.VerticalConnectingPortal.ENTITY_TYPE.create(level);
         try {
             standing.move(MoverType.SELF,new Vec3(0,-.2,0));
             helper.assertTrue(SableStandingPassenger.getSupport(standing)==body,"Native collision support was not recognized");
             helper.assertTrue(SableStandingPassenger.getSupport(nearby)==null,"Nearby entity was mistaken for a passenger");
+            Portal finite=Portal.ENTITY_TYPE.create(level);
+            try {
+                finite.setDestinationDimension(net.minecraft.world.level.Level.NETHER);
+                helper.assertTrue(!SableInterface.invoker.shouldUseServerFirstStandingTeleport(standing,finite),
+                    "Standing on a stationary ship blocked ordinary on-foot portal traversal");
+            } finally { finite.discard(); }
             portal.setDestinationDimension(net.minecraft.world.level.Level.NETHER);
             helper.assertTrue(SableInterface.invoker.shouldUseServerFirstStandingTeleport(standing,portal),
                 "Standing passenger bypassed coordinated handoff");

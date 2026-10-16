@@ -116,7 +116,8 @@ public class SableInterface {
 
         @Override
         public boolean shouldUseServerFirstStandingTeleport(Entity player, Portal portal) {
-            return !portal.hasScaling() && !player.level().dimension().equals(portal.getDestDim())
+            return portal instanceof qouteall.imm_ptl.core.portal.global_portals.VerticalConnectingPortal
+                && !portal.hasScaling() && !player.level().dimension().equals(portal.getDestDim())
                 && SableStandingPassenger.getSupport(player) != null;
         }
 
