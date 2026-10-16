@@ -35,6 +35,7 @@ final class SableStandingBalloonServer {
     private static Vector3d held;
     private static int ticks, phaseTicks, testCase, phase;
     private static Vec3 localFeet;
+    private static BlockPos plotOrigin;
     private static double sourceY, arrivalY, seamY;
     private static final List<Map<String,Object>> receipts = new ArrayList<>();
     private static final Map<BlockPos,BlockState> manifest = new LinkedHashMap<>();
@@ -111,7 +112,7 @@ final class SableStandingBalloonServer {
         manifest.replaceAll((pos,old)->source.getBlockState(origin.offset(pos)));
         var body=(ServerSubLevel)SubLevelAssemblyHelper.assembleBlocks(source,origin,positions,
             new BoundingBox3i(-7,32,-7,8,50,8));
-        id=body.getUniqueId();
+        id=body.getUniqueId(); plotOrigin=body.getPlot().getCenterBlock();
         // Stage near the real build-limit seam before releasing real burner propulsion.
         var handle=RigidBodyHandle.of(body);
         Vector3d position=new Vector3d(body.logicalPose().position());
@@ -182,8 +183,8 @@ final class SableStandingBalloonServer {
         require(player.isAlive() && player.getVehicle()==null,"standing passenger died or became mounted");
         Vec3 relative=body.logicalPose().transformPositionInverse(player.position());
         require(relative.distanceTo(localFeet)<1.0,"standing passenger fell off: local displacement="+relative.distanceTo(localFeet));
-        for(var entry:manifest.entrySet()) require(body.getPlot().getEmbeddedLevelAccessor()
-            .getBlockState(body.getPlot().getCenterBlock().offset(entry.getKey())).equals(entry.getValue()),"balloon block changed: "+entry.getKey());
+        for(var entry:manifest.entrySet()) require(destination.getBlockState(plotOrigin.offset(entry.getKey()))
+            .equals(entry.getValue()),"balloon block changed: "+entry.getKey());
         if(phaseTicks<80 || !PortalSmokeSupport.exists("balloon-client-arrived-"+testCase+".txt")) return;
         require(body.logicalPose().position().y-arrivalY>0.5,"destination ship froze at the stack seam");
         Object burner=burner(body,destination);
@@ -203,7 +204,7 @@ final class SableStandingBalloonServer {
         }
     }
     private static Object burner(ServerSubLevel body,ServerLevel level) {
-        return level.getBlockEntity(body.getPlot().getCenterBlock().offset(0,1,0));
+        return level.getBlockEntity(plotOrigin.offset(0,1,0));
     }
     private static ServerSubLevel body(ServerLevel level) {
         if(level==null || id==null) return null;
