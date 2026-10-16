@@ -225,11 +225,12 @@ final class SableStandingBalloonServer {
             // Settle ordinary native movement on a stationary pad before the next case.
             // Reusing airborne collision/inherited-motion state can launch the player into
             // the next envelope; this is setup only, after all flight assertions passed.
+            // Publish teardown intent before removal/teleport packets can reach the client.
+            PortalSmokeSupport.write("balloon-reset.txt","Settle between independent standing cases");
             SubLevelContainer.getContainer(destination).removeSubLevel(body,SubLevelRemovalReason.REMOVED);
             for(BlockPos pos:BlockPos.betweenClosed(29,80,-3,35,87,3)) source.setBlock(pos,
                 pos.getY()==80 || pos.getY()==87 ? Blocks.OAK_PLANKS.defaultBlockState() : Blocks.AIR.defaultBlockState(),2);
             ServerTeleportationManager.of(player.server).forceTeleportPlayer(player,source.dimension(),new Vec3(32.5,81,.5));
-            PortalSmokeSupport.write("balloon-reset.txt","Settle between independent standing cases");
             phase=4; phaseTicks=0;
         }
     }
