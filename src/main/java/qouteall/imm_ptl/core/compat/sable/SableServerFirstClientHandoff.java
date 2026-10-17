@@ -86,6 +86,25 @@ public final class SableServerFirstClientHandoff {
         PreparedTransform transform = new PreparedTransform(
             destinationDimension, rotation, teleportChangesGravity
         );
+        RiderIdentity rider = captureRider(player);
+        Pending previous = pending;
+        if (previous != null && previous.serverTransform() == null
+            && previous.portalId().equals(portalId)
+            && previous.interpolationTransform().destinationDimension().equals(destinationDimension)
+            && previous.rider().vehicleId() == null && rider.vehicleId() == null
+            && previous.rider().supportId() != null
+            && previous.rider().supportId().equals(rider.supportId())
+            && previous.rider().supportPosition() != null
+            && previous.rider().sourceDimension().equals(rider.sourceDimension())
+            && movementHold != null
+            && movementHold.ownsStandingSnapshot(player, rider.sourceDimension(), destinationDimension)) {
+            // The client request already suspended travel, including Sable's inherited motion.
+            // Its balloon can keep interpolating while the player stays frozen. Recapturing
+            // inverse-pose feet here would turn that intervening motion into a permanent offset.
+            LOGGER.debug("Retain standing snapshot while server handoff {} replaces client handoff {}; support={} original={} recaptured={}",
+                handoffId, previous.handoffId(), rider.supportId(), previous.rider().supportPosition(), rider.supportPosition());
+            rider = previous.rider();
+        }
         pending = new Pending(
             handoffId,
             portalId,
@@ -94,7 +113,7 @@ public final class SableServerFirstClientHandoff {
             TransformationManager.capturePlayerRotationContext(),
             player.getXRot(),
             player.getYRot(),
-            captureRider(player)
+            rider
         );
         startMovementHold(player, pending.rider(), destinationDimension);
     }

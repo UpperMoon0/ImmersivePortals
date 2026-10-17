@@ -61,6 +61,12 @@ public final class SableRiderMovementHold {
     }
     public boolean invalidated() { return invalidated; }
     public boolean completed() { return completed; }
+    /** A source-frame snapshot is reusable only while this exact standing hold owns it. */
+    public boolean ownsStandingSnapshot(Object currentPlayer, Object source, Object destination) {
+        return standing && !expired() && !invalidated
+            && playerIdentity == currentPlayer
+            && sourceDimension.equals(source) && destinationDimension.equals(destination);
+    }
     public void tick() { if (ticks < maximumTicks) ticks++; }
     public boolean expired() { return cancelled || ticks >= maximumTicks; }
     public void cancel() { cancelled = true; }

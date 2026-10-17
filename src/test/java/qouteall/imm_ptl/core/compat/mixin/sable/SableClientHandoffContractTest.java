@@ -17,6 +17,29 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 
 class SableClientHandoffContractTest {
     @Test
+    void serverReplacementRetainsTheHeldStandingFrameInsteadOfRecapturingBodyMotion() throws Exception {
+        String source = java.nio.file.Files.readString(java.nio.file.Path.of(
+            "src/main/java/qouteall/imm_ptl/core/compat/sable/SableServerFirstClientHandoff.java"));
+        String prepare = source.substring(source.indexOf("public static void prepareServerInitiated("),
+            source.indexOf("private static void startMovementHold("));
+        assertTrue(prepare.contains("previous.serverTransform() == null"));
+        assertTrue(prepare.contains("previous.portalId().equals(portalId)"));
+        assertTrue(prepare.contains("previous.interpolationTransform().destinationDimension().equals(destinationDimension)"));
+        assertTrue(prepare.contains("previous.rider().supportId().equals(rider.supportId())"));
+        assertTrue(prepare.contains("previous.rider().sourceDimension().equals(rider.sourceDimension())"));
+        assertTrue(prepare.contains("movementHold.ownsStandingSnapshot(player, rider.sourceDimension(), destinationDimension)"));
+        int retain = prepare.indexOf("rider = previous.rider();");
+        int replace = prepare.indexOf("pending = new Pending(");
+        assertTrue(retain >= 0 && retain < replace,
+            "A matching client-first standing handoff must retain its pre-hold feet snapshot");
+        assertFalse(prepare.substring(replace).contains("captureRider(player)"),
+            "Constructing the authoritative pending handoff must not recapture the frozen player again");
+        assertTrue(invokesNamed(findMethodByName(readClass(
+            "qouteall/imm_ptl/core/compat/sable/SableServerFirstClientHandoff.class"),
+            "prepareServerInitiated"), "ownsStandingSnapshot"));
+    }
+
+    @Test
     void standingMigrationAcknowledgementRequiresCrossDimensionEvidence() throws Exception {
         ClassNode compat = readClass("qouteall/imm_ptl/core/compat/sable/SableDimensionStackCompat.class");
         MethodNode alreadyMigrated = findMethodByName(compat, "isRiderAlreadyMigrated");
