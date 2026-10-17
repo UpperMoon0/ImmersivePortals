@@ -1701,14 +1701,6 @@ def validate_results(client_exit: int, smoke: bool = False, ships: bool = False,
             if not (RESULT_DIR / name).is_file() or not (RESULT_DIR / name).read_text().strip():
                 raise RuntimeError("Missing standing balloon evidence: " + name)
         validate_standing_balloon_evidence(standing_cold_start)
-        receipts = json.loads((RESULT_DIR / "balloon-server.json").read_text())
-        if len(receipts) != 2 or {r["standing"] for r in receipts} != {"envelope", "deck"}:
-            raise RuntimeError("Missing standing balloon cases")
-        for r in receipts:
-            if (not r["support"] or r["force_loaded"] or r["native_flight_body_writes"] != 0
-                or not 0 <= r["standing_error"] < 1 or r.get("server_samples", 0) < 80
-                or not (r["source_gas"] > 0 and r["arrived_gas"] >= r["source_gas"] * .95)):
-                raise RuntimeError("Invalid standing balloon receipt")
         for case in (0, 1):
             path = RESULT_DIR / f"balloon-standing-client-{case}.json"
             if not path.is_file(): raise RuntimeError("Missing native standing client samples")

@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 import verify
-from test_standing_balloon import add_correlated_evidence
+from standing_balloon_test_support import write_standing_balloon_evidence
 
 class StandingTransferEvidenceTest(unittest.TestCase):
     def setUp(self):
@@ -12,17 +12,19 @@ class StandingTransferEvidenceTest(unittest.TestCase):
         self.root=Path(self.temp.name)
         p=patch.object(verify,"RESULT_DIR",self.root);p.start();self.addCleanup(p.stop)
     def fixture(self,cold=False):
-        rows=[dict(standing=s,support=True,force_loaded=False,native_flight_body_writes=0,
-                   standing_error=.01,source_gas=300,arrived_gas=400,server_samples=80)
-              for s in ("envelope","deck")]
-        add_correlated_evidence(self.root,rows,cold)
-        (self.root/"balloon-server.json").write_text(json.dumps(rows))
+        write_standing_balloon_evidence(self.root,cold)
     def mutate(self,path,key,value):
         p=self.root/path;data=json.loads(p.read_text());row=data[0] if isinstance(data,list) else data
         row[key]=value;p.write_text(json.dumps(data))
     def test_prepared_and_cold_positive_controls(self):
         for cold in (False,True):
             self.fixture(cold);verify.validate_standing_balloon_evidence(cold)
+    def test_missing_duplicate_or_mislabeled_cases_fail(self):
+        for mutation in (lambda rows: rows[:1], lambda rows: [rows[0],rows[0]],
+                         lambda rows: [rows[0] | {"standing":"deck"},rows[1]]):
+            self.fixture();p=self.root/"balloon-server.json"
+            p.write_text(json.dumps(mutation(json.loads(p.read_text()))))
+            with self.assertRaises(RuntimeError):verify.validate_standing_balloon_evidence()
     def test_flight_damage_and_nonfinite_values_fail(self):
         for key,value in (("blocks",483),("observed_y",-39.5),("observed_y",float("inf")),
                           ("arrival_y",float("nan")),("source_gas",0),("arrived_gas",284),
