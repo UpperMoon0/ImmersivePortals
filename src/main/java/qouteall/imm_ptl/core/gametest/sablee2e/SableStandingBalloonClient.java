@@ -68,9 +68,12 @@ final class SableStandingBalloonClient {
                 sourceWorld=mc.level; sourceReadiness=candidateReadiness;
                 PortalSmokeSupport.write("balloon-client-ready-"+testCase+".txt","native standing support "+id);
             }
-            if(mc.level.dimension().equals(Level.OVERWORLD)
-                && !(testCase==0 && PortalSmokeSupport.exists("balloon-reset.txt"))
-                && SableServerFirstClientHandoff.getActiveHandoffSnapshot()==null) {
+            // The shared request can arrive before the source teleport packet. Initial
+            // Overworld login is not a destination arrival for a not-yet-observed flight.
+            if(SableStandingBalloonAcceptance.shouldObserveArrival(
+                sourceWorld!=null && sourceReadiness!=null, mc.level.dimension().equals(Level.OVERWORLD),
+                testCase==0 && PortalSmokeSupport.exists("balloon-reset.txt"),
+                SableServerFirstClientHandoff.getActiveHandoffSnapshot()!=null)) {
                 if(!supported)throw new IllegalStateException("Client lost standing support after handoff");
                 var completion=SableServerFirstClientHandoff.getStandingCompletionSnapshot();
                 long failedAttempts=SableServerFirstClientHandoff.getUnsuccessfulStandingHandoffs()-unsuccessfulAtStart;
