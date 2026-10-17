@@ -4,6 +4,7 @@ import dev.ryanhcode.sable.sublevel.SubLevel;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.chunk.status.ChunkStatus;
+import net.minecraft.world.level.chunk.EmptyLevelChunk;
 import net.minecraft.world.phys.Vec3;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -19,7 +20,18 @@ final class SableStandingBalloonChunks {
         var plotChunks = new LinkedHashMap<String, Boolean>();
         for (int x = (center.getX() - 7) >> 4; x <= (center.getX() + 7) >> 4; x++) {
             for (int z = (center.getZ() - 7) >> 4; z <= (center.getZ() + 7) >> 4; z++) {
-                plotChunks.put(x + "," + z, loaded.contains(ChunkPos.asLong(x, z)));
+                long expected = ChunkPos.asLong(x, z);
+                boolean present = loaded.contains(expected);
+                if (level.isClientSide) {
+                    // IP overrides ClientChunkCache packet insertion: its effective cache owns
+                    // real plot chunks without populating Sable's superclass holder inventory.
+                    // Probe that cache without creating chunks, rejecting fallback/wrong positions.
+                    var chunk = level.getChunkSource().getChunk(x, z, ChunkStatus.FULL, false);
+                    present = SableStandingBalloonAcceptance.isExactLoadedChunk(
+                        chunk != null && !(chunk instanceof EmptyLevelChunk), expected,
+                        chunk == null ? 0 : chunk.getPos().toLong());
+                }
+                plotChunks.put(x + "," + z, present);
             }
         }
         double minX = Double.POSITIVE_INFINITY, minZ = minX;
@@ -46,6 +58,9 @@ final class SableStandingBalloonChunks {
             level.getChunkSource().getChunk(playerX, playerZ, ChunkStatus.FULL, false) != null);
         return Map.of("dimension", level.dimension().location().toString(),
             "world_chunks", worldChunks, "plot_chunks", plotChunks,
+            "world_bounds", java.util.List.of(minX, minZ, maxX, maxZ),
+            "body_position", body.logicalPose().position().toString(),
+            "native_plot_chunks", loaded.stream().map(key -> ChunkPos.getX(key) + "," + ChunkPos.getZ(key)).toList(),
             "world_ready", SableStandingBalloonAcceptance.allPresent(worldChunks),
             "plot_ready", SableStandingBalloonAcceptance.allPresent(plotChunks));
     }

@@ -30,6 +30,26 @@ class SableStandingBalloonAcceptanceTest {
         assertFalse(SableStandingBalloonAcceptance.allAbsent(Map.of("1024,1024", false, "1024,1025", true)));
         assertFalse(SableStandingBalloonAcceptance.allAbsent(Map.of()));
     }
+    @Test void clientPlotProbeRequiresRealChunkAtExactRequestedPosition() {
+        long requested = 0x0013888800138888L;
+        assertTrue(SableStandingBalloonAcceptance.isExactLoadedChunk(true, requested, requested));
+        assertFalse(SableStandingBalloonAcceptance.isExactLoadedChunk(false, requested, requested),
+            "Null or EmptyLevelChunk fallback cannot count as readiness");
+        assertFalse(SableStandingBalloonAcceptance.isExactLoadedChunk(true, requested, requested + 1),
+            "A real chunk at the wrong position cannot count as coverage");
+    }
+    @Test void clientPlotProbeUsesEffectiveCacheAndPublishesMissingReadinessBeforeReturning() throws Exception {
+        String chunks=fixture("SableStandingBalloonChunks");
+        String clientBranch=between(chunks,"if (level.isClientSide)","plotChunks.put(");
+        assertTrue(clientBranch.contains("getChunk(x, z, ChunkStatus.FULL, false)"));
+        assertTrue(clientBranch.contains("chunk instanceof EmptyLevelChunk"));
+        assertTrue(clientBranch.contains("SableStandingBalloonAcceptance.isExactLoadedChunk("));
+        assertTrue(clientBranch.contains("chunk.getPos().toLong()"));
+        String client=fixture("SableStandingBalloonClient");
+        assertTrue(client.indexOf("balloon-preflight-readiness-client-")
+            < client.indexOf("if(!SableStandingBalloonChunks.ready(candidateReadiness)) return;"));
+        assertTrue(chunks.contains("\"world_bounds\""));
+    }
     @Test void successMustCorrelateBodyNonceAndBothWorlds() {
         assertTrue(completed(BODY, HANDOFF, "minecraft:the_nether", "minecraft:overworld", 0));
         assertFalse(completed(HANDOFF, HANDOFF, "minecraft:the_nether", "minecraft:overworld", 0));

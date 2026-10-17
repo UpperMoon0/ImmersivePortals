@@ -12,6 +12,9 @@ final class SableStandingBalloonAcceptance {
     static boolean allAbsent(Map<String, Boolean> chunks) {
         return !chunks.isEmpty() && chunks.values().stream().allMatch(Boolean.FALSE::equals);
     }
+    static boolean isExactLoadedChunk(boolean realChunk, long expectedPosition, long actualPosition) {
+        return realChunk && expectedPosition == actualPosition;
+    }
     static boolean completed(UUID expectedBody, UUID completedBody, UUID handoff,
                              String source, String destination, long failedAttempts) {
         return expectedBody != null && expectedBody.equals(completedBody) && handoff != null

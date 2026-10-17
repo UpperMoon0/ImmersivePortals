@@ -37,7 +37,11 @@ an earlier fallback. Normal standing camera-transform reuse is not a failure.
 
 Before release and throughout destination observation, non-creating queries
 inventory ordinary world-space footprint/player chunks separately from existing
-hidden plot storage. Every required chunk must be present. Live source body
+hidden plot storage. On the client, hidden chunks are checked in the effective
+IP chunk cache using non-creating reads, with null, empty fallback and wrong-position
+chunks rejected. IP overrides vanilla packet insertion, so Sable’s superclass
+plot-holder inventory alone is not proof of client availability. Server checks
+retain the native loaded-plot inventory. Every required chunk must be present. Live source body
 ownership must be retired on both server and client, and force-load tickets remain
 forbidden throughout flight and observation. Empty source plot holders may remain;
 their presence is not live body ownership. Client packet catch-up has a bounded

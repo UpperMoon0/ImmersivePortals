@@ -61,6 +61,9 @@ final class SableStandingBalloonClient {
             if(mc.level.dimension().equals(Level.NETHER) && supported
                 && body.logicalPose().transformPositionInverse(mc.player.position()).distanceTo(expectedFeet)<.2) {
                 var candidateReadiness=SableStandingBalloonChunks.snapshot(mc.level,body,mc.player.position());
+                if(ticks%40==0) PortalSmokeSupport.write("balloon-preflight-readiness-client-"+testCase+".json",
+                    new com.google.gson.Gson().toJson(java.util.Map.of("case",testCase,"body",id.toString(),
+                        "readiness",candidateReadiness)));
                 if(!SableStandingBalloonChunks.ready(candidateReadiness)) return;
                 sourceWorld=mc.level; sourceReadiness=candidateReadiness;
                 PortalSmokeSupport.write("balloon-client-ready-"+testCase+".txt","native standing support "+id);
