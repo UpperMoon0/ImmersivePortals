@@ -25,3 +25,39 @@ The burner regression uses the standard Nether ceiling / Overworld floor pair un
 ## Aeronautics gas state
 
 Aeronautics stores filled gas amounts and targets in its per-world BalloonMap, outside the Sable block serializer. Rebuilding only the blocks makes a hot balloon cold at the destination, so it can reverse immediately. The optional adapter copies SavedBalloon through its registry-aware codec, rebuilds the destination graph and restores gas before commit. Codec copying prevents shared mutable gas between source and staged destination. Rollback discards destination balloon records; commit retires the source records. Missing Aeronautics does not add a class dependency. Unsupported rebuild APIs reject staging while the source remains intact. The real flight oracle requires positive source gas and at least 95% of that amount immediately after arrival, in addition to continued ascent.
+
+### Correlated acceptance evidence
+
+Each envelope/deck case records its body UUID on both sides and the client's
+successful handoff nonce. An inactive handoff alone is insufficient: the receipt
+must match that body and Nether-to-Overworld dimensions after the native standing
+rebase, with no rejected, expired or cancelled standing attempt since case setup.
+A monotonic diagnostic failure count prevents later support recovery from hiding
+an earlier fallback. Normal standing camera-transform reuse is not a failure.
+
+Before release and throughout destination observation, non-creating queries
+inventory ordinary world-space footprint/player chunks separately from existing
+hidden plot storage. Every required chunk must be present. Live source body
+ownership must be retired on both server and client, and force-load tickets remain
+forbidden throughout flight and observation. Empty source plot holders may remain;
+their presence is not live body ownership. Client packet catch-up has a bounded
+200-tick window before settled samples; readiness regression after sampling starts
+fails immediately. The existing 40-client/80-server sample minimums remain intact.
+
+### Remote cold-start variant
+
+The dedicated TCP lane runs `standing-balloon --standing-cold-start`; the UDP
+powered-suite follow-up retains the prepared-terrain baseline. Each envelope/deck
+case prepares the same corridor at a separate remote X/Z while the player is
+elsewhere. Setup checks spawn separation and every player's direct/portal loader
+footprint, then waits at most 600 ticks for 20 consecutive non-creating destination
+terrain-absence samples on both server and client before assembling the balloon.
+The client only inspects existing worlds. Correlated cold receipts must identify
+the same corridor subsequently observed ready in normal destination samples.
+
+This tests absent-at-setup to normally-loaded terrain readiness. Stack portals
+remain free to preload terrain during approach; no chunks are forcibly unloaded
+and no loader is disabled. Geometry, burner settings, natural physics, the
+4000-tick total limit, and all terminal, block, gas, support and ownership checks
+remain unchanged. This does not claim destination terrain stays absent until the
+seam, or that ordinary source terrain unloads immediately after migration.

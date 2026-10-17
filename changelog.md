@@ -13,6 +13,8 @@ and this project tries to adhere to [Semantic Versioning](https://semver.org/spe
 - Detect swept leading-hull entry at dimension stacks before Sable ceiling atmosphere reaches zero; preserve immediate reversals before COM entry.
 - Coordinate dimension-stack crossings for players standing on Sable ships, including envelope and deck passengers.
 - Preserve standing support through body migration and bound client prediction while destination support synchronizes.
+- Preserve client-request handoff identity between the authoritative dimension packet and acknowledgement, preventing reverse prediction from replacing pending standing support.
+- Require correlated successful attachment, exclusive ownership and continuous chunk readiness; verify remote cold-start TCP flights alongside the prepared-terrain UDP baseline.
 - Keep ordinary same-dimension portal traversal available while standing on a ship; existing support alone is not evidence of a completed migration.
 - Preserve Aeronautics balloon gas across transactional ship migration instead of rebuilding a cold balloon.
 - Add real unmounted envelope/deck burner stack regressions without command force-loading; reuse the powered UDP session while retaining a separate TCP lane.

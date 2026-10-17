@@ -125,7 +125,7 @@ jobs:
           cp run-sable-e2e-server/config/sable-common.toml run-sable-e2e-client/config/sable-common.toml
       - run: chmod +x ./gradlew
       - name: Unmounted envelope and deck burner ascents
-        run: python3 tools/verify.py standing-balloon
+        run: python3 tools/verify.py standing-balloon --standing-cold-start
       - name: Preserve standing balloon evidence
         if: always()
         uses: actions/upload-artifact@v4

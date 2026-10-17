@@ -31,7 +31,10 @@ import java.util.*;
 final class SableStandingBalloonServer {
     private static ServerPlayer player;
     private static ServerLevel source, destination;
-    private static UUID id;
+    private static UUID id, coldNonce;
+    private static int remoteX, remoteZ, absentSamples;
+    private static Map<String,Object> sourceReadiness;
+    static boolean coldStart() { return "true".equals(System.getenv("IP_SABLE_STANDING_COLD_START")); }
     private static Vector3d held;
     private static int ticks, phaseTicks, testCase, phase, settledSamples;
     private static Vec3 localFeet;
@@ -73,6 +76,7 @@ final class SableStandingBalloonServer {
             else if (phase==1) warmup();
             else if (phase==2) fly();
             else if (phase==3) observe();
+            else if (phase==5) awaitColdDestination();
             else if (phase==4 && phaseTicks>=60 && PortalSmokeSupport.exists("balloon-client-reset.txt")) setup();
         } catch (Throwable error) {
             phase=99; error.printStackTrace();
@@ -84,10 +88,57 @@ final class SableStandingBalloonServer {
         // Upward Nether logical ceiling -> Overworld floor, using default global connectors.
         VerticalConnectingPortal.connectMutually(Level.OVERWORLD, Level.NETHER, false);
         seamY=VerticalConnectingPortal.getConnectingPortal(source,VerticalConnectingPortal.ConnectorType.ceil).getY();
-        for (BlockPos pos : BlockPos.betweenClosed(-12,16,-12,12,128,12))
+        remoteX=remoteZ=coldStart() ? 16384+testCase*8192+8 : 0;
+        if(coldStart()) requireOutsideLoaders();
+        for (BlockPos pos : BlockPos.betweenClosed(remoteX-12,16,remoteZ-12,remoteX+12,128,remoteZ+12))
             if (!source.getBlockState(pos).isAir()) source.setBlock(pos,Blocks.AIR.defaultBlockState(),2);
-        for (BlockPos pos : BlockPos.betweenClosed(-12,destination.getMinBuildHeight(),-12,12,-30,12))
+        for (BlockPos pos : BlockPos.betweenClosed(remoteX-12,destination.getMinBuildHeight(),remoteZ-12,remoteX+12,-30,remoteZ+12))
             if (!destination.getBlockState(pos).isAir()) destination.setBlock(pos,Blocks.AIR.defaultBlockState(),2);
+        if(coldStart()) {
+            coldNonce=UUID.randomUUID(); absentSamples=0;
+            require(SableStandingBalloonAcceptance.allPresent(
+                SableStandingBalloonColdChunks.snapshot(destination,remoteX,remoteZ)),
+                "Prepared destination corridor was not fully loaded before cold observation");
+            PortalSmokeSupport.write("balloon-cold-request.json",new Gson().toJson(Map.of(
+                "case",testCase,"nonce",coldNonce.toString(),"remote_x",remoteX,"remote_z",remoteZ)));
+            phase=5; phaseTicks=0;
+            return;
+        }
+        assemble();
+    }
+    private static void requireOutsideLoaders() {
+        var spawn=destination.getSharedSpawnPos();
+        require(Math.max(Math.abs(remoteX-spawn.getX()),Math.abs(remoteZ-spawn.getZ()))>4096,
+            "Cold corridor overlaps spawn region");
+        for(ServerPlayer observer:player.server.getPlayerList().getPlayers()) {
+            qouteall.imm_ptl.core.chunk_loading.ChunkVisibility.foreachBaseChunkLoaders(observer,loader -> {
+                if(!loader.dimension().equals(source.dimension()) && !loader.dimension().equals(destination.dimension())) return;
+                require(loader.x()+loader.radius()<((remoteX-12)>>4)
+                    || loader.x()-loader.radius()>((remoteX+12)>>4)
+                    || loader.z()+loader.radius()<((remoteZ-12)>>4)
+                    || loader.z()-loader.radius()>((remoteZ+12)>>4),
+                    "Cold corridor overlaps player/portal loader: "+loader);
+            });
+        }
+    }
+    private static void awaitColdDestination() {
+        require(phaseTicks<=600,"Cold destination failed to unload naturally within 600 ticks");
+        requireOutsideLoaders();
+        var chunks=SableStandingBalloonColdChunks.snapshot(destination,remoteX,remoteZ);
+        absentSamples=SableStandingBalloonAcceptance.allAbsent(chunks)?absentSamples+1:0;
+        if(absentSamples<20) return;
+        String client=PortalSmokeSupport.read("balloon-cold-client-"+testCase+".json");
+        if(client.isEmpty()) return;
+        var receipt=com.google.gson.JsonParser.parseString(client).getAsJsonObject();
+        require(receipt.get("nonce").getAsString().equals(coldNonce.toString()),"Cold client nonce mismatch");
+        require(receipt.get("samples").getAsInt()>=20,"Insufficient cold client samples");
+        PortalSmokeSupport.write("balloon-cold-server-"+testCase+".json",new Gson().toJson(Map.of(
+            "case",testCase,"nonce",coldNonce.toString(),"dimension",destination.dimension().location().toString(),
+            "remote_x",remoteX,"remote_z",remoteZ,"samples",absentSamples,"world_chunks",chunks,
+            "outside_loaders",true,"prepared_before_absence",true)));
+        assemble();
+    }
+    private static void assemble() {
         manifest.clear();
         for(int x=-2;x<=2;x++) for(int z=-2;z<=2;z++)
             manifest.put(new BlockPos(x,0,z),Blocks.OAK_PLANKS.defaultBlockState());
@@ -108,13 +159,13 @@ final class SableStandingBalloonServer {
             .setValue(BlockStateProperties.ATTACH_FACE,net.minecraft.world.level.block.state.properties.AttachFace.FLOOR)
             .setValue(BlockStateProperties.POWERED,true));
         // Assemble at its final pre-flight altitude so the first full sync is already correct.
-        BlockPos origin=new BlockPos(0,(int)Math.floor(seamY)-30,0);
+        BlockPos origin=new BlockPos(remoteX,(int)Math.floor(seamY)-30,remoteZ);
         List<BlockPos> positions=new ArrayList<>();
         for(var entry:manifest.entrySet()) { BlockPos pos=origin.offset(entry.getKey()); source.setBlock(pos,entry.getValue(),3); positions.add(pos); }
         // Publish placement callbacks (connected fences/powered burner) as the exact expected state.
         manifest.replaceAll((pos,old)->source.getBlockState(origin.offset(pos)));
         var body=(ServerSubLevel)SubLevelAssemblyHelper.assembleBlocks(source,origin,positions,
-            new BoundingBox3i(-7,origin.getY(),-7,8,origin.getY()+18,8));
+            new BoundingBox3i(remoteX-7,origin.getY(),remoteZ-7,remoteX+8,origin.getY()+18,remoteZ+8));
         id=body.getUniqueId(); plotOrigin=body.getPlot().getCenterBlock();
         body.updateLastPose(); body.updateBoundingBox(); held=new Vector3d(body.logicalPose().position());
         localFeet=Vec3.atBottomCenterOf(body.getPlot().getCenterBlock().offset(testCase==0?0:-1,testCase==0?18:1,0));
@@ -123,7 +174,8 @@ final class SableStandingBalloonServer {
         phase=1; phaseTicks=0;
         PortalSmokeSupport.write("balloon-request.json",new Gson().toJson(Map.of(
             "case",testCase,"body",id.toString(),"standing",testCase==0?"envelope":"deck","blocks",manifest.size(),
-            "feet_x",localFeet.x,"feet_y",localFeet.y,"feet_z",localFeet.z)));
+            "feet_x",localFeet.x,"feet_y",localFeet.y,"feet_z",localFeet.z,
+            "cold_start",coldStart(),"cold_nonce",coldStart()?coldNonce.toString():"")));
     }
     private static void warmup() throws Exception {
         ServerSubLevel body=body(source);
@@ -157,11 +209,15 @@ final class SableStandingBalloonServer {
         require(reserve>1.1,"fixture has insufficient natural lift reserve: "+reserve);
         require(SubLevelContainer.getContainer(source).collectForceLoadTickets().get(body)==null
             || SubLevelContainer.getContainer(source).collectForceLoadTickets().get(body).isEmpty(),"fixture unexpectedly force-loaded");
+        sourceReadiness=SableStandingBalloonChunks.snapshot(source,body,player.position());
+        require(SableStandingBalloonChunks.ready(sourceReadiness),"Source balloon chunks not ready before release");
         sourceY=body.logicalPose().position().y;
         PortalSmokeSupport.write("balloon-release-"+testCase+".txt","lift="+lift+" sourceY="+sourceY);
         phase=2; phaseTicks=0;
     }
     private static void fly() throws Exception {
+        requireNoForceLoad(body(source));
+        requireNoForceLoad(body(destination));
         if(phaseTicks%20==0) {
             ServerSubLevel active=body(player.serverLevel());
             if(active!=null) PortalSmokeSupport.write("balloon-flight-"+testCase+".json",new Gson().toJson(Map.of(
@@ -175,6 +231,8 @@ final class SableStandingBalloonServer {
         if(player.serverLevel()==destination) {
             require(arrived!=null && body(source)==null,"player crossed without exclusive destination ship ownership");
             require(SableStandingPassenger.getSupport(player)==arrived,"standing support still references the source ship");
+            require(SableStandingBalloonChunks.ready(SableStandingBalloonChunks.snapshot(destination,arrived,player.position())),
+                "Destination balloon chunks not ready at arrival");
             require(arrived.logicalPose().position().y>sourceY-seamY+destination.getMinBuildHeight()+3,
                 "balloon did not make natural pre-seam travel");
             Object balloon=burner(arrived,destination).getClass().getMethod("getBalloon").invoke(burner(arrived,destination));
@@ -189,6 +247,9 @@ final class SableStandingBalloonServer {
         ServerSubLevel body=body(destination);
         require(player.serverLevel()==destination && body!=null && body(source)==null,"ship/player ownership split after crossing");
         require(player.isAlive() && player.getVehicle()==null,"standing passenger died or became mounted");
+        requireNoForceLoad(body);
+        var destinationReadiness=SableStandingBalloonChunks.snapshot(destination,body,player.position());
+        require(SableStandingBalloonChunks.ready(destinationReadiness),"Destination balloon chunks lost readiness");
         Vec3 relative=body.logicalPose().transformPositionInverse(player.position());
         maxStandingError=Math.max(maxStandingError,relative.distanceTo(localFeet));
         PortalSmokeSupport.write("balloon-standing-server-"+testCase+".json",new Gson().toJson(Map.of(
@@ -212,6 +273,10 @@ final class SableStandingBalloonServer {
         Object burner=burner(body,destination);
         require((boolean)burner.getClass().getMethod("canOutputGas").invoke(burner),"destination burner stopped");
         receipts.add(Map.ofEntries(
+            Map.entry("case",testCase),Map.entry("body",id.toString()),Map.entry("player",player.getUUID().toString()),
+            Map.entry("source_readiness",sourceReadiness),Map.entry("destination_readiness",destinationReadiness),
+            Map.entry("source_body_absent",body(source)==null),Map.entry("destination_body_present",body(destination)==body),
+            Map.entry("cold_start",coldStart()),Map.entry("cold_nonce",coldStart()?coldNonce.toString():""),
             Map.entry("standing",testCase==0?"envelope":"deck"),Map.entry("blocks",manifest.size()),
             Map.entry("support",true),Map.entry("force_loaded",false),Map.entry("arrival_y",arrivalY),
             Map.entry("observed_y",body.logicalPose().position().y),Map.entry("standing_error",settledMaximum),
@@ -233,6 +298,11 @@ final class SableStandingBalloonServer {
             ServerTeleportationManager.of(player.server).forceTeleportPlayer(player,source.dimension(),new Vec3(32.5,81,.5));
             phase=4; phaseTicks=0;
         }
+    }
+    private static void requireNoForceLoad(ServerSubLevel body) {
+        if(body==null) return;
+        var tickets=SubLevelContainer.getContainer((ServerLevel)body.getLevel()).collectForceLoadTickets().get(body);
+        require(tickets==null || tickets.isEmpty(),"Balloon acquired force-load tickets during native flight");
     }
     private static Object burner(ServerSubLevel body,ServerLevel level) {
         return level.getBlockEntity(plotOrigin.offset(0,1,0));

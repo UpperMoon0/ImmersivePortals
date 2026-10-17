@@ -38,7 +38,7 @@ public abstract class MixinClientTeleportationManager_SableServerFirstAck {
         // Seat removal and destination attachment are separate packets. In between, getVehicle()
         // is null and IP would choose its ordinary on-foot path, bypassing the rider request guard.
         // Reject the prediction itself so no portal checkpoint or camera state is advanced either.
-        if (SableServerFirstClientHandoff.hasActiveServerInitiatedHandoff()) {
+        if (SableServerFirstClientHandoff.hasActiveHandoff()) {
             cir.setReturnValue(null);
         }
     }
@@ -61,7 +61,7 @@ public abstract class MixinClientTeleportationManager_SableServerFirstAck {
         // reattachment finish. Client interpolation can cross the reverse portal plane after the
         // authoritative dimension packet; suppress that stale prediction before touching IP's
         // pending portal gate, otherwise the cancelled request itself can leave the gate sticky.
-        if (SableServerFirstClientHandoff.hasActiveServerInitiatedHandoff()) {
+        if (SableServerFirstClientHandoff.hasActiveHandoff()) {
             ci.cancel();
             return;
         }

@@ -2131,7 +2131,7 @@ class ShipVerificationHarnessTest(unittest.TestCase):
             self.assertIn("runSableE2EServer", launch_server.call_args.args[0])
             self.assertIn("runSableE2EClient", launch_client.call_args.args[0])
             wait.assert_called_once_with(server, client, timeout=1200 if ships else 300, smoke=False, ships=ships,
-                                         aeronautics=False, ship_size=ship_size, standing_balloon=False)
+                                         aeronautics=False, ship_size=ship_size, standing_balloon=False, standing_cold_start=False)
 
     def test_windows_bridge_forwards_explicit_ship_mode(self):
         with patch.object(verify.ctypes, "windll", Mock(), create=True):
@@ -2446,7 +2446,7 @@ class ShipVerificationHarnessTest(unittest.TestCase):
         self.assertEqual(events, ["stage", "server", "stop", "stop", "cleanup"])
         self.assertEqual(launch.call_args.kwargs["env"]["IP_SABLE_SHIPS_AERONAUTICS"], "true")
         self.assertEqual(launch_client.call_args.args[1]["IP_SABLE_SHIPS_AERONAUTICS"], "true")
-        wait.assert_called_once_with(server, client, timeout=1200, smoke=False, ships=True, aeronautics=True, ship_size="all", standing_balloon=False)
+        wait.assert_called_once_with(server, client, timeout=1200, smoke=False, ships=True, aeronautics=True, ship_size="all", standing_balloon=False, standing_cold_start=False)
 
     def test_aeronautics_results_never_overwrite_baseline_evidence(self):
         root = self.results / "checkout"

@@ -5,6 +5,32 @@ from pathlib import Path
 from unittest.mock import patch
 import verify
 
+def readiness(dimension, keys=("0,0",)):
+    return dict(dimension=dimension,world_chunks={k:True for k in keys},plot_chunks={"32,32":True},world_ready=True,plot_ready=True)
+
+def add_correlated_evidence(root, receipts, cold=False):
+    for case,row in enumerate(receipts):
+        remote=16384+case*8192+8
+        keys=[f"{x},{z}" for x in range((remote-12)>>4,((remote+12)>>4)+1)
+              for z in range((remote-12)>>4,((remote+12)>>4)+1)] if cold else ["0,0"]
+        body=f"00000000-0000-4000-8000-{case+1:012d}"
+        nonce=f"00000000-0000-4000-8000-{case+20:012d}"
+        row.update(case=case,body=body,player="00000000-0000-4000-8000-000000000099",
+                   blocks=484,arrival_y=-40,observed_y=80,source_body_absent=True,destination_body_present=True,
+                   source_readiness=readiness("minecraft:the_nether",keys),destination_readiness=readiness("minecraft:overworld",keys),
+                   cold_start=cold,cold_nonce=nonce if cold else "")
+        client=dict(case=case,body=body,handoff=f"00000000-0000-4000-8000-{case+10:012d}",
+                    handoff_completed=True,failed_handoffs=0,source_body_absent=True,destination_body_present=True,
+                    supported=True,samples=40,maximum_error=.01,source_readiness=row["source_readiness"],
+                    destination_readiness=row["destination_readiness"],cold_start=cold,cold_nonce=nonce if cold else "")
+        (root/f"balloon-client-case-{case}.json").write_text(json.dumps(client))
+        if cold:
+            for side in ("server","client"):
+                (root/f"balloon-cold-{side}-{case}.json").write_text(json.dumps(dict(
+                    case=case,nonce=nonce,dimension="minecraft:overworld",remote_x=remote,remote_z=remote,
+                    samples=20,world_chunks={k:False for k in keys},outside_loaders=True,prepared_before_absence=True)))
+    return receipts
+
 class StandingBalloonEvidenceTest(unittest.TestCase):
     def test_missing_case_force_loading_writes_and_detachment_are_rejected(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -16,6 +42,7 @@ class StandingBalloonEvidenceTest(unittest.TestCase):
                 (root/f"balloon-standing-client-{case}.json").write_text(json.dumps(dict(supported=True,samples=40,maximum=.01)))
             receipts=[dict(standing=standing,support=True,force_loaded=False,native_flight_body_writes=0,standing_error=.01,source_gas=300,arrived_gas=400,server_samples=80)
                       for standing in ("envelope","deck")]
+            add_correlated_evidence(root,receipts)
             def validate(data):
                 (root/"balloon-server.json").write_text(json.dumps(data))
                 verify.validate_results(0,standing_balloon=True)
@@ -47,9 +74,9 @@ class StandingBalloonEvidenceTest(unittest.TestCase):
                 (root/(name+".txt")).write_text("observed")
             for case in (0,1):
                 (root/f"balloon-standing-client-{case}.json").write_text(json.dumps(dict(supported=True,samples=40,maximum=.01)))
-            (root/"balloon-server.json").write_text(json.dumps([
+            (root/"balloon-server.json").write_text(json.dumps(add_correlated_evidence(root,[
                 dict(standing=kind,support=True,force_loaded=False,native_flight_body_writes=0,standing_error=.01,source_gas=300,arrived_gas=400,server_samples=80)
-                for kind in ("envelope","deck")]))
+                for kind in ("envelope","deck")])))
             with patch.object(verify,"RESULT_DIR",root),patch.object(verify,"validate_ship_reports") as original:
                 with self.assertRaisesRegex(RuntimeError,"preceding powered-suite"):
                     verify.validate_results(0,ships=True,aeronautics=True,standing_balloon=True)

@@ -26,6 +26,7 @@ from pathlib import Path
 import shutil
 import signal
 import socket
+import uuid
 import subprocess
 import sys
 import time
@@ -237,7 +238,7 @@ def launch_windows_interactive(
 
 
     wrapper = RESULT_DIR / "client-session.cmd"
-    inherited = ("IP_SABLE_E2E", "IP_SABLE_STANDING_BALLOON", "IP_SABLE_STANDING_AFTER_SHIPS", "IP_SABLE_SHIPS", "IP_SABLE_SHIPS_AERONAUTICS", "IP_SABLE_SHIPS_SIZE",
+    inherited = ("IP_SABLE_E2E", "IP_SABLE_STANDING_BALLOON", "IP_SABLE_STANDING_AFTER_SHIPS", "IP_SABLE_STANDING_COLD_START", "IP_SABLE_SHIPS", "IP_SABLE_SHIPS_AERONAUTICS", "IP_SABLE_SHIPS_SIZE",
                  "IP_SABLE_E2E_PORT", "IP_SABLE_E2E_RESULT_DIR", "IP_SABLE_E2E_SERVER_DIR", "IP_SABLE_E2E_CLIENT_DIR", "GRADLE_USER_HOME",
                  "IP_PORTAL_SMOKE", "IP_SHADOW_SMOKE", "IP_SMOKE_SAMPLES", "IP_SMOKE_RENDERER", "IP_SMOKE_SABLE",
                  "IP_SMOKE_NEGATIVE_CONTROL", "IP_SMOKE_FLYWHEEL_BACKEND", "IP_SMOKE_RENDER_MODE",
@@ -933,6 +934,7 @@ def prepare_e2e(*, ships: bool = False) -> dict[str, str]:
     # An inherited opt-in must never silently replace the established E2E suite.
     env["IP_SABLE_STANDING_AFTER_SHIPS"] = "false"
     env["IP_SABLE_STANDING_BALLOON"] = "false"
+    env["IP_SABLE_STANDING_COLD_START"] = "false"
     env["IP_SABLE_SHIPS"] = "false"
     env["IP_SABLE_SHIPS_AERONAUTICS"] = "false"
     env["IP_SABLE_SHIPS_SIZE"] = "all"
@@ -1607,8 +1609,90 @@ def validate_ship_reports(aeronautics: bool = False, ship_size: str = "all") -> 
                     screenshot_file(name, label)
 
 
+def validate_balloon_readiness(value, dimension):
+    if not isinstance(value, dict) or value.get("dimension") != dimension:
+        raise RuntimeError("Invalid standing balloon chunk dimension")
+    for kind in ("world", "plot"):
+        chunks = value.get(kind + "_chunks")
+        if (value.get(kind + "_ready") is not True or not isinstance(chunks, dict) or not chunks
+                or any(not re.fullmatch(r"-?\d+,-?\d+", key) or ready is not True
+                       for key, ready in chunks.items())):
+            raise RuntimeError("Missing non-loading standing balloon chunk readiness")
+
+
+def validate_balloon_cold_start(case, server, client):
+    nonce = server.get("cold_nonce")
+    try: uuid.UUID(nonce)
+    except (ValueError, TypeError, AttributeError):
+        raise RuntimeError("Invalid cold-start nonce")
+    if server.get("cold_start") is not True or client.get("cold_start") is not True or client.get("cold_nonce") != nonce:
+        raise RuntimeError("Missing correlated cold-start flight evidence")
+    remote = 16384 + case * 8192 + 8
+    expected = {f"{x},{z}" for x in range((remote - 12) >> 4, ((remote + 12) >> 4) + 1)
+                for z in range((remote - 12) >> 4, ((remote + 12) >> 4) + 1)}
+    for side, final in (("server", server), ("client", client)):
+        path = RESULT_DIR / f"balloon-cold-{side}-{case}.json"
+        if not path.is_file(): raise RuntimeError("Missing cold-start chunk observation")
+        cold = json.loads(path.read_text())
+        chunks, samples = cold.get("world_chunks"), cold.get("samples")
+        if (cold.get("case") != case or cold.get("nonce") != nonce
+            or cold.get("dimension") != "minecraft:overworld"
+            or cold.get("remote_x") != remote or cold.get("remote_z") != remote
+            or type(samples) is not int or not 20 <= samples <= 600
+            or not isinstance(chunks, dict) or set(chunks) != expected
+            or any(value is not False for value in chunks.values())):
+            raise RuntimeError("Invalid cold-start absence evidence")
+        if side == "server" and (cold.get("outside_loaders") is not True or cold.get("prepared_before_absence") is not True):
+            raise RuntimeError("Cold-start preparation/loader separation not observed")
+        if not set(final["destination_readiness"]["world_chunks"]).issubset(expected):
+            raise RuntimeError("Destination readiness does not cover observed cold corridor")
+
+
+def validate_standing_balloon_evidence(cold_start=False):
+    receipts = json.loads((RESULT_DIR / "balloon-server.json").read_text())
+    if len(receipts) != 2 or {r.get("case") for r in receipts} != {0, 1}:
+        raise RuntimeError("Missing correlated standing balloon cases")
+    for r in receipts:
+        case = r["case"]
+        if r.get("standing") != ("envelope" if case == 0 else "deck"):
+            raise RuntimeError("Mismatched standing balloon surface")
+        for key in ("body", "player"):
+            try: uuid.UUID(r.get(key, ""))
+            except (ValueError, TypeError, AttributeError):
+                raise RuntimeError("Invalid standing balloon identity")
+        if r.get("source_body_absent") is not True or r.get("destination_body_present") is not True:
+            raise RuntimeError("Standing balloon ownership split")
+        validate_balloon_readiness(r.get("source_readiness"), "minecraft:the_nether")
+        validate_balloon_readiness(r.get("destination_readiness"), "minecraft:overworld")
+        if (r.get("support") is not True or r.get("force_loaded") is not False
+            or r.get("native_flight_body_writes") != 0 or r.get("blocks") != 484
+            or not all(math.isfinite(r.get(k, float("nan"))) for k in
+                       ("standing_error", "arrival_y", "observed_y", "source_gas", "arrived_gas"))
+            or not r["observed_y"] - r["arrival_y"] > .5
+            or not 0 <= r["standing_error"] < 1 or r.get("server_samples", 0) < 80
+            or not (r["source_gas"] > 0 and r["arrived_gas"] >= r["source_gas"] * .95)):
+            raise RuntimeError("Invalid standing balloon receipt")
+        path = RESULT_DIR / f"balloon-client-case-{case}.json"
+        if not path.is_file(): raise RuntimeError("Missing correlated standing client evidence")
+        c = json.loads(path.read_text())
+        if (c.get("case") != case or c.get("body") != r["body"]
+            or c.get("handoff_completed") is not True or c.get("failed_handoffs") != 0
+            or c.get("source_body_absent") is not True or c.get("destination_body_present") is not True
+            or c.get("supported") is not True or c.get("samples", 0) < 40
+            or not 0 <= c.get("maximum_error", float("inf")) < 1):
+            raise RuntimeError("Invalid correlated standing client evidence")
+        try: uuid.UUID(c.get("handoff", ""))
+        except (ValueError, TypeError, AttributeError):
+            raise RuntimeError("Invalid standing handoff identity")
+        validate_balloon_readiness(c.get("source_readiness"), "minecraft:the_nether")
+        validate_balloon_readiness(c.get("destination_readiness"), "minecraft:overworld")
+        if cold_start: validate_balloon_cold_start(case, r, c)
+        elif r.get("cold_start", False) or c.get("cold_start", False):
+            raise RuntimeError("Unexpected cold-start evidence in prepared-terrain baseline")
+
+
 def validate_results(client_exit: int, smoke: bool = False, ships: bool = False, aeronautics: bool = False,
-                     ship_size: str = "all", standing_balloon: bool = False) -> None:
+                     ship_size: str = "all", standing_balloon: bool = False, standing_cold_start: bool = False) -> None:
     if standing_balloon:
         check_failures()
         if client_exit != 0: raise RuntimeError("Standing balloon client failed")
@@ -1616,6 +1700,7 @@ def validate_results(client_exit: int, smoke: bool = False, ships: bool = False,
                      "balloon-client-arrived-0.txt", "balloon-client-arrived-1.txt"):
             if not (RESULT_DIR / name).is_file() or not (RESULT_DIR / name).read_text().strip():
                 raise RuntimeError("Missing standing balloon evidence: " + name)
+        validate_standing_balloon_evidence(standing_cold_start)
         receipts = json.loads((RESULT_DIR / "balloon-server.json").read_text())
         if len(receipts) != 2 or {r["standing"] for r in receipts} != {"envelope", "deck"}:
             raise RuntimeError("Missing standing balloon cases")
@@ -1864,7 +1949,7 @@ class ClientProgressReporter:
 
 def wait_for_client(server: subprocess.Popen, client: subprocess.Popen, timeout: float = 300,
                     smoke: bool = False, ships: bool = False, aeronautics: bool = False,
-                    ship_size: str = "all", standing_balloon: bool = False) -> None:
+                    ship_size: str = "all", standing_balloon: bool = False, standing_cold_start: bool = False) -> None:
     started = time.monotonic()
     deadline = started + timeout
     last_progress = started
@@ -1889,7 +1974,7 @@ def wait_for_client(server: subprocess.Popen, client: subprocess.Popen, timeout:
             try:
                 # Closing the network precedes world teardown; its final receipts can arrive
                 # shortly after the server records the intentional disconnect.
-                validate_results(0, smoke=smoke, ships=ships, aeronautics=aeronautics, ship_size=ship_size, standing_balloon=standing_balloon)
+                validate_results(0, smoke=smoke, ships=ships, aeronautics=aeronautics, ship_size=ship_size, standing_balloon=standing_balloon, standing_cold_start=standing_cold_start)
             except RuntimeError:
                 expected_cleanup = not smoke and not ships and all(
                     (RESULT_DIR / name).is_file() and (RESULT_DIR / name).read_text().strip()
@@ -1906,7 +1991,7 @@ def wait_for_client(server: subprocess.Popen, client: subprocess.Popen, timeout:
         if server.poll() is not None:
             raise RuntimeError(f"dedicated server exited during E2E (exit={server.returncode})")
         if client.poll() is not None:
-            validate_results(client.returncode, smoke=smoke, ships=ships, aeronautics=aeronautics, ship_size=ship_size, standing_balloon=standing_balloon)
+            validate_results(client.returncode, smoke=smoke, ships=ships, aeronautics=aeronautics, ship_size=ship_size, standing_balloon=standing_balloon, standing_cold_start=standing_cold_start)
             return
         current = client_progress_token()
         if current != progress:
@@ -1996,7 +2081,9 @@ def run_e2e(smoke: bool = False, renderer: str = "sodium", sable: bool = True, s
             negative_control: str = "none", flywheel_backend: str = "default", render_mode: str = "normal",
             disable_copy_image: bool = False, shaderpack_file: Path | None = None, shaderpack_profile: str | None = None,
             gl_context: str = "default", shadow_fixture: bool = False, ships: bool = False,
-            aeronautics: bool = False, ship_size: str = "all", standing_balloon: bool = False) -> None:
+            aeronautics: bool = False, ship_size: str = "all", standing_balloon: bool = False, standing_cold_start: bool = False) -> None:
+    if standing_cold_start and (not standing_balloon or ships):
+        raise ValueError("cold-start requires dedicated standing-balloon mode")
     if standing_balloon and (smoke or not sable or (ships and not aeronautics)):
         raise ValueError("standing balloon requires its own Sable mode")
     if ships and (smoke or not sable):
@@ -2009,6 +2096,7 @@ def run_e2e(smoke: bool = False, renderer: str = "sodium", sable: bool = True, s
     run_deadline = visual_run_deadline() if smoke else None
     env = prepare_e2e(ships=ships)
     env["IP_SABLE_STANDING_BALLOON"] = str(standing_balloon).lower()
+    env["IP_SABLE_STANDING_COLD_START"] = str(standing_cold_start).lower()
     env["IP_SABLE_STANDING_AFTER_SHIPS"] = str(standing_balloon and ships).lower()
     env["IP_SABLE_SHIPS"] = str(ships).lower()
     env["IP_SABLE_SHIPS_AERONAUTICS"] = str(aeronautics).lower()
@@ -2079,7 +2167,7 @@ def run_e2e(smoke: bool = False, renderer: str = "sodium", sable: bool = True, s
             if smoke:
                 timeout = min(timeout, max(0, run_deadline - time.monotonic() - VISUAL_CLEANUP_SECONDS))
                 print(f"[verify] Graphical client budget: {timeout:.0f}s; bounded by 120-minute job with diagnostics/cleanup reserve", flush=True)
-            wait_for_client(server, client, timeout=1200 if standing_balloon else timeout, smoke=smoke, ships=ships, aeronautics=aeronautics, ship_size=ship_size, standing_balloon=standing_balloon)
+            wait_for_client(server, client, timeout=1200 if standing_balloon else timeout, smoke=smoke, ships=ships, aeronautics=aeronautics, ship_size=ship_size, standing_balloon=standing_balloon, standing_cold_start=standing_cold_start)
         finally:
             stop_process_tree(client)
             if client_log is not None:
@@ -2203,9 +2291,13 @@ def main() -> int:
                         help="Run one ship size in isolated worlds/results, or both sizes (default)")
     parser.add_argument("--standing-followup", action="store_true",
                         help="Reuse the Aeronautics CONTROL process for envelope/deck standing cases")
+    parser.add_argument("--standing-cold-start", action="store_true",
+                        help="Observe remote destination terrain absent before both unmounted balloon flights")
     parser.add_argument("--samples", type=int, default=200)
     parser.add_argument("--shadow-fixture", action="store_true", help="Run owned actual shadow-map/receiver acceptance instead of ordinary smoke scenes")
     args = parser.parse_args()
+    if args.standing_cold_start and args.mode != "standing-balloon":
+        parser.error("--standing-cold-start requires standing-balloon mode")
     if args.standing_followup and (args.mode != "ships-aeronautics" or args.ship_size != "control"):
         parser.error("--standing-followup requires ships-aeronautics --ship-size control")
     if args.ship_size != "all" and args.mode not in ("ships", "ships-aeronautics"):
@@ -2245,7 +2337,7 @@ def main() -> int:
                 else:
                     actions = [(name, action) for name, action in actions if args.mode in (name, "full")]
                     if args.mode == "standing-balloon":
-                        actions = [("standing-balloon", lambda: run_e2e(standing_balloon=True))]
+                        actions = [("standing-balloon", lambda: run_e2e(standing_balloon=True, standing_cold_start=args.standing_cold_start))]
                     elif args.mode == "staff":
                         actions = [("staff", run_staff)]
                     elif args.mode == "ships":
