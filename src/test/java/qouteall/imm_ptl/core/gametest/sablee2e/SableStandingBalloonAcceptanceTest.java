@@ -11,6 +11,20 @@ class SableStandingBalloonAcceptanceTest {
     private static final UUID BODY = UUID.fromString("00000000-0000-0000-0000-000000000001");
     private static final UUID HANDOFF = UUID.fromString("00000000-0000-0000-0000-000000000002");
 
+    @Test void sharedRequestBeforeSourceTeleportCannotCountInitialSpawnAsArrival() throws Exception {
+        assertFalse(SableStandingBalloonAcceptance.shouldObserveArrival(false, true, false, false));
+        assertFalse(SableStandingBalloonAcceptance.shouldObserveArrival(true, false, false, false));
+        assertFalse(SableStandingBalloonAcceptance.shouldObserveArrival(true, true, false, true));
+        assertFalse(SableStandingBalloonAcceptance.shouldObserveArrival(true, true, true, false));
+        assertTrue(SableStandingBalloonAcceptance.shouldObserveArrival(true, true, false, false));
+        String client = fixture("SableStandingBalloonClient");
+        assertTrue(client.contains("SableStandingBalloonAcceptance.shouldObserveArrival("));
+        assertTrue(client.contains("sourceWorld!=null && sourceReadiness!=null"));
+        assertTrue(client.contains("sourceWorld=null;sourceReadiness=null;"));
+        assertTrue(client.indexOf("SableStandingBalloonAcceptance.shouldObserveArrival(")
+            < client.indexOf("if(!supported)throw"));
+    }
+
     @Test void aNewAttemptCannotExposeAnEarlierCompletion() throws Exception {
         String handoff=java.nio.file.Files.readString(java.nio.file.Path.of(
             "src/main/java/qouteall/imm_ptl/core/compat/sable/SableServerFirstClientHandoff.java"));

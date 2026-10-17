@@ -5,6 +5,32 @@ import java.util.UUID;
 import static org.junit.jupiter.api.Assertions.*;
 
 class SableStandingMovementHoldTest {
+    @Test void heldSourceSnapshotSurvivesBodyMotionButNotAnotherFrameOrPlayer() {
+        Object player = new Object();
+        var hold = SableRiderMovementHold.standing(player, "source", "destination", 100);
+        // Travel is held while the independently interpolated platform advances 1.318 blocks.
+        double originalFeet = 5;
+        double frozenPlayerY = 105;
+        double movedBodyY = 101.318;
+        assertTrue(Math.abs((frozenPlayerY - movedBodyY) - originalFeet) > 1);
+        assertTrue(hold.ownsStandingSnapshot(player, "source", "destination"));
+        assertFalse(hold.ownsStandingSnapshot(new Object(), "source", "destination"));
+        assertFalse(hold.ownsStandingSnapshot(player, "other", "destination"));
+        assertFalse(hold.ownsStandingSnapshot(player, "source", "other"));
+        hold.cancel();
+        assertFalse(hold.ownsStandingSnapshot(player, "source", "destination"));
+    }
+    @Test void expiredInvalidatedOrMountedHoldCannotReuseStandingSnapshot() {
+        Object player = new Object();
+        var expired = SableRiderMovementHold.standing(player, "source", "destination", 1);
+        expired.tick();
+        assertFalse(expired.ownsStandingSnapshot(player, "source", "destination"));
+        var invalidated = SableRiderMovementHold.standing(player, "source", "destination", 100);
+        invalidated.shouldHold(player, UUID.randomUUID(), "source");
+        assertFalse(invalidated.ownsStandingSnapshot(player, "source", "destination"));
+        var mounted = new SableRiderMovementHold(player, UUID.randomUUID(), "source", "destination", 100);
+        assertFalse(mounted.ownsStandingSnapshot(player, "source", "destination"));
+    }
     @Test void standingWaitsAcrossSourceAndDestinationUntilTerminalAck() {
         Object player=new Object();
         var hold=SableRiderMovementHold.standing(player,"source","destination",100);

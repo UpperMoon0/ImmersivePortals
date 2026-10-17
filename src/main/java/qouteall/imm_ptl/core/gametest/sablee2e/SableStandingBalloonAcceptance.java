@@ -6,6 +6,10 @@ import java.util.UUID;
 /** Pure evidence predicates shared by native fixtures and regression tests. */
 final class SableStandingBalloonAcceptance {
     private SableStandingBalloonAcceptance() {}
+    static boolean shouldObserveArrival(boolean sourceObserved, boolean inDestination,
+                                        boolean resetting, boolean handoffActive) {
+        return sourceObserved && inDestination && !resetting && !handoffActive;
+    }
     static boolean allPresent(Map<String, Boolean> chunks) {
         return !chunks.isEmpty() && chunks.values().stream().allMatch(Boolean.TRUE::equals);
     }
