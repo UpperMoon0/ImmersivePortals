@@ -15,6 +15,7 @@ import dev.ryanhcode.sable.api.sublevel.ticket.SubLevelLoadingTicketType;
 import dev.ryanhcode.sable.companion.math.JOMLConversion;
 import dev.ryanhcode.sable.companion.math.Pose3d;
 import dev.ryanhcode.sable.mixinhelpers.entity.entity_riding_sub_level_vehicle.EntityRidingSubLevelVehicleHelper;
+import dev.ryanhcode.sable.mixinterface.entity.entity_sublevel_collision.EntityMovementExtension;
 import dev.ryanhcode.sable.network.packets.tcp.ClientboundStopTrackingSubLevelPacket;
 import dev.ryanhcode.sable.sublevel.ServerSubLevel;
 import dev.ryanhcode.sable.sublevel.SubLevel;
@@ -52,6 +53,7 @@ import qouteall.imm_ptl.core.portal.Portal;
 import qouteall.imm_ptl.core.portal.PortalExtension;
 import qouteall.imm_ptl.core.portal.PortalState;
 import qouteall.imm_ptl.core.portal.global_portals.GlobalPortalStorage;
+import qouteall.imm_ptl.core.portal.global_portals.VerticalConnectingPortal;
 import qouteall.imm_ptl.core.portal.PortalUtils;
 import qouteall.imm_ptl.core.teleportation.ServerTeleportationManager;
 import qouteall.imm_ptl.core.teleportation.TeleportationUtil;
@@ -328,6 +330,7 @@ public final class SableDimensionStackCompat {
                 ? previousSample.anchor()
                 : getWorldCenterOfMass(subLevel, new Pose3d(subLevel.lastPose()));
 
+            Portal earlyHullReturn = null;
             HandoffGuard guard = HANDOFF_GUARDS.get(id);
             if (guard != null && guard.destinationDimension().equals(level.dimension())) {
                 // A rider can trigger migration before the body's COM enters the destination.
@@ -338,7 +341,14 @@ public final class SableDimensionStackCompat {
                 boolean enteredDestination = Math.max(previousClearance, currentClearance) >= HANDOFF_CLEARANCE;
                 boolean reversedFromSeam = Math.abs(previousClearance) <= HANDOFF_CLEARANCE
                     && currentClearance < -HANDOFF_CLEARANCE;
-                if (enteredDestination || reversedFromSeam) {
+                if (!enteredDestination && guard.stackPortal() && previousSample != null
+                    && previousSample.dimension().equals(level.dimension())) {
+                    // A leading hull can enter before COM. If buoyancy reverses immediately,
+                    // its entered tip leaving the destination is a real return, not a stale
+                    // client prediction. Test the same entered tip, not the still-outside COM.
+                    earlyHullReturn = findEarlyHullReturnPortal(level, subLevel, previousSample, guard);
+                }
+                if (enteredDestination || reversedFromSeam || earlyHullReturn != null) {
                     HANDOFF_GUARDS.remove(id);
                     guard = null;
                 }
@@ -346,28 +356,33 @@ public final class SableDimensionStackCompat {
 
             ClientHandoff pendingHandoff = CLIENT_HANDOFFS.get(id);
             if (pendingHandoff != null && !pendingHandoff.committed) {
-                rememberSample(level, id, currentAnchor);
+                rememberSample(level, id, currentAnchor, subLevel);
                 continue;
             }
 
-            Portal portal = findCrossedPortal(level, previousAnchor, currentAnchor);
+            Portal portal = earlyHullReturn != null ? earlyHullReturn
+                : findCrossedStackPortal(level, subLevel, previousSample);
+            if (portal == null) portal = findCrossedPortal(level, previousAnchor, currentAnchor);
             if (portal == null) {
-                rememberSample(level, id, currentAnchor);
+                rememberSample(level, id, currentAnchor, subLevel);
                 continue;
             }
 
             if (guard != null
                 && portal.getDestDim().equals(guard.sourceDimension())
                 && signedDestinationClearance(guard, currentAnchor) < HANDOFF_CLEARANCE) {
-                rememberSample(level, id, currentAnchor);
+                rememberSample(level, id, currentAnchor, subLevel);
                 continue;
             }
 
+            LOGGER.debug("Native Sable crossing body={} source={} target={} COMBefore={} COMAfter={} earlyHullReturn={}",
+                id, level.dimension().location(), portal.getDestDim().location(), previousAnchor, currentAnchor,
+                earlyHullReturn != null);
             ServerSubLevel migrated = migrateSubLevel(
                 container, subLevel, portal, new Pose3d(subLevel.lastPose())
             );
             if (migrated == null) {
-                rememberSample(level, id, currentAnchor);
+                rememberSample(level, id, currentAnchor, subLevel);
             }
         }
     }
@@ -380,6 +395,13 @@ public final class SableDimensionStackCompat {
     public static boolean isRiderAlreadyMigrated(ServerPlayer player, Portal portal) {
         if (!player.serverLevel().dimension().equals(portal.getDestDim())) return false;
 
+        SubLevel support = SableStandingPassenger.getSupport(player);
+        if (support instanceof ServerSubLevel body) {
+            return SableStandingMigrationState.hasCompletedCrossDimensionTransfer(
+                portal.level().dimension(), portal.getDestDim(), player.serverLevel().dimension(),
+                SubLevelContainer.getContainer(player.serverLevel()).getSubLevel(body.getUniqueId()) == body
+            );
+        }
         Entity vehicle = player.getVehicle();
         while (vehicle != null) {
             SubLevel containing = Sable.HELPER.getContaining(vehicle);
@@ -391,6 +413,27 @@ public final class SableDimensionStackCompat {
         return false;
     }
     public static boolean beforePlayerPortalTeleport(ServerPlayer player, Portal portal) {
+        if (portal instanceof VerticalConnectingPortal && !portal.hasScaling()
+            && player.getVehicle() == null
+            && SableStandingPassenger.getSupport(player) instanceof ServerSubLevel support) {
+            if (isRiderAlreadyMigrated(player, portal)) return true;
+            if (portal.hasScaling() || portal.level() != player.serverLevel()
+                || !portal.canTeleportEntity(player)) return false;
+            ServerSubLevelContainer container = SubLevelContainer.getContainer(player.serverLevel());
+            if (container == null || container.getSubLevel(support.getUniqueId()) != support) return false;
+            ClientHandoff pending = CLIENT_HANDOFFS.get(support.getUniqueId());
+            if (pending != null && !pending.committed) return false;
+            boolean approaching = isStandingBodyApproachingPortal(support, player, portal);
+            LOGGER.debug("Standing Sable request body={} source={} target={} serverEyeDistance={} accepted={}",
+                support.getUniqueId(), player.serverLevel().dimension().location(), portal.getDestDim().location(),
+                portal.getDistanceToPlane(McHelper.getEyePos(player)), approaching);
+            if (!approaching) return false;
+            return migrateSubLevel(container, support, portal, new Pose3d(support.lastPose())) != null;
+        }
+        return beforeMountedPlayerPortalTeleport(player, portal);
+    }
+
+    private static boolean beforeMountedPlayerPortalTeleport(ServerPlayer player, Portal portal) {
         Entity passenger = player;
         Entity vehicle = passenger.getVehicle();
         while (vehicle != null) {
@@ -465,6 +508,33 @@ public final class SableDimensionStackCompat {
         );
     }
 
+    private static boolean isStandingBodyApproachingPortal(
+        ServerSubLevel body, Entity passenger, Portal portal
+    ) {
+        // Direction alone cannot authenticate a delayed reverse prediction after Ack:
+        // native buoyancy can briefly reverse while the actual player eye is still in
+        // front of that portal. Require authoritative eye entry, not client coordinates.
+        if (portal.getDistanceToPlane(McHelper.getEyePos(passenger)) > PORTAL_ENDPOINT_EPSILON) return false;
+        RigidBodyHandle handle = RigidBodyHandle.of(body);
+        if (handle == null || !handle.isValid() || portal.level() != body.getLevel()) return false;
+        Vector3d linear = handle.getLinearVelocity(new Vector3d());
+        Vector3d angular = handle.getAngularVelocity(new Vector3d());
+        Vec3 offset = McHelper.getEyePos(passenger).subtract(getWorldCenterOfMass(body, body.logicalPose()));
+        Vec3 planeVelocity = Vec3.ZERO;
+        var before = portal.animation.lastTickAnimatedState;
+        var after = portal.animation.thisTickAnimatedState;
+        if (before != null && after != null) {
+            Vec3 local = after.worldPosToPortalLocalPos(McHelper.getEyePos(passenger));
+            planeVelocity = TeleportationUtil.getPortalPointVelocity(
+                before, after, new Vec3(local.x, local.y, 0)).thisSidePointVelocity();
+        }
+        Vec3 normal = portal.getNormal();
+        return SableRiderPortalApproach.movesIntoPortal(
+            linear.x, linear.y, linear.z, angular.x, angular.y, angular.z,
+            offset.x, offset.y, offset.z, normal.x, normal.y, normal.z,
+            planeVelocity.x, planeVelocity.y, planeVelocity.z);
+    }
+
     /**
      * Use one hidden plot coordinate across every server dimension so live portal migration does
      * not need to rewrite arbitrary block-entity/attachment NBT containing hidden-world coords.
@@ -498,8 +568,54 @@ public final class SableDimensionStackCompat {
         return null;
     }
 
-    private static void rememberSample(ServerLevel level, UUID id, Vec3 anchor) {
-        LAST_SAMPLES.put(id, new CrossingSample(level.dimension(), anchor, level.getGameTime()));
+    private static void rememberSample(ServerLevel level, UUID id, Vec3 anchor, ServerSubLevel body) {
+        Vec3[] tips = verticalHullAnchors(body, body.logicalPose());
+        LAST_SAMPLES.put(id, new CrossingSample(level.dimension(), anchor, level.getGameTime(), tips[0], tips[1]));
+    }
+
+    private static Portal findEarlyHullReturnPortal(ServerLevel level, ServerSubLevel body,
+        CrossingSample previous, HandoffGuard guard) {
+        Vec3[] currentTips = verticalHullAnchors(body, body.logicalPose());
+        boolean upward = guard.destinationDirection().y > 0;
+        Vec3 previousTip = upward ? previous.top() : previous.bottom();
+        Vec3 currentTip = currentTips[upward ? 1 : 0];
+        Portal candidate = findCrossedPortal(level, previousTip, currentTip);
+        return candidate instanceof VerticalConnectingPortal
+            && candidate.getDestDim().equals(guard.sourceDimension()) ? candidate : null;
+    }
+
+    /** Global horizontal stacks must accept the leading hull before ceiling atmosphere vanishes. */
+    private static Portal findCrossedStackPortal(ServerLevel level, ServerSubLevel body, CrossingSample previous) {
+        Vec3[] now = verticalHullAnchors(body, body.logicalPose());
+        Vec3[] before = previous != null && previous.dimension().equals(level.dimension())
+            ? new Vec3[] {previous.bottom(), previous.top()} : verticalHullAnchors(body, new Pose3d(body.lastPose()));
+        for (Portal portal : GlobalPortalStorage.getGlobalPortals(level)) {
+            if (!(portal instanceof VerticalConnectingPortal) || !portal.isTeleportable()
+                || portal.hasScaling() || portal.getDestDim().equals(level.dimension())
+                || portal.getNormal().y >= 0) continue;
+            int tip = portal.getNormal().y < 0 ? 1 : 0;
+            double from = portal.getDistanceToPlane(before[tip]);
+            double to = portal.getDistanceToPlane(now[tip]);
+            if (from >= -PORTAL_ENDPOINT_EPSILON && to <= PORTAL_ENDPOINT_EPSILON && to < from) return portal;
+        }
+        return null;
+    }
+
+    private static Vec3[] verticalHullAnchors(ServerSubLevel body, Pose3d pose) {
+        var bounds = body.getPlot().getBoundingBox();
+        if (bounds == null) {
+            Vec3 center = getWorldCenterOfMass(body, pose);
+            return new Vec3[] {center, center};
+        }
+        double bottom = Double.POSITIVE_INFINITY, top = Double.NEGATIVE_INFINITY;
+        for (int x : new int[] {bounds.minX(), bounds.maxX() + 1})
+            for (int y : new int[] {bounds.minY(), bounds.maxY() + 1})
+                for (int z : new int[] {bounds.minZ(), bounds.maxZ() + 1}) {
+                    double height = pose.transformPosition(new Vector3d(x, y, z)).y;
+                    bottom = Math.min(bottom, height); top = Math.max(top, height);
+                }
+        Vec3 center = getWorldCenterOfMass(body, pose);
+        return new Vec3[] {new Vec3(center.x, bottom, center.z), new Vec3(center.x, top, center.z)};
     }
 
     /** Use physical COM because Sable may recenter Pose3d.position() during serialization. */
@@ -659,15 +775,16 @@ public final class SableDimensionStackCompat {
 
         for (MigrationUnit unit : units) {
             sourceContainer.removeSubLevel(unit.source(), SubLevelRemovalReason.REMOVED);
+            if (unit.aeronautics() != null) unit.aeronautics().retireSource();
         }
         for (MigrationUnit unit : units) {
             commitClientHandoff(sourceWorld, unit.source().getUniqueId());
             ANIMATED_RIDER_CROSSINGS.invalidateBody(unit.source().getUniqueId());
             Vec3 destinationAnchor = getWorldCenterOfMass(unit.destination(), unit.destination().logicalPose());
-            rememberSample(destinationWorld, unit.destination().getUniqueId(), destinationAnchor);
+            rememberSample(destinationWorld, unit.destination().getUniqueId(), destinationAnchor, unit.destination());
             HANDOFF_GUARDS.put(unit.destination().getUniqueId(), new HandoffGuard(
                 sourceWorld.dimension(), destinationWorld.dimension(), portal.getDestPos(),
-                portal.getContentDirection().normalize()
+                portal.getContentDirection().normalize(), portal instanceof VerticalConnectingPortal
             ));
         }
 
@@ -723,6 +840,7 @@ public final class SableDimensionStackCompat {
 
         List<EntityTransfer> entities = capturePlotEntities(sourceWorld, sourceSubLevel, portal);
         List<SubLevelLoadingTicket<?>> tickets = captureForceLoadTickets(sourceContainer, sourceSubLevel);
+        SableAeronauticsMigration aeronautics = SableAeronauticsMigration.capture(sourceSubLevel);
         SubLevelData sourceData = SubLevelSerializer.toData(sourceSubLevel, dependencyIds);
         SubLevelData destinationData = transformSerializedState(sourceData, portal);
         if (!rebasePlotSections(
@@ -742,6 +860,7 @@ public final class SableDimensionStackCompat {
         }
 
         try {
+            if (aeronautics != null) aeronautics.restore(destinationWorld);
             restoreExactVelocity(destinationSubLevel, destinationLinearVelocity, destinationAngularVelocity);
             destinationSubLevel.latestLinearVelocity.set(destinationLinearVelocity);
             destinationSubLevel.latestAngularVelocity.set(destinationAngularVelocity);
@@ -752,6 +871,7 @@ public final class SableDimensionStackCompat {
         catch (RuntimeException failure) {
             removeForceLoadTicketsBestEffort(destinationContainer, destinationSubLevel, tickets);
             destinationContainer.removeSubLevel(destinationSubLevel, SubLevelRemovalReason.REMOVED);
+            if (aeronautics != null) aeronautics.discard(destinationWorld);
             throw failure;
         }
 
@@ -759,7 +879,7 @@ public final class SableDimensionStackCompat {
             sourceSubLevel, destinationSubLevel,
             localPlotX(sourceContainer, sourceSubLevel),
             localPlotZ(sourceContainer, sourceSubLevel),
-            entities, tickets, new HashMap<>()
+            entities, tickets, new HashMap<>(), aeronautics
         );
     }
 
@@ -861,6 +981,7 @@ public final class SableDimensionStackCompat {
             if (!unit.destination().isRemoved()) {
                 destinationContainer.removeSubLevel(unit.destination(), SubLevelRemovalReason.REMOVED);
             }
+            if (unit.aeronautics() != null) unit.aeronautics().discard(destinationContainer.getLevel());
         }
     }
 
@@ -1130,6 +1251,13 @@ public final class SableDimensionStackCompat {
             }
         }
 
+        // Standing players live in ordinary world chunks, outside the hidden plot.
+        // Capture every collision-tracked passenger before removing the source body.
+        for (ServerPlayer player : List.copyOf(sourceWorld.players())) {
+            if (SableStandingPassenger.getSupport(player) == sourceSubLevel
+                && migrationIds.add(player.getUUID())) migrationEntities.add(player);
+        }
+
         for (int i = 0; i < migrationEntities.size(); i++) {
             Entity vehicle = migrationEntities.get(i);
             for (Entity passenger : vehicle.getPassengers()) {
@@ -1149,6 +1277,7 @@ public final class SableDimensionStackCompat {
             Vec3 destinationPosition = storedPosition;
             Vec3 destinationVelocity = storedVelocity;
 
+            boolean standingPassenger = SableStandingPassenger.getSupport(entity) == sourceSubLevel;
             boolean kickedPassenger = vehicleId != null && EntitySubLevelUtil.shouldKick(entity);
             if (kickedPassenger) {
                 Vec3 logicalPosition = plotResidentIds.contains(entity.getUUID())
@@ -1158,9 +1287,14 @@ public final class SableDimensionStackCompat {
                 destinationVelocity = portal.transformLocalVec(storedVelocity);
             }
 
+            if (standingPassenger) {
+                destinationPosition = portal.transformPoint(storedPosition);
+                destinationVelocity = portal.transformLocalVec(storedVelocity);
+            }
             transfers.add(new EntityTransfer(
                 entity, storedPosition, storedVelocity,
-                destinationPosition, destinationVelocity, vehicleId
+                destinationPosition, destinationVelocity, vehicleId,
+                standingPassenger ? sourceSubLevel.getUniqueId() : null
             ));
         }
         return transfers;
@@ -1180,6 +1314,7 @@ public final class SableDimensionStackCompat {
                 );
             }
             moved.setDeltaMovement(transfer.destinationVelocity());
+            restoreStandingSupport(transfer, moved, destinationWorld);
             movedById.put(transfer.entity().getUUID(), moved);
         }
         restoreRidingRelations(transfers, movedById, true);
@@ -1197,6 +1332,7 @@ public final class SableDimensionStackCompat {
                 );
                 if (entity == null || entity.level() != sourceWorld) return false;
                 entity.setDeltaMovement(transfer.storedVelocity());
+                restoreStandingSupport(transfer, entity, sourceWorld);
                 sourceById.put(transfer.entity().getUUID(), entity);
             }
             restoreRidingRelations(transfers, sourceById, false);
@@ -1206,6 +1342,13 @@ public final class SableDimensionStackCompat {
             LOGGER.error("Failed rolling back partial Sable cross-dimension entity migration", rollbackFailure);
             return false;
         }
+    }
+
+    private static void restoreStandingSupport(EntityTransfer transfer, Entity entity, ServerLevel level) {
+        if (transfer.supportId() == null) return;
+        SubLevel body = SubLevelContainer.getContainer(level).getSubLevel(transfer.supportId());
+        if (body == null || body.isRemoved()) throw new IllegalStateException("Missing standing passenger support");
+        ((EntityMovementExtension) entity).sable$setTrackingSubLevel(body);
     }
 
     private static void detachEntityGraph(List<EntityTransfer> transfers) {
@@ -1232,13 +1375,14 @@ public final class SableDimensionStackCompat {
         }
     }
 
-    private record CrossingSample(ResourceKey<Level> dimension, Vec3 anchor, long gameTime) {}
+    private record CrossingSample(ResourceKey<Level> dimension, Vec3 anchor, long gameTime, Vec3 bottom, Vec3 top) {}
 
     private record HandoffGuard(
         ResourceKey<Level> sourceDimension,
         ResourceKey<Level> destinationDimension,
         Vec3 destinationPlane,
-        Vec3 destinationDirection
+        Vec3 destinationDirection,
+        boolean stackPortal
     ) {}
 
     private static final class ClientHandoff {
@@ -1272,7 +1416,8 @@ public final class SableDimensionStackCompat {
         int localPlotZ,
         List<EntityTransfer> entities,
         List<SubLevelLoadingTicket<?>> tickets,
-        Map<UUID, Entity> movedById
+        Map<UUID, Entity> movedById,
+        SableAeronauticsMigration aeronautics
     ) {}
 
     private record EntityTransfer(
@@ -1281,6 +1426,7 @@ public final class SableDimensionStackCompat {
         Vec3 storedVelocity,
         Vec3 destinationPosition,
         Vec3 destinationVelocity,
-        UUID vehicleId
+        UUID vehicleId,
+        UUID supportId
     ) {}
 }

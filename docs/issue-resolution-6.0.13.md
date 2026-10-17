@@ -33,7 +33,10 @@ thread. Only statuses permitted by the current ticket are retried; successful
 or pending futures are preserved and exceptional I/O remains visible.
 
 The development-only `PortalSmokeChunkRecoveryProbe` waits for a genuinely loaded
-End watch, unloads client chunk `(0,-1)`, replaces the real holder's two ticking
+End watch and successful block/entity-ticking promotions before injecting either
+failure. Initial client delivery alone can precede the first entity promotion;
+replacing its unloaded sentinel then violates vanilla's promotion invariant. The
+probe unloads client chunk `(0,-1)`, replaces the real holder's two ticking
 futures with failed neighbor-range results, and returns its real watch record to
 the pending-send queue. It withholds scene readiness until both futures and actual
 packet delivery recover. Native block/light data, mesh prerequisites and rendered

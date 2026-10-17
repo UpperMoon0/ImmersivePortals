@@ -39,9 +39,13 @@ public final class PortalSmokeChunkRecoveryProbe {
         holder = ((IEChunkMap) end.getChunkSource().chunkMap).ip_getUpdatingChunkIfPresent(POS.toLong());
         var records = ImmPtlChunkTracking.getWatchRecordForChunk(Level.END, POS.x, POS.z);
         var record = records == null ? null : records.get(player);
-        if (holder == null || holder.getTickingChunk() == null || record == null || !record.isLoadedToPlayer) {
+        // Initial client delivery can precede vanilla's first entity-ticking promotion.
+        // Replacing its UNLOADED sentinel early violates ChunkHolder.updateFutures.
+        if (holder == null || !PortalSmokeChunkRecoveryReadiness.ready(
+            holder.getTickingChunkFuture(), holder.getEntityTickingChunkFuture(), ChunkResult::isSuccess
+        ) || record == null || !record.isLoadedToPlayer) {
             holder = null;
-            return false; // Wait for this scene's actual watch and initial delivery.
+            return false; // Wait for both real promotions, this scene's watch and initial delivery.
         }
         for (String name : new String[]{"tickingChunkFuture", "entityTickingChunkFuture"}) {
             var field = ChunkHolder.class.getDeclaredField(name);
@@ -61,7 +65,7 @@ public final class PortalSmokeChunkRecoveryProbe {
         ServerLevel end = player.server.getLevel(Level.END);
         if (holder == null) {
             if (!inject(player) && end.getGameTime() - injectedTick > 1200)
-                throw new IllegalStateException("CHUNK_RECOVERY_PROBE: initial End watch/delivery was not ready within 1200 ticks");
+                throw new IllegalStateException("CHUNK_RECOVERY_PROBE: initial End promotions/watch/delivery were not ready within 1200 ticks");
             return;
         }
         var records = ImmPtlChunkTracking.getWatchRecordForChunk(Level.END, POS.x, POS.z);

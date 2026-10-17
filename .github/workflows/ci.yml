@@ -87,6 +87,59 @@ jobs:
 
   # Additive ship coverage. Every configured row is mandatory whenever E2E is
   # selected, including the separately staged optional Aeronautics runtime.
+  standing-balloon:
+    name: Standing balloon stack / ${{ matrix.transport }}
+    needs: changes
+    if: needs.changes.outputs.e2e == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        transport: [tcp]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@v6
+      - name: Ensure headless graphics runtime
+        run: |
+          if ! command -v xvfb-run >/dev/null 2>&1 || ! ldconfig -p | grep -F 'libGL.so.1' >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y xvfb libgl1-mesa-dri
+          fi
+      - name: Configure Sable transport
+        env:
+          TRANSPORT: ${{ matrix.transport }}
+        run: |
+          mkdir -p run-sable-e2e-server/config run-sable-e2e-client/config
+          if [[ "$TRANSPORT" == tcp ]]; then
+            printf 'disable_udp_pipeline = true\nattempt_udp_networking = false\n' > run-sable-e2e-server/config/sable-common.toml
+            printf 'attempt_udp_networking = false\n' > run-sable-e2e-client/config/sable-client.toml
+          else
+            printf 'disable_udp_pipeline = false\nattempt_udp_networking = true\n' > run-sable-e2e-server/config/sable-common.toml
+            printf 'attempt_udp_networking = true\n' > run-sable-e2e-client/config/sable-client.toml
+          fi
+          cp run-sable-e2e-server/config/sable-common.toml run-sable-e2e-client/config/sable-common.toml
+      - run: chmod +x ./gradlew
+      - name: Unmounted envelope and deck burner ascents
+        run: python3 tools/verify.py standing-balloon --standing-cold-start
+      - name: Preserve standing balloon evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: standing-balloon-${{ matrix.transport }}
+          if-no-files-found: warn
+          path: |
+            build/verification-standing-balloon.json
+            build/sable-dimension-stack-e2e/**
+            run-sable-e2e-server/logs/**
+            run-sable-e2e-client/logs/**
+            run-sable-e2e-server/config/sable-common.toml
+            run-sable-e2e-client/config/sable-client.toml
+
   sable-ship-flight:
     name: Sable ship flight (draft) / ${{ matrix.mode }} / ${{ matrix.transport }} / ${{ matrix.ship_size }} / bundled
     needs: changes
@@ -152,7 +205,12 @@ jobs:
         env:
           IP_VERIFICATION_NETWORKING: bundled
           IP_NETWORK_STRESS: 'false'
-        run: python3 tools/verify.py "${{ matrix.mode }}" --ship-size "${{ matrix.ship_size }}"
+        run: |
+          if [[ "${{ matrix.mode }}" == ships-aeronautics && "${{ matrix.ship_size }}" == control ]]; then
+            python3 tools/verify.py ships-aeronautics --ship-size control --standing-followup
+          else
+            python3 tools/verify.py "${{ matrix.mode }}" --ship-size "${{ matrix.ship_size }}"
+          fi
       - name: Upload ship flight evidence and diagnostics
         if: always()
         uses: actions/upload-artifact@v4
@@ -315,13 +373,14 @@ jobs:
   required:
     name: Required verification
     if: always()
-    needs: [changes, core, graphical-e2e, sable-ship-flight, portal-visual, real-pack-visual]
+    needs: [changes, core, graphical-e2e, sable-ship-flight, portal-visual, real-pack-visual, standing-balloon]
     runs-on: ubuntu-latest
     steps:
       - name: Enforce all selected checks
         env:
           SELECT: ${{ needs.changes.result }}
           CORE: ${{ needs.core.result }}
+          BALLOON: ${{ needs.standing-balloon.result }}
           HEAVY: ${{ needs.graphical-e2e.result }}
           SHIPS: ${{ needs.sable-ship-flight.result }}
           VISUAL: ${{ needs.portal-visual.result }}
@@ -331,7 +390,7 @@ jobs:
           [[ "$SELECT" == success && "$CORE" == success ]]
           [[ "$REQUIRED" == true || "$REQUIRED" == false ]]
           if [[ "$REQUIRED" == true ]]; then
-            [[ "$HEAVY" == success && "$SHIPS" == success && "$VISUAL" == success && "$REAL_PACKS" == success ]]
+            [[ "$BALLOON" == success && "$HEAVY" == success && "$SHIPS" == success && "$VISUAL" == success && "$REAL_PACKS" == success ]]
           else
-            [[ "$HEAVY" == skipped && "$SHIPS" == skipped && "$VISUAL" == skipped && "$REAL_PACKS" == skipped ]]
+            [[ "$BALLOON" == skipped && "$HEAVY" == skipped && "$SHIPS" == skipped && "$VISUAL" == skipped && "$REAL_PACKS" == skipped ]]
           fi

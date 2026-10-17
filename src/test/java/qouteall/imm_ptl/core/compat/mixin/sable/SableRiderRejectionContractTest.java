@@ -107,7 +107,7 @@ class SableRiderRejectionContractTest {
     @Test void approachReceivesTheImmediatePassengerThroughoutTheRetainedGraph() throws Exception {
         MethodNode request = method(readClass(
             "qouteall/imm_ptl/core/compat/sable/SableDimensionStackCompat.class"
-        ), "beforePlayerPortalTeleport");
+        ), "beforeMountedPlayerPortalTeleport");
         MethodInsnNode guard = invocation(request, "isRiddenBodyApproachingPortal");
         AbstractInsnNode cursor = previousExecutable(guard);
         assertLocal(cursor, Opcodes.ALOAD, 1); // portal

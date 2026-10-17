@@ -1,0 +1,67 @@
+# Standing passengers at dimension stacks
+
+A player standing on a deck or balloon envelope has no vanilla vehicle. Previously the client selected ordinary player prediction, the server accepted that independent teleport, and ship migration waited for its center of mass. Mounted-seat tests could pass while a standing player crossed without the ship.
+
+The standing path uses Sable's live collision tracking, excludes removed or foreign-world support, and keeps ordinary nearby players outside the handoff. Unscaled vertical dimension-stack standing crossings request the existing correlated server-first protocol. Ordinary finite and scaling portals retain their existing on-foot selection, so standing on a stationary deck does not block walking through them. The server independently resolves the supporting body and checks authoritative eye entry and native point motion before migrating its dependency chain. Standing players are captured from ordinary world chunks and transferred with transformed world positions and velocities; both commit and rollback restore support to the live body in the matching world.
+
+Client prediction is held only during the bounded correlated handoff. Standing facing is transformed in world space after the destination full sync exists, and the captured standing position is consumed at the next native movement entry, in the destination lastPose frame, so Sable applies inherited last-to-logical motion once; seat riders retain their existing local-facing handling. Respawn, unrelated dimension changes, mounting, rejection, cleanup and expiry release the hold.
+
+Run python3 tools/verify.py standing-balloon in a disposable checkout with Java 21 and a graphical display or Xvfb. The pinned official Aeronautics 1.3.1 bundle is checksum-verified by the existing downloader. The fixture has a 5x5 plank deck, adjustable burner, powered lever, fence supports and a plain radius-7 white-envelope shell. The report does not specify envelope dimensions; the test requires a natural lift/weight reserve above 1.1 before release. Separate cases place the original real player on the envelope and deck without a seat.
+
+Setup builds and assembles the ship directly near the real Nether logical ceiling, so its first full sync already has the pre-flight pose; it heats the burner during an explicit pre-flight hold, and waits for native standing collision on both server and client. Release permits only the burner's natural forces. The test does not write flight-time body poses, velocities, forces, gravity or atmosphere and adds no command force-load ticket. Both exclusive destination body ownership and player support must agree, followed by 40 continuous native client movement samples and 80 additional server samples after the client receipt and vanilla teleport acknowledgement. Raw server snapshot displacement during the unacknowledged position handoff is retained diagnostically; settled server and every completed client step must remain within one block of the captured standing point. Exact blocks, active destination burner and displacement receipts are retained.
+
+UDP and TCP lanes are mandatory in CI and fresh release verification. Reused release evidence must include the TCP standing job and the UDP powered CONTROL follow-up at the exact tagged commit; the old 47-job contract cannot satisfy the new 48-job contract.
+
+Certification requires both exact-commit CI lanes, including the preceding mounted powered acceptance in the combined UDP session. The client records its maximum native standing error and sample count independently; the server requires 80 settled samples after the client receipt. Missing or shortened observations fail evidence validation.
+
+The UDP standing cases follow the existing powered CONTROL acceptance in the same server/client process. The mounted manifests and client/server pass receipts are retained separately before the unmounted cases start. TCP remains isolated. This removes one redundant dedicated-server/graphical-client startup pair, without dropping transports, cases, mounted assertions, or existing ship-size isolation.
+
+## Hull entry at stack seams
+
+Sable's default atmosphere explicitly smooths pressure to zero over the last 40 meters before a dimension's logical ceiling. Waiting for COM alone can therefore strand an otherwise functioning balloon at the seam. Global ceiling connectors now detect the swept leading hull for upward entry; descending floor crossings and ordinary finite portals retain COM traversal. The previous substep stores both vertical hull extrema. If a tip enters and gravity immediately reverses it before COM enters, that same entered tip leaving the destination triggers the return transaction. The existing native movement fixture checks leading entry with COM three blocks behind the plane and an immediate return with COM still outside, preserving all blocks.
+
+The burner regression uses the standard Nether ceiling / Overworld floor pair under unchanged native atmosphere. Separate source-atmosphere lift reserve, exclusive ownership, unmounted support, exact payload and continued destination motion remain required. The test does not claim that every single-burner envelope can reach the Overworld ceiling: that dimension's lower high-altitude pressure is an independent physical limit.
+
+## Aeronautics gas state
+
+Aeronautics stores filled gas amounts and targets in its per-world BalloonMap, outside the Sable block serializer. Rebuilding only the blocks makes a hot balloon cold at the destination, so it can reverse immediately. The optional adapter copies SavedBalloon through its registry-aware codec, rebuilds the destination graph and restores gas before commit. Codec copying prevents shared mutable gas between source and staged destination. Rollback discards destination balloon records; commit retires the source records. Missing Aeronautics does not add a class dependency. Unsupported rebuild APIs reject staging while the source remains intact. The real flight oracle requires positive source gas and at least 95% of that amount immediately after arrival, in addition to continued ascent.
+
+### Correlated acceptance evidence
+
+Each envelope/deck case records its body UUID on both sides and the client's
+successful handoff nonce. An inactive handoff alone is insufficient: the receipt
+must match that body and Nether-to-Overworld dimensions after the native standing
+rebase, with no rejected, expired or cancelled standing attempt since case setup.
+A monotonic diagnostic failure count prevents later support recovery from hiding
+an earlier fallback. Normal standing camera-transform reuse is not a failure.
+
+Before release and throughout destination observation, non-creating queries
+inventory ordinary world-space footprint/player chunks separately from existing
+hidden plot storage. On the client, hidden chunks are checked in the effective
+IP chunk cache using non-creating reads, with null, empty fallback and wrong-position
+chunks rejected. IP overrides vanilla packet insertion, so Sable’s superclass
+plot-holder inventory alone is not proof of client availability. Server checks
+retain the native loaded-plot inventory. Every required chunk must be present. Live source body
+ownership must be retired on both server and client, and force-load tickets remain
+forbidden throughout flight and observation. Empty source plot holders may remain;
+their presence is not live body ownership. Client packet catch-up has a bounded
+200-tick window before settled samples; readiness regression after sampling starts
+fails immediately. The existing 40-client/80-server sample minimums remain intact.
+
+### Remote cold-start variant
+
+The dedicated TCP lane runs `standing-balloon --standing-cold-start`; the UDP
+powered-suite follow-up retains the prepared-terrain baseline. Each envelope/deck
+case prepares the same corridor at a separate remote X/Z while the player is
+elsewhere. Setup checks spawn separation and every player's direct/portal loader
+footprint, then waits at most 600 ticks for 20 consecutive non-creating destination
+terrain-absence samples on both server and client before assembling the balloon.
+The client only inspects existing worlds. Correlated cold receipts must identify
+the same corridor subsequently observed ready in normal destination samples.
+
+This tests absent-at-setup to normally-loaded terrain readiness. Stack portals
+remain free to preload terrain during approach; no chunks are forcibly unloaded
+and no loader is disabled. Geometry, burner settings, natural physics, the
+4000-tick total limit, and all terminal, block, gas, support and ownership checks
+remain unchanged. This does not claim destination terrain stays absent until the
+seam, or that ordinary source terrain unloads immediately after migration.

@@ -91,6 +91,7 @@ public final class SableShipFlightTest {
     private static Vec3 stoppedAnimationPreviousOrigin;
     private static Map<String,Object> stoppedAnimationReceipt;
 
+    static ServerPlayer playerAfterCompletion() { return phase==Phase.DONE ? player : null; }
     static boolean aeronautics() { return "true".equalsIgnoreCase(System.getenv("IP_SABLE_SHIPS_AERONAUTICS")); }
     static Map<String,String> addonVersions() { return Map.of("aeronautics","1.3.1","simulated","1.3.1","offroad","1.3.1"); }
     static String selectedSize() { return System.getenv().getOrDefault("IP_SABLE_SHIPS_SIZE", "all"); }

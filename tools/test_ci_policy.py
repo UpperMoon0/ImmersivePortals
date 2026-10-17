@@ -38,16 +38,16 @@ class CIPolicyTest(unittest.TestCase):
         statuses = ("success", "failure", "cancelled", "skipped")
         for required in ("true", "false", ""):
             expected_status = "success" if required == "true" else "skipped"
-            for heavy, ships, visual, real_packs in itertools.product(statuses, repeat=4):
+            for heavy, ships, visual, real_packs, balloon in itertools.product(statuses, repeat=5):
                 env = dict(os.environ, SELECT="success", CORE="success", REQUIRED=required,
-                           HEAVY=heavy, SHIPS=ships, VISUAL=visual, REAL_PACKS=real_packs)
+                           HEAVY=heavy, SHIPS=ships, VISUAL=visual, REAL_PACKS=real_packs, BALLOON=balloon)
                 result = subprocess.run([bash, "-e", "-c", script], env=env, capture_output=True)
                 expected = required in ("true", "false") and all(
-                    value == expected_status for value in (heavy, ships, visual, real_packs))
+                    value == expected_status for value in (heavy, ships, visual, real_packs, balloon))
                 self.assertEqual(result.returncode == 0, expected, (required, heavy, ships, visual, real_packs))
         for key in ("SELECT", "CORE"):
             env = dict(os.environ, SELECT="success", CORE="success", REQUIRED="true",
-                       HEAVY="success", SHIPS="success", VISUAL="success", REAL_PACKS="success")
+                       HEAVY="success", SHIPS="success", VISUAL="success", REAL_PACKS="success", BALLOON="success")
             env[key] = "failure"
             self.assertNotEqual(subprocess.run([bash, "-e", "-c", script], env=env).returncode, 0)
 
@@ -71,5 +71,5 @@ class CIPolicyTest(unittest.TestCase):
         self.assertNotIn("always()", slow)
         self.assertEqual(slow.count("real_pack: makeup"), 2)
         self.assertEqual(slow.count("real_pack: complementary"), 2)
-        self.assertIn("needs: [changes, core, graphical-e2e, sable-ship-flight, portal-visual, real-pack-visual]", required)
+        self.assertIn("needs: [changes, core, graphical-e2e, sable-ship-flight, portal-visual, real-pack-visual, standing-balloon]", required)
         self.assertIn("REAL_PACKS: ${{ needs.real-pack-visual.result }}", required)

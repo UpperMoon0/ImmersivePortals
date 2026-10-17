@@ -613,7 +613,7 @@ public final class SableDimensionStackDedicatedClientTest {
         return " clientDim=" + minecraft.level.dimension().location()
             + " riding=" + (vehicle == null ? "none" : vehicle.getUUID())
             + " expectedVehicle=" + vehicleId
-            + " activeServerHandoff=" + SableServerFirstClientHandoff.hasActiveServerInitiatedHandoff()
+            + " activeServerHandoff=" + SableServerFirstClientHandoff.hasActiveHandoff()
             + " handoff=" + SableServerFirstClientHandoff.getActiveHandoffSnapshot()
             + " detachedHandoffTicks=" + detachedHandoffTicks
             + " staleOverlapTicks=" + overlapTicks + "/" + MAX_OVERLAP_TICKS

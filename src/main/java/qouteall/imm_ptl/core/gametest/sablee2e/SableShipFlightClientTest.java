@@ -70,8 +70,10 @@ public final class SableShipFlightClientTest {
                 var report=new LinkedHashMap<String,Object>(); report.put("schema_version",1); report.put("cases",cases.values());
                 if (SableShipFlightTest.aeronautics()) report.put("addons",SableShipFlightTest.addonVersions());
                 PortalSmokeSupport.write("client-ships.json",new Gson().toJson(report));
-                PortalSmokeSupport.write("client-pass.txt","Real client observed " + SableShipFlightTest.expectedCrossings() + " assembled-ship crossings, live block/kinetic mutations and contrasting framebuffer states");
-                restoreStoppedAnimationPrediction(); restorePlayerCamera(mc); done = true; mc.stop(); return;
+                PortalSmokeSupport.write(SableStandingBalloonServer.afterShips() ? "ships-client-pass.txt" : "client-pass.txt","Real client observed " + SableShipFlightTest.expectedCrossings() + " assembled-ship crossings, live block/kinetic mutations and contrasting framebuffer states");
+                restoreStoppedAnimationPrediction(); restorePlayerCamera(mc); done = true;
+                if (!SableStandingBalloonServer.afterShips()) mc.stop();
+                return;
             }
             String text = PortalSmokeSupport.read("ship-observe.json");
             if (text.isBlank()) return;

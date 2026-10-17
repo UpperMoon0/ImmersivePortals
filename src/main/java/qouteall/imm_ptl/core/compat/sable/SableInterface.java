@@ -55,6 +55,10 @@ public class SableInterface {
             return false;
         }
 
+        public boolean shouldUseServerFirstStandingTeleport(Entity player, Portal portal) {
+            return false;
+        }
+
         public boolean isRetainedVehicle(Entity vehicle) {
             return false;
         }
@@ -108,6 +112,13 @@ public class SableInterface {
         @Override
         public void beforePlayerPortalTeleport(ServerPlayer player, Portal portal) {
             SableDimensionStackCompat.beforePlayerPortalTeleport(player, portal);
+        }
+
+        @Override
+        public boolean shouldUseServerFirstStandingTeleport(Entity player, Portal portal) {
+            return portal instanceof qouteall.imm_ptl.core.portal.global_portals.VerticalConnectingPortal
+                && !portal.hasScaling() && !player.level().dimension().equals(portal.getDestDim())
+                && SableStandingPassenger.getSupport(player) != null;
         }
 
         @Override

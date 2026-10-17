@@ -296,7 +296,8 @@ public class ClientTeleportationManager {
             if (pendingServerFirstPortalId != null) {
                 return null;
             }
-            if (vehicle != null && SableInterface.invoker.shouldUseServerFirstRiderTeleport(vehicle, portal)) {
+            if ((vehicle != null && SableInterface.invoker.shouldUseServerFirstRiderTeleport(vehicle, portal))
+                || SableInterface.invoker.shouldUseServerFirstStandingTeleport(player, portal)) {
                 requestServerFirstTeleport(teleportation);
                 return null;
             }

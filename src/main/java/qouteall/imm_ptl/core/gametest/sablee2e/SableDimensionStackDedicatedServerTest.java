@@ -440,8 +440,13 @@ public final class SableDimensionStackDedicatedServerTest {
             remoteMotionStarted = true;
         }
 
-        if (!SableDimensionStackIntegrationMarkers.exists("client-remote-moved.txt")) return;
         double moved = Math.abs(body.logicalPose().position().x() - remoteHeldPosition.x);
+        require(Double.isFinite(moved), "server body produced non-finite remote displacement: " + moved);
+        // Client interpolation uses its own baseline, so its receipt can arrive first.
+        // Keep moving until both independent observations pass within the existing timeout.
+        if (!SableRemoteObserverReadiness.ready(
+            SableDimensionStackIntegrationMarkers.exists("client-remote-moved.txt"), moved
+        )) return;
         require(moved >= 0.25,
             "server body did not move enough to prove remote movement synchronization: " + moved);
         setLinearVelocity(handle, new Vector3d());

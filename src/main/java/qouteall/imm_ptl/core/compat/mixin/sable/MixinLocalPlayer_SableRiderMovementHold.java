@@ -12,6 +12,7 @@ import qouteall.imm_ptl.core.compat.sable.SableServerFirstClientHandoff;
 public abstract class MixinLocalPlayer_SableRiderMovementHold {
     @Inject(method = "aiStep", at = @At("HEAD"), cancellable = true)
     private void ip_holdDetachedRiderMotion(CallbackInfo ci) {
+        SableServerFirstClientHandoff.prepareStandingMovement((LocalPlayer) (Object) this);
         if (SableServerFirstClientHandoff.shouldHoldDetachedMovement((LocalPlayer) (Object) this)) {
             // Keep ticking the client/network normally. Only local movement/input prediction is
             // suspended; authoritative position packets can still change dimension and position.

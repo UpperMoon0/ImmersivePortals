@@ -392,7 +392,9 @@ class VerificationHarnessTest(unittest.TestCase):
         self.assertIn(f"server-port={env['IP_SABLE_E2E_PORT']}", (server / "server.properties").read_text())
 
     def test_cleanup_refuses_paths_outside_checkout(self):
-        with patch.object(verify, "ROOT", self.results / "checkout"):
+        with patch.object(verify, "ROOT", self.results / "checkout"), \
+             patch.object(verify, "SERVER_DIR", self.results / "server"), \
+             patch.object(verify, "CLIENT_DIR", self.results / "client"):
             with self.assertRaisesRegex(RuntimeError, "unsafe E2E cleanup"):
                 verify.prepare_e2e()
         self.assertTrue((self.results / "client-pass.txt").exists())
@@ -2129,7 +2131,7 @@ class ShipVerificationHarnessTest(unittest.TestCase):
             self.assertIn("runSableE2EServer", launch_server.call_args.args[0])
             self.assertIn("runSableE2EClient", launch_client.call_args.args[0])
             wait.assert_called_once_with(server, client, timeout=1200 if ships else 300, smoke=False, ships=ships,
-                                         aeronautics=False, ship_size=ship_size)
+                                         aeronautics=False, ship_size=ship_size, standing_balloon=False, standing_cold_start=False)
 
     def test_windows_bridge_forwards_explicit_ship_mode(self):
         with patch.object(verify.ctypes, "windll", Mock(), create=True):
@@ -2444,7 +2446,7 @@ class ShipVerificationHarnessTest(unittest.TestCase):
         self.assertEqual(events, ["stage", "server", "stop", "stop", "cleanup"])
         self.assertEqual(launch.call_args.kwargs["env"]["IP_SABLE_SHIPS_AERONAUTICS"], "true")
         self.assertEqual(launch_client.call_args.args[1]["IP_SABLE_SHIPS_AERONAUTICS"], "true")
-        wait.assert_called_once_with(server, client, timeout=1200, smoke=False, ships=True, aeronautics=True, ship_size="all")
+        wait.assert_called_once_with(server, client, timeout=1200, smoke=False, ships=True, aeronautics=True, ship_size="all", standing_balloon=False, standing_cold_start=False)
 
     def test_aeronautics_results_never_overwrite_baseline_evidence(self):
         root = self.results / "checkout"
@@ -2480,7 +2482,7 @@ class ShipVerificationHarnessTest(unittest.TestCase):
             self.assertIn(f"disable_udp_pipeline = {value}", ships)
             self.assertGreaterEqual(ships.count(f"attempt_udp_networking = {value}"), 2)
         required = workflow.split("  required:\n", 1)[1]
-        self.assertIn("needs: [changes, core, graphical-e2e, sable-ship-flight, portal-visual, real-pack-visual]", required)
+        self.assertIn("needs: [changes, core, graphical-e2e, sable-ship-flight, portal-visual, real-pack-visual, standing-balloon]", required)
         self.assertIn("SHIPS: ${{ needs.sable-ship-flight.result }}", required)
         self.assertIn("if: needs.changes.outputs.e2e == 'true'", ships)
 

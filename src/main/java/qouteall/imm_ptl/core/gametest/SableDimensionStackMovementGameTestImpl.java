@@ -28,6 +28,7 @@ final class SableDimensionStackMovementGameTestImpl {
             for (double penetration : new double[] {0.0, 0.01, 0.10, 2.0, 20.0}) {
                 checkRoundTrip(lower, upper, penetration, bodies);
             }
+            checkLeadingHullRoundTrip(lower, upper, bodies);
             helper.succeed();
         } catch (RuntimeException error) {
             com.mojang.logging.LogUtils.getLogger().error("Sable movement regression failed", error);
@@ -84,6 +85,35 @@ final class SableDimensionStackMovementGameTestImpl {
         require(returned != null && target.getSubLevel(id) == null, "immediate return was swallowed at penetration=" + penetration);
         require(Math.abs(centerY(returned) - ceiling + 0.01) < 1.0e-4, "body remained above Nether roof after return");
         require(returned.getPlot().getEmbeddedLevelAccessor().getBlockState(BlockPos.ZERO).is(Blocks.STONE), "blocks lost on reverse crossing");
+    }
+
+    private static void checkLeadingHullRoundTrip(ServerLevel lower, ServerLevel upper,
+        java.util.List<java.util.UUID> bodies) {
+        ServerSubLevelContainer source = SubLevelContainer.getContainer(lower), target = SubLevelContainer.getContainer(upper);
+        double ceiling = VerticalConnectingPortal.getConnectingPortal(lower, VerticalConnectingPortal.ConnectorType.ceil).getY();
+        double floor = upper.getMinBuildHeight();
+        Pose3d pose = new Pose3d(); pose.position().set(700, ceiling - 16, 700);
+        ServerSubLevel body = (ServerSubLevel) source.allocateNewSubLevel(pose);
+        var id = body.getUniqueId(); bodies.add(id);
+        body.getPlot().newEmptyChunk(body.getPlot().getCenterChunk());
+        for (int y=0;y<8;y++) body.getPlot().getEmbeddedLevelAccessor()
+            .setBlock(new BlockPos(0,y,0),Blocks.OAK_PLANKS.defaultBlockState(),3);
+        body.getPlot().updateBoundingBox(); body.buildMassTracker(); body.updateLastPose(); body.updateBoundingBox();
+        moveCenter(source,body,ceiling-6);
+        SableDimensionStackCompat.afterPhysicsSubstep(lower,source);
+        moveCenter(source,body,ceiling-3);
+        SableDimensionStackCompat.afterPhysicsSubstep(lower,source);
+        ServerSubLevel arrived=(ServerSubLevel)target.getSubLevel(id);
+        require(arrived!=null && source.getSubLevel(id)==null,"leading hull failed before COM crossed");
+        require(Math.abs(centerY(arrived)-(floor-3))<1e-4,"early hull migration moved COM to the seam");
+        // Reverse while COM has never entered the destination. The entered top leaving
+        // the floor seam must return the whole ship immediately, without client input.
+        moveCenter(target,arrived,floor-4.01);
+        SableDimensionStackCompat.afterPhysicsSubstep(upper,target);
+        ServerSubLevel returned=(ServerSubLevel)source.getSubLevel(id);
+        require(returned!=null && target.getSubLevel(id)==null,"early hull reversal stranded a ship outside the destination");
+        require(returned.getPlot().getEmbeddedLevelAccessor().getBlockState(new BlockPos(0,7,0))
+            .is(Blocks.OAK_PLANKS),"early hull reversal lost ship payload");
     }
 
     private static double centerY(ServerSubLevel body) {

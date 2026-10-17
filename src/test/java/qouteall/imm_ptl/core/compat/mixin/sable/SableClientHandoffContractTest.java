@@ -13,8 +13,20 @@ import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 
 class SableClientHandoffContractTest {
+    @Test
+    void standingMigrationAcknowledgementRequiresCrossDimensionEvidence() throws Exception {
+        ClassNode compat = readClass("qouteall/imm_ptl/core/compat/sable/SableDimensionStackCompat.class");
+        MethodNode alreadyMigrated = findMethodByName(compat, "isRiderAlreadyMigrated");
+        assertNotNull(alreadyMigrated);
+        assertTrue(invokesNamed(alreadyMigrated, "hasCompletedCrossDimensionTransfer"),
+            "Standing support ownership alone must not suppress a same-dimension on-foot teleport");
+        assertTrue(invokesNamed(alreadyMigrated, "getSubLevel"),
+            "Delayed cross-dimension acknowledgements must still verify destination body ownership");
+    }
+
     @Test
     void diagnosticSnapshotCorrelatesBothInitiationOrdersWithoutChangingTheHandshake() throws Exception {
         ClassNode handoff = readClass("qouteall/imm_ptl/core/compat/sable/SableServerFirstClientHandoff.class");
@@ -38,7 +50,7 @@ class SableClientHandoffContractTest {
         assertTrue(invokesNamed(gate, "matchesHandoff"));
         assertTrue(invokesNamed(gate, "verifySourceSeat"));
         assertTrue(invokesNamed(gate, "hasSubLevel"));
-        assertTrue(!invokesNamed(gate, "hasActiveServerInitiatedHandoff"),
+        assertTrue(!invokesNamed(gate, "hasActiveHandoff"),
             "The observer must recognize correlated client-request-first handoffs too");
         assertTrue(invokesNamed(findMethodByName(observer, "verifyContinuousClientOwnership"),
             "verifyBodyRemainsSpatiallyContinuous"), "Settled spatial continuity remains mandatory");
@@ -149,16 +161,29 @@ class SableClientHandoffContractTest {
         ClassNode requestMixin = readClass(
             "qouteall/imm_ptl/core/compat/mixin/sable/MixinClientTeleportationManager_SableServerFirstAck.class"
         );
+        ClassNode handoffGate = readClass("qouteall/imm_ptl/core/compat/sable/SableServerFirstClientHandoff.class");
+        MethodNode active = findMethodByName(handoffGate, "hasActiveHandoff");
+        assertNotNull(active);
+        assertTrue(invokesNamed(active, "isActive"));
+        assertFalse(invokesNamed(active, "serverTransform"), "Client-origin pending requests must also block prediction");
+        for (String phase : new String[]{"pending", "readyToApply", "standingRebase"}) {
+            boolean read = false;
+            for (var instruction : active.instructions) {
+                if (instruction instanceof FieldInsnNode field && field.getOpcode() == Opcodes.GETSTATIC
+                    && field.name.equals(phase)) read = true;
+            }
+            assertTrue(read, "Missing handoff phase: " + phase);
+        }
         MethodNode request = findMethodByName(requestMixin, "ip_useExplicitServerFirstAcknowledgement");
         MethodNode prediction = findMethodByName(requestMixin, "ip_waitForAuthoritativeRiderAttachment");
         assertNotNull(prediction, "temporary seat detachment must not enable on-foot portal prediction");
-        assertTrue(invokesNamed(prediction, "hasActiveServerInitiatedHandoff"));
+        assertTrue(invokesNamed(prediction, "hasActiveHandoff"));
         assertTrue(invokesNamed(prediction, "setReturnValue"),
             "pending handoff must reject the entire prediction, including checkpoint updates");
         assertNotNull(request, "explicit Sable server-first client request hook is missing");
-        assertTrue(invokesNamed(request, "hasActiveServerInitiatedHandoff"),
+        assertTrue(invokesNamed(request, "hasActiveHandoff"),
             "client must not create a competing request while a physics-first handoff is active");
-        int activeGuard = invocationIndex(request, "hasActiveServerInitiatedHandoff");
+        int activeGuard = invocationIndex(request, "hasActiveHandoff");
         int pendingPortalWrite = fieldWriteIndex(request, "pendingServerFirstPortalId");
         assertTrue(activeGuard >= 0 && pendingPortalWrite >= 0 && activeGuard < pendingPortalWrite,
             "physics-first suppression must run before writing the normal pending portal gate");
@@ -246,6 +271,20 @@ class SableClientHandoffContractTest {
             "completed Sable handoff must guard against a stale client portal retrigger during dismount projection");
         assertTrue(invokesNamed(clientAck, "clearClientPendingGate"),
             "negative or out-of-order acknowledgements must release a client-deferred teleport gate");
+        assertFalse(invokesNamed(clientApply, "transformPosition"),
+            "packet-time standing placement double-applies the next native inherited motion");
+        MethodNode standingMove = findMethodByName(clientHandoff, "prepareStandingMovement");
+        assertNotNull(standingMove, "standing attachment must be consumed at native movement entry");
+        assertTrue(invokesNamed(standingMove, "lastPose"),
+            "standing travel must start in lastPose so native last-to-logical motion occurs once");
+        assertTrue(invokesNamed(standingMove, "updateBoundingBox"),
+            "the native collision box must follow a standing interpolation-frame rebase");
+        ClassNode movementMixin = readClass(
+            "qouteall/imm_ptl/core/compat/mixin/sable/MixinLocalPlayer_SableRiderMovementHold.class");
+        MethodNode movement = findMethodByName(movementMixin, "ip_holdDetachedRiderMotion");
+        assertTrue(invocationIndex(movement, "prepareStandingMovement") >= 0
+            && invocationIndex(movement, "prepareStandingMovement") < invocationIndex(movement, "shouldHoldDetachedMovement"),
+            "the final standing rebase must run before the movement hold can cancel native travel");
     }
 
     @Test
