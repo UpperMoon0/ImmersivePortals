@@ -37,8 +37,9 @@ class SableFixtureTimingTest {
     void resetIsPublishedAfterFlightProofButBeforeRemovalAndTeleport() throws Exception {
         String server = source("SableStandingBalloonServer");
         String observe = server.substring(server.indexOf("private static void observe()"), server.indexOf("private static Object burner("));
-        int samples = observe.indexOf("if(settledSamples<80) return;");
-        int flight = observe.indexOf("require(body.logicalPose().position().y-arrivalY>0.5,");
+        // Acceptance owns the numeric thresholds; this test owns teardown order.
+        int samples = observe.indexOf("if(settledSamples<");
+        int flight = observe.indexOf("require(body.logicalPose().position().y-arrivalY>");
         int burner = observe.indexOf("require((boolean)burner.getClass().getMethod(\"canOutputGas\")");
         int receipt = observe.indexOf("receipts.add(");
         int marker = observe.indexOf("PortalSmokeSupport.write(\"balloon-reset.txt\"");
@@ -48,7 +49,6 @@ class SableFixtureTimingTest {
         assertTrue(marker > receipt && removal > marker && teleport > removal,
             "Successful case teardown must be announced before its first network-visible mutation");
         assertEquals(marker, observe.lastIndexOf("PortalSmokeSupport.write(\"balloon-reset.txt\""));
-        assertTrue(source("SableStandingBalloonClient").contains("if(++stable>=40)"));
         assertTrue(source("PortalSmokeSupport").contains("StandardCopyOption.ATOMIC_MOVE"));
     }
 

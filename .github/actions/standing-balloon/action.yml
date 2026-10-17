@@ -1,0 +1,60 @@
+name: Standing balloon verification
+description: Set up, run, and preserve evidence for unmounted envelope and deck flights
+inputs:
+  transport:
+    description: Native Sable transport (tcp or udp)
+    required: true
+  cold-start:
+    description: Require remote destination absence before assembly
+    default: 'false'
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-java@v5
+      with:
+        distribution: temurin
+        java-version: '21'
+    - uses: gradle/actions/setup-gradle@v6
+    - name: Ensure headless graphics runtime
+      shell: bash
+      run: |
+        if ! command -v xvfb-run >/dev/null 2>&1 || ! ldconfig -p | grep -F 'libGL.so.1' >/dev/null; then
+          sudo apt-get update
+          sudo apt-get install -y xvfb libgl1-mesa-dri
+        fi
+    - name: Configure Sable transport
+      shell: bash
+      env:
+        TRANSPORT: ${{ inputs.transport }}
+      run: |
+        case "$TRANSPORT" in
+          tcp) enabled=false; disabled=true ;;
+          udp) enabled=true; disabled=false ;;
+          *) echo "Unsupported Sable transport: $TRANSPORT" >&2; exit 1 ;;
+        esac
+        mkdir -p run-sable-e2e-server/config run-sable-e2e-client/config
+        printf 'disable_udp_pipeline = %s\nattempt_udp_networking = %s\n' "$disabled" "$enabled" > run-sable-e2e-server/config/sable-common.toml
+        printf 'attempt_udp_networking = %s\n' "$enabled" > run-sable-e2e-client/config/sable-client.toml
+        cp run-sable-e2e-server/config/sable-common.toml run-sable-e2e-client/config/sable-common.toml
+    - name: Unmounted envelope and deck burner ascents
+      shell: bash
+      env:
+        STANDING_COLD_START: ${{ inputs.cold-start }}
+      run: |
+        chmod +x ./gradlew
+        args=(standing-balloon)
+        if [[ "$STANDING_COLD_START" == true ]]; then args+=(--standing-cold-start); fi
+        python3 tools/verify.py "${args[@]}"
+    - name: Preserve standing balloon evidence
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: standing-balloon-${{ inputs.transport }}
+        if-no-files-found: warn
+        path: |
+          build/verification-standing-balloon.json
+          build/sable-dimension-stack-e2e/**
+          run-sable-e2e-server/logs/**
+          run-sable-e2e-client/logs/**
+          run-sable-e2e-server/config/sable-common.toml
+          run-sable-e2e-client/config/sable-client.toml

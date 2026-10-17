@@ -16,6 +16,17 @@ Certification requires both exact-commit CI lanes, including the preceding mount
 
 The UDP standing cases follow the existing powered CONTROL acceptance in the same server/client process. The mounted manifests and client/server pass receipts are retained separately before the unmounted cases start. TCP remains isolated. This removes one redundant dedicated-server/graphical-client startup pair, without dropping transports, cases, mounted assertions, or existing ship-size isolation.
 
+CI and fresh releases share `.github/actions/standing-balloon` for the standalone
+TCP job's setup, verification and artifact collection. CI passes `cold-start: 'true'`;
+fresh releases retain their prepared-terrain invocation. Job names and the 48-check
+release evidence contract are unchanged. Release jobs load the action from the
+executing workflow commit so older target tags need not contain the extracted
+action. Python receipt rejection cases belong to
+`test_standing_transfer_evidence.py`; `test_standing_balloon.py` checks runner
+delegation, independent native client samples and the mounted-suite gate using the
+same fixture helper. Java acceptance tests own sample thresholds, while timing
+tests own teardown ordering.
+
 ## Hull entry at stack seams
 
 Sable's default atmosphere explicitly smooths pressure to zero over the last 40 meters before a dimension's logical ceiling. Waiting for COM alone can therefore strand an otherwise functioning balloon at the seam. Global ceiling connectors now detect the swept leading hull for upward entry; descending floor crossings and ordinary finite portals retain COM traversal. The previous substep stores both vertical hull extrema. If a tip enters and gravity immediately reverses it before COM enters, that same entered tip leaving the destination triggers the return transaction. The existing native movement fixture checks leading entry with COM three blocks behind the plane and an immediate return with COM still outside, preserving all blocks.
