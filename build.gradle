@@ -81,6 +81,13 @@ repositories {
         }
     }
 
+    // Optional VS 1.21.1 port's public physics API. Do not bundle this in IP.
+    maven {
+        name = 'ValkyrienSkiesCore'
+        url = 'https://maven.valkyrienskies.org'
+        content { includeGroup 'org.valkyrienskies.core' }
+    }
+
     // Dev runtime dependencies for the local Aeronautics integration stack.
     maven { url = 'https://maven.createmod.net' }
     maven { url = 'https://mvn.devos.one/snapshots' }
@@ -330,6 +337,10 @@ dependencies {
     implementation "net.neoforged:neoforge:${neo_version}"
     compileOnly("maven.modrinth:embeddium:1.0.15+mc1.21.1") { transitive = false }
 
+    // ABI used by the NeoForge 1.21.1 community port. Runtime remains optional.
+    ['api', 'api-game', 'impl', 'util'].each { part ->
+        compileOnly("org.valkyrienskies.core:${part}:1.1.0+2a62e6a823") { transitive = false }
+    }
     compileOnly "net.caffeinemc:sodium-neoforge-mod:0.8.12+mc1.21.1"
     compileOnly("dev.ryanhcode.sable:sable-neoforge-${minecraft_version}:${sable_version}") { transitive = false }
     if (verificationSable) {

@@ -40,6 +40,15 @@ public final class ValkyrienSkiesShipProbe {
         if (installed) return;
         installed = true;
         boolean vsLoaded = LoadingModList.get().getModFileById("valkyrienskies") != null;
+        if (vsLoaded) {
+            try {
+                Class.forName(
+                    "qouteall.imm_ptl.core.compat.valkyrienskies.VSNativeShipTransport"
+                ).getMethod("install").invoke(null);
+            } catch (ReflectiveOperationException | LinkageError ex) {
+                LOGGER.error("VS2 1.21.1 native API unavailable; integration disabled", ex);
+            }
+        }
         if (!vsLoaded || !Boolean.getBoolean("ip.vs.shipProbe")) return;
         NeoForge.EVENT_BUS.addListener(ServerPortalTickEvent.class, event ->
             observe(event.portal));
