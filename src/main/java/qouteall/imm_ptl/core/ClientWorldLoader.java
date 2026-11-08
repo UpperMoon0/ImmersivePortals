@@ -201,6 +201,7 @@ public class ClientWorldLoader {
     }
     
     public static void cleanUp() {
+        qouteall.imm_ptl.core.compat.valkyrienskies.VSVisibleShipSections.reset();
         WORLD_RENDERER_MAP.values().forEach(
             ClientWorldLoader::disposeWorldRenderer
         );

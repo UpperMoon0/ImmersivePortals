@@ -13,7 +13,6 @@ import org.joml.primitives.AABBdc;
 import org.slf4j.Logger;
 import org.valkyrienskies.core.api.ships.LoadedServerShip;
 import org.valkyrienskies.core.apigame.world.ServerShipWorldCore;
-import org.valkyrienskies.mod.common.IShipObjectWorldServerProvider;
 import qouteall.imm_ptl.core.chunk_loading.ChunkLoader;
 import qouteall.imm_ptl.core.chunk_loading.ImmPtlChunkTracking;
 
@@ -55,8 +54,12 @@ public final class VSRemoteShipyardTracking {
     }
 
     private static ServerShipWorldCore getWorld(MinecraftServer server) {
-        if (server instanceof IShipObjectWorldServerProvider provider) return provider.getShipObjectWorld();
-        return null;
+        try {
+            Object result = server.getClass().getMethod("getShipObjectWorld").invoke(server);
+            return result instanceof ServerShipWorldCore world ? world : null;
+        } catch (ReflectiveOperationException exception) {
+            return null;
+        }
     }
 
     private static void update(MinecraftServer server) {
@@ -115,7 +118,9 @@ public final class VSRemoteShipyardTracking {
     private static boolean isRemoteWatcher(ServerPlayer player, LoadedServerShip ship) {
         if (ship.getWorldAABB() == null) return false;
         AABBdc box = ship.getWorldAABB();
-        if (!box.isFinite()) return false;
+        if (!Double.isFinite(box.minX()) || !Double.isFinite(box.minY())
+            || !Double.isFinite(box.minZ()) || !Double.isFinite(box.maxX())
+            || !Double.isFinite(box.maxY()) || !Double.isFinite(box.maxZ())) return false;
         MinecraftServer server = player.server;
         ResourceKey<Level> dimension = dimensionKey(server, ship.getChunkClaimDimension());
         if (dimension == null) return false;

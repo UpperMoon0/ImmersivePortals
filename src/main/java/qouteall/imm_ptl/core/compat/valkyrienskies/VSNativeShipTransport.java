@@ -23,7 +23,6 @@ import org.valkyrienskies.core.api.ships.ServerShip;
 import org.valkyrienskies.core.api.ships.properties.ShipTransform;
 import org.valkyrienskies.core.apigame.world.ServerShipWorldCore;
 import org.valkyrienskies.core.impl.game.ShipTeleportDataImpl;
-import org.valkyrienskies.mod.common.IShipObjectWorldServerProvider;
 import qouteall.imm_ptl.core.portal.Mirror;
 import qouteall.imm_ptl.core.portal.Portal;
 import qouteall.imm_ptl.core.teleportation.ServerTeleportationManager;
@@ -86,10 +85,12 @@ public final class VSNativeShipTransport {
     }
 
     private static ServerShipWorldCore shipWorld(MinecraftServer server) {
-        if (!(server instanceof IShipObjectWorldServerProvider provider)) {
+        try {
+            Object result = server.getClass().getMethod("getShipObjectWorld").invoke(server);
+            return result instanceof ServerShipWorldCore world ? world : null;
+        } catch (ReflectiveOperationException exception) {
             return null;
         }
-        return provider.getShipObjectWorld();
     }
 
     private static void attempt(Portal portal) {

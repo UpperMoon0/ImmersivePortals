@@ -28,14 +28,41 @@ using it in CI. Rebuild from reviewed source or verify the exact binary's
 provenance. Confirm licenses and dependencies, and test the NeoForge baseline
 upgrade rather than silently changing it.
 
+### Implemented experimental integration (not yet release-ready)
+
+A pinned API adapter (`VSNativeShipTransport`) now calls the 1.21.1 VS
+`ServerShipWorldCore.teleportShip` API with a transformed ship pose,
+rotation, linear velocity, angular velocity and destination dimension. It
+records pending native ownership, de-duplicates in-flight portal crossings,
+and reports unconfirmed transfers rather than copying blocks. It is disabled
+by default and can be enabled only in an isolated integration test with
+`-Dip.vs.enableNativeShipTeleport=true`.
+
+**Occupants intentionally block movement:** the adapter currently refuses
+ships with players near their physics AABB because no ordered rider/seat
+handoff is implemented. This is NOT passenger compatibility. Joint-dependent
+ships, connected constructs and rollback are also NOT certified.
+
+`VSRemoteShipyardTracking` supplies bounded, per-player hidden shipyard
+chunk loaders when a remote viewer actually watches the ship's logical
+world-space chunks through a portal. It retains and releases per-ship loader
+ownership; the VS native ship-metadata protocol still needs runtime proof.
+
+`VSVisibleShipSections` repairs a specific vanilla rendering conflict:
+Immersive Portals cancels normal `setupRender` before the VS fork's
+`vs$addShipVisibleChunks` RETURN hook. The remote-view path now invokes
+that collector itself before cancelling, and disconnect cleanup drops its
+cached reflection target. This does not certify the Sodium/Iris paths.
+
 ### Runtime hook and boundary geometry now present
 
 `ValkyrienSkiesShipProbe` is an **opt-in, read-only** native
 inspection path: `-Dip.vs.shipProbe=true`. It observes actual VS ship
 transforms and shipyard AABB data on portal ticks, determines dimension
 ownership, and applies a sweep of 15 hull boundary witnesses against the
-real portal aperture. There is no teleport mutation or persistent data
-rewrite. Without VS installed, the normal runtime takes no VS path.
+real portal aperture. In probe mode there is no teleport mutation or persistent data
+rewrite. The separate experimental native adapter above is the only path
+that changes ship physics ownership. Without VS installed, the normal runtime takes no VS path.
 
 `ShipPortalSweep` rejects non-finite transforms and aperture misses rather
 than taking the ship center of mass as proof of fit. This is still only a
@@ -47,12 +74,12 @@ collision solver.
 `ShipTransitCoordinator` is a pure server-thread-only transaction
 contract that rejects recursive/duplicate transfers, validates an adapter's
 prepare/commit/confirm/rollback sequence and halts on uncertain native
-ownership. **No native Valkyrien Skies adapter is wired to it yet.**
-That is intentional: the target 1.21.1 ABI and genuine rollback semantics
+ownership. **The transaction contract is not yet wired into the asynchronous VS adapter.**
+That remains required because: the target 1.21.1 ABI and genuine rollback semantics
 have not been verified, and a fake rollback implemented as block copying
 would cause duplicate physics ship ownership.
 
-### Required native transfer sequence (unimplemented)
+### Remaining work for production-quality native transfer
 
 1. Select a pinned 1.21.1 VS port with a verifiable source-to-binary
    relationship; pin Clockwork, Create, loader and physics-core versions.
