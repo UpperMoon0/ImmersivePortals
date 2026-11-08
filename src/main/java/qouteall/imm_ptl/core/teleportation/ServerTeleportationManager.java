@@ -60,6 +60,7 @@ public class ServerTeleportationManager {
     }
 
     public static void init() {
+        qouteall.imm_ptl.core.compat.valkyrienskies.ValkyrienSkiesShipProbe.install();
         NeoForge.EVENT_BUS.addListener(ServerTickEvent.Post.class, event -> {
             of(event.getServer()).tick(event.getServer());
         });
