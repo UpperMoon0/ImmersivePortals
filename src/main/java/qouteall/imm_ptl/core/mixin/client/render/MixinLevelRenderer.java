@@ -270,6 +270,11 @@ public abstract class MixinLevelRenderer implements IEWorldRenderer {
                     new Frustum(frustum).offsetToFullyIncludeCameraCube(8),
                     visibleSections
                 );
+                // VS normally appends shipyard render sections at setupRender
+                // RETURN, which the portal HEAD cancellation skips.
+                qouteall.imm_ptl.core.compat.valkyrienskies.VSVisibleShipSections
+                    .appendForRemoteView((LevelRenderer) (Object) this,
+                        new Frustum(frustum).offsetToFullyIncludeCameraCube(8));
                 level.getProfiler().pop();
                 
                 ci.cancel();
